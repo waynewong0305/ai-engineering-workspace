@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+.sites-runtime/
+data/*.sqlite
+data/*.sqlite-*
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
