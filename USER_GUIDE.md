@@ -1,0 +1,374 @@
+# AI Engineering Workspace User Guide
+
+AI Engineering Workspace is a local control room for using Claude Code and Codex as independent engineering collaborators. It is designed to keep decisions, evidence, code changes, reviews, and test results traceable while leaving final authority with you.
+
+## What works today
+
+The current implementation can:
+
+- start a local Vue and Fastify application;
+- report whether Git, Claude Code, and Codex are available;
+- report Codex's local authentication status;
+- register a local Git repository without modifying it;
+- detect the current/default branch and clean/dirty status;
+- save a future worktree location, project context, and validation commands; and
+- recheck a registered repository's Git status.
+
+Agent runs, tasks, brainstorms, worktrees, reviews, ADRs, and reports are planned but not enabled yet. Sections below that describe those workflows are marked as planned so this guide does not imply unfinished behavior is available.
+
+## Installation
+
+### Prerequisites
+
+You need:
+
+- macOS on Apple silicon for the currently tested setup;
+- Git;
+- Node.js 22 or newer;
+- npm;
+- Claude Code for Claude workflows; and
+- Codex CLI for Codex workflows.
+
+The project includes `.nvmrc`. If you use nvm, run:
+
+```bash
+nvm install
+nvm use
+node --version
+```
+
+The Node version should begin with `v22` or a newer supported major. The environment inspected on 2026-09-13 defaulted to Node 16.20.2, which is too old. This project did not change that installation automatically.
+
+### Claude Code setup
+
+Install Claude Code using Anthropic's supported local installation process, then authenticate by running Claude Code yourself. Confirm the CLI is available:
+
+```bash
+claude --version
+claude --help
+```
+
+AI Engineering Workspace will never ask for your Claude password or copy authentication tokens into its database. If Claude reports that authentication is required, complete authentication in your own terminal and use **Recheck tools** in the application.
+
+Claude Code was not available in the environment during this first implementation session. Claude agent execution will remain disabled until its installed CLI capabilities are inspected.
+
+### Codex setup
+
+Install and authenticate Codex through its supported local flow. Confirm it is ready:
+
+```bash
+codex --version
+codex login status
+codex --help
+```
+
+The inspected environment has Codex CLI 0.153.4 and is logged in using ChatGPT. The application does not read or store the underlying credentials.
+
+### Install the application
+
+From the AI Engineering Workspace directory:
+
+```bash
+nvm use
+npm install
+npm run db:migrate
+```
+
+The database is stored locally under `data/` and is ignored by Git.
+
+### Start the application
+
+Run:
+
+```bash
+npm run dev
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5173
+```
+
+The development command starts both the web interface and the local API. The API listens only on `127.0.0.1`, not on your network interface.
+
+### Stop the application
+
+Return to the terminal that is running the application and press `Ctrl+C`. The launcher forwards the stop signal to both processes.
+
+### Update the application
+
+When this project is later connected to a source remote, the safe update sequence will be:
+
+1. Stop the application.
+2. Back up the `data/` directory if the release notes mention database changes.
+3. Pull the intended version through your normal Git workflow.
+4. Run `nvm use`.
+5. Run `npm install`.
+6. Run `npm run db:migrate`.
+7. Run `npm run dev`.
+
+Do not replace the `data/` directory during an update. A formal backup and migration-recovery workflow is planned for hardening.
+
+## First-time setup
+
+### Check local tools
+
+The first screen shows readiness cards for Git, Claude Code, and Codex. Select **Recheck tools** after installing or re-authenticating a CLI.
+
+A green tool status means the executable answered a local health command. It does not mean every model is available or that a live agent run has been tested.
+
+### Add a Git repository
+
+In **Projects → Register a project**:
+
+1. Enter the absolute repository path, such as `/Users/you/Projects/example`.
+2. Optionally enter a display name. The folder name is used if you leave it blank.
+3. Optionally enter a default branch. The application first tries the locally known `origin/HEAD`, then falls back to the checked-out branch.
+4. Optionally enter a worktree root. If blank, a sibling location under `.ai-worktrees` is suggested and stored.
+5. Add project context that future agents should know.
+6. Add test, lint, and build commands that fit this repository.
+7. Select **Inspect & register**.
+
+Registration reads Git metadata and writes only to AI Engineering Workspace's own SQLite database. It does not create the worktree directory, run your commands, stage files, create branches, or edit the repository.
+
+### Choose the default branch
+
+Use the branch from which new task branches should eventually begin. This is commonly `main`, `master`, `develop`, or a project-specific integration branch. If the automatic value is wrong, enter the correct branch during registration. Future worktree creation must verify that the selected branch exists before using it.
+
+### Set the worktree location
+
+Keep worktrees outside the active repository directory. A typical layout is:
+
+```text
+/Users/you/Projects/.ai-worktrees/example/TASK-123/claude
+/Users/you/Projects/.ai-worktrees/example/TASK-123/codex
+```
+
+Registration saves the root path but does not create it. Worktree creation is planned for Phase 4.
+
+### Configure validation commands
+
+Save commands that already belong to the project, for example:
+
+```text
+Tests       npm test
+Lint        npm run lint
+Build       npm run build
+```
+
+or:
+
+```text
+PHP tests   php artisan test
+Frontend    npm run prod
+```
+
+These commands are stored only. A later validation workflow will show the exact command and working directory before it runs, then record start time, duration, exit code, stdout, stderr, and final status.
+
+### Select Claude and Codex models — planned
+
+Model settings will have four layers:
+
+1. global defaults;
+2. per-project defaults;
+3. per-task overrides; and
+4. per-agent-role overrides.
+
+The most specific explicit setting wins. The application will prefer models reported by the installed CLI/account. When a CLI cannot list models, you will be able to enter an editable model ID. Every run will preserve both the requested model and the actual model when the CLI reveals it. A substitution will be visible in run history.
+
+### Configure web permission — planned
+
+Each task will offer:
+
+```text
+Web Access
+
+○ Disabled
+○ Ask before use
+○ Enabled for this task
+```
+
+The default is **Ask before use**. The selected policy and the final allow/deny decision will be recorded with the run. The application will never silently enable web access.
+
+## Brainstorm workflow — planned
+
+Suppose you create:
+
+```text
+Design database sharding for 500 tenant databases
+```
+
+The intended flow is:
+
+1. You describe the problem and mark known facts.
+2. Claude receives the problem as an independent architect. It does not see Codex's answer.
+3. Codex receives the same problem independently. It does not see Claude's answer.
+4. Each response is stored in its original form and parsed into facts, assumptions, unknowns, options, risks, experiments, and any recommendation.
+5. Codex critiques Claude's analysis.
+6. Claude critiques Codex's analysis.
+7. The comparison screen groups consensus, disagreements, open questions, missing evidence, and recommended experiments.
+8. You correct facts, change assumptions, request evidence, or decide which disagreement matters.
+
+Claude's role is not to lead automatically, and Codex's role is not merely to approve. Either provider can be assigned as architect or skeptic. Cross-review should distinguish a factual error from a legitimate difference in engineering judgment.
+
+### Facts, assumptions, and decisions
+
+The evidence board will use these record types:
+
+- **Fact:** supported information you currently accept as true.
+- **Assumption:** an unverified belief that affects the design.
+- **Question:** something that needs an answer.
+- **Decision:** a human-approved choice.
+- **Experiment result:** evidence produced by a bounded test or proof of concept.
+
+Items show whether they came from you, Claude, Codex, or the system. You can edit or reclassify them. An AI suggestion never becomes a human decision merely because both models agree.
+
+### Consensus and disagreement
+
+Consensus is useful evidence that two analyses overlap; it is not proof. A disagreement is preserved with each side's reasoning, supporting evidence, and missing information. If evidence is insufficient, the correct result may be an experiment or a human decision—not a forced winner.
+
+## Feature planning — planned
+
+The planning path is:
+
+```text
+idea → brainstorm → architecture → ADR → implementation plan → coding tasks
+```
+
+Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Create an Architecture Decision Record only after you choose an option. The ADR records context, alternatives, decision, consequences, risks, and follow-up. Promote the approved decision into small implementation phases, then create linked coding tasks with explicit acceptance criteria.
+
+The links matter: a future reviewer should be able to move from a code task back to the plan, ADR, experiment, and original problem.
+
+## Bug fixing — planned
+
+The intended bug workflow is:
+
+```text
+bug report
+→ investigation
+→ isolated builder worktree
+→ implementation
+→ tests
+→ independent review
+→ findings
+→ fixes or evidence-backed rejection
+→ re-review
+→ human review
+```
+
+You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, confidence, and status.
+
+The builder responds **Accepted**, **Rejected**, or **Partially accepted**, with evidence. The reviewer rechecks fixed or disputed findings. After three automated rounds, unresolved findings stop and go to you. The system never loops indefinitely.
+
+## Choosing models — planned
+
+Use stronger models when the cost of a missed issue is high or the task needs long-horizon reasoning. Examples include:
+
+- a database migration with rollback and data-integrity risk;
+- a security review;
+- architecture spanning several services;
+- a subtle concurrency bug; or
+- a final review of a large, high-risk diff.
+
+Use faster or cheaper models when the task is bounded and easily verified. Examples include:
+
+- summarizing a small module;
+- generating a test fixture;
+- renaming a local symbol;
+- reviewing documentation; or
+- checking a narrow diff after comprehensive tests pass.
+
+A practical pattern is to use a faster model for initial inventory, a stronger model for the consequential decision or implementation, and an independent strong reviewer for high-risk changes. Avoid spending premium reasoning on mechanical work that deterministic tools can verify.
+
+## Browser and web access — planned
+
+Enabling web access allows an agent to consult internet sources when its CLI supports that capability. It is useful for current vendor documentation, changed API behavior, security advisories, current compatibility information, or a specific external source you want checked.
+
+Web access may increase token and context usage because search results and pages become part of the run. Local repository files, Git history, installed CLI help, lockfiles, tests, and local documentation are usually sufficient for repository-specific questions.
+
+Choose:
+
+- **Disabled** when the task should rely only on local evidence.
+- **Ask before use** when browsing might help but you want a decision at the moment it becomes relevant.
+- **Enabled for this task** when current external information is part of the task.
+
+You can disable web access at the task level before a run. A denied web request must remain visible in run history and cannot be bypassed silently.
+
+## Git worktrees — planned
+
+A Git worktree is another checked-out folder connected to the same repository history. It lets a branch have its own directory without copying the entire repository or disturbing your current checkout.
+
+AI Engineering Workspace uses separate task worktrees so a builder cannot overwrite your active work and Claude and Codex do not edit the same files concurrently. A task may create paths such as:
+
+```text
+.ai-worktrees/example/TASK-123/claude
+.ai-worktrees/example/TASK-123/codex
+```
+
+The worktree service will show the branch, status, diff, and owning run. Cleanup will check for uncommitted or untracked work first. If any work could be lost, cleanup stops and asks you what to do. The application will never silently delete a dirty worktree, branch, or uncommitted file.
+
+## Reviews and human responsibility — planned
+
+AI agreement does not mean the code is automatically correct. Two models may share the same blind spot, rely on the same false assumption, or miss behavior that only appears in production conditions.
+
+The pre-PR report will summarize implementation, changed files, findings, responses, tests, risks, decisions, and unresolved issues. It always marks human review as required. You should inspect the diff, verify important assumptions, consider production constraints, and decide whether the work is ready for your normal pull-request process.
+
+## Troubleshooting
+
+### Claude CLI missing
+
+Run `claude --version` in your terminal. If the command is missing, install Claude Code through its supported process. Authenticate manually, restart the application if needed, and select **Recheck tools**. Do not paste credentials into the workspace.
+
+### Codex CLI missing
+
+Run `codex --version`. Confirm the installation directory is on `PATH`, then restart the application and recheck. On the inspected machine, Codex is bundled with the ChatGPT desktop app.
+
+### Authentication expired
+
+Run the provider CLI manually and follow its supported login flow. AI Engineering Workspace should only report the state; it should not collect your password or token. Recheck after authentication succeeds.
+
+### CLI model unavailable
+
+Confirm the requested model is available to the locally authenticated account. Select another model explicitly or edit the configured model ID. Review run history to confirm the requested and actual values; do not assume a fallback occurred.
+
+### Agent command failed — planned
+
+Open the run record and inspect its exit code, stderr, working directory, CLI version, permission profile, and model request. A failed run remains failed; the application will not label partial text as a success.
+
+### Agent timed out — planned
+
+Check whether the task was too broad or the configured timeout was too short. Inspect captured output, narrow the request, and start a new run. The original timeout remains in history.
+
+### Git repository dirty
+
+Dirty status does not prevent registration. Before creating a future worktree or changing branches, review the existing changes. The platform must not clean, stash, reset, or delete them automatically.
+
+### Worktree conflict — planned
+
+Inspect the worktree path and branch shown by the application. Resolve external Git use first, or choose a new task branch/path. Never delete a worktree directory manually while Git still tracks it unless you understand the recovery steps.
+
+### Tests failed — planned
+
+Read the exact command, exit code, stdout, and stderr. A failing command is recorded as failed even if an agent believes its code is correct. Fix the cause or explicitly document why the configured command is invalid before human review.
+
+### Browser permission denied — planned
+
+The agent continues with local evidence when possible. If external information is essential, the run should stop with a clear blocked reason. Change the task's web policy only if you decide the additional access is appropriate.
+
+### Review loop reached three rounds — planned
+
+Automatic debate stops. Unresolved findings appear in the pre-PR report for you to decide. You can accept the risk, request a targeted human or AI investigation, change requirements, or send the task back for another explicitly started workflow.
+
+### Application will not start
+
+Check `node --version` first. Node 16 is not supported. Then run:
+
+```bash
+npm install
+npm run typecheck
+npm run dev
+```
+
+If the database migration fails, preserve the `data/` directory and inspect the error before retrying. Do not delete the database as a first troubleshooting step.
+
