@@ -9,11 +9,11 @@ This roadmap turns `PROJECT_SPEC.md` into small, testable increments. Safety, pr
 | macOS | 26.5.2, arm64 | Supported first platform |
 | Shell | zsh 5.9 | Supported |
 | Node.js on shell `PATH` | 16.20.2 | Too old for this project's supported toolchain |
-| Other user-installed Node versions | None found under nvm | Install or select Node 22+ before normal development |
-| Session validation runtime | Bundled Node 24.19.0 | Used for this session only; system configuration was not changed |
+| Other user-installed Node versions | 22.23.2 under nvm | Run `nvm use` before development |
+| Phase 2 validation runtime | Node 22.23.2 under nvm | Matches the declared runtime contract |
 | npm | 8.19.4 | Workspaces supported |
 | Git | 2.50.1 (Apple Git-155) | Available |
-| Claude Code | Not found on `PATH`; no global npm package found | Claude adapter implementation and live acceptance are blocked until installed/authenticated |
+| Claude Code | 2.1.269 installed and authenticated | Ready for an explicit read-only run |
 | Codex CLI | 0.153.4 | Available |
 | Codex authentication | Logged in using ChatGPT | Available for a later explicit agent-run test |
 | Codex default model | `gpt-5.6-sol` reported by the redacted doctor report | Informational only; not hardcoded into the product |
@@ -32,7 +32,7 @@ The installed Codex CLI exposes a suitable non-interactive foundation:
 - `codex doctor --json` provides a redacted health report and current default model.
 - The inspected top-level help does not expose an authoritative model-list command. Phase 2 must investigate a supported local protocol before falling back to editable model IDs.
 
-Claude Code is not currently discoverable. Its command template, structured-output flags, permission flags, effort controls, model discovery, and session behavior must remain unimplemented until `claude --help` and `claude --version` can be inspected locally.
+Claude Code 2.1.269 exposes non-interactive `--print`, `stream-json`, restricted mode, explicit tool selection, permission modes, effort controls, and session resume. `claude auth status` reports an authenticated local session; credentials remain outside the application database.
 
 ## Architecture guardrails
 
@@ -86,19 +86,19 @@ Goal: establish safe, observable CLI process adapters.
 
 - [x] Provider-neutral `AgentAdapter` interface
 - [x] Run input, event, health, model, permission, and web-access types
-- [ ] Install/authenticate Claude Code outside the application
-- [ ] Inspect current Claude CLI version and complete help output
-- [ ] Determine supported local model discovery for each CLI
-- [ ] Implement a shared process supervisor
-- [ ] Implement environment sanitization and sensitive-variable deny list first
-- [ ] Implement `ClaudeAdapter`
-- [ ] Implement `CodexAdapter`
-- [ ] Stream events over SSE
-- [ ] Persist prompts, versions, output, exit state, duration, CLI version, and model metadata
-- [ ] Implement cancellation and timeouts
-- [ ] Add a read-only, explicit single-agent health/run screen
+- [x] Authenticate Claude Code outside the application
+- [x] Inspect current Claude CLI version and complete help output
+- [x] Determine supported local model discovery for each CLI
+- [x] Implement a shared process supervisor
+- [x] Implement environment sanitization and sensitive-variable deny list first
+- [x] Implement `ClaudeAdapter`
+- [x] Implement `CodexAdapter`
+- [x] Stream events over SSE
+- [x] Persist prompts, versions, output, exit state, duration, CLI version, and model metadata
+- [x] Implement cancellation and timeouts
+- [x] Add a read-only, explicit single-agent health/run screen
 
-Exit gate: either provider can answer a read-only repository explanation request with streamed output and a persisted, cancelable run record. Live provider calls require a deliberate user action.
+Exit gate: the full path passes with a fake adapter without spending model credits. Both providers are authenticated; live provider acceptance remains a deliberate user action.
 
 ## Phase 3 — Independent brainstorming
 
@@ -184,4 +184,3 @@ At the end of every phase:
 7. Update `DEVELOPER_GUIDE.md` and ADRs only when architecture changes.
 8. Report failures and limitations honestly.
 9. Stop before the next major phase.
-

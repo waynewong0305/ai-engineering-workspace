@@ -8,13 +8,13 @@ The application is a localhost-only npm workspace:
 
 ```text
 Vue web client
-    │ HTTP now; SSE planned for run events
+    │ HTTP + SSE run events
     ▼
 Fastify API
     ├── SQLite / Drizzle
     ├── repository inspection through Git CLI
-    ├── process supervisor (planned)
-    └── AgentAdapter implementations (planned)
+    ├── persistent agent-run manager
+    └── AgentAdapter implementations + process supervisor
 ```
 
 The frontend is an untrusted client. Filesystem, Git, process execution, permission enforcement, secret filtering, and audit persistence belong to the server or dedicated packages.
@@ -26,7 +26,7 @@ apps/
   web/       Vue 3 + Vite user interface
   server/    Fastify API, database, routes, local service integration
 packages/
-  agents/    provider-neutral agent contracts; adapters come later
+  agents/    provider-neutral contracts, CLI adapters, environment policy, process supervisor
   shared/    shared types with no platform dependencies
 prompts/     planned versioned prompt files
 data/        ignored local SQLite database
@@ -181,19 +181,18 @@ Persist a task policy (`DISABLED`, `ASK_BEFORE_USE`, or `ENABLED_FOR_TASK`) and 
 
 Adapters translate the resolved decision into supported provider flags. If a CLI cannot guarantee the requested restriction, report the capability mismatch and block the run. Never infer permission from general network availability.
 
-## Process execution and streaming — planned
+## Process execution and streaming
 
-Use `spawn`/`execa` without a shell. The process supervisor should:
+The Phase 2 implementation uses `spawn` without a shell. The process supervisor:
 
-1. validate the working directory and permission profile;
-2. construct a sanitized environment;
-3. persist the run and exact non-secret invocation metadata;
-4. start the provider process in its own process group where supported;
-5. parse stdout/stderr incrementally with bounded buffers;
-6. write events to persistence before broadcasting them;
-7. stream browser updates over SSE;
-8. enforce timeout and cancellation; and
-9. persist exit code, duration, and terminal status exactly once.
+1. validates the absolute working directory and currently rejects every profile except `READ_ONLY`;
+2. constructs an allowlisted environment and rejects credential-like overrides;
+3. starts the provider process without a shell and in its own process group where supported;
+4. streams bounded stdout/stderr chunks;
+5. terminates the process group on timeout or cancellation; and
+6. emits one normalized terminal result.
+
+`AgentRunManager` writes each normalized event to SQLite before broadcasting it. It separately stores visible output, structured raw events, and stderr; each channel is capped at 5 MiB. The Phase 2 routes expose run creation, detail/history, cancellation, provider health, and SSE event replay. Refresh recovery can reconstruct completed and in-progress records from SQLite, although startup reconciliation for a process interrupted by a server restart remains Phase 7 work.
 
 SSE is the initial transport because run output is primarily server-to-client; cancellation and user decisions remain normal HTTP commands. Revisit WebSocket only if later bidirectional streaming requirements justify it.
 
@@ -244,4 +243,3 @@ For every phase:
 - update `IMPLEMENTATION_STATUS.md`;
 - update `USER_GUIDE.md` for behavior changes; and
 - add or revise ADRs only for consequential decisions.
-

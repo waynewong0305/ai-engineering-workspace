@@ -12,9 +12,13 @@ The current implementation can:
 - register a local Git repository without modifying it;
 - detect the current/default branch and clean/dirty status;
 - save a future worktree location, project context, and validation commands; and
-- recheck a registered repository's Git status.
+- recheck a registered repository's Git status;
+- run an explicit, read-only repository explanation with Claude Code or Codex;
+- stream the visible answer and process messages;
+- cancel an active run; and
+- retain run output and audit metadata locally.
 
-Agent runs, tasks, brainstorms, worktrees, reviews, ADRs, and reports are planned but not enabled yet. Sections below that describe those workflows are marked as planned so this guide does not imply unfinished behavior is available.
+Task orchestration, brainstorms, worktrees, reviews, ADRs, and reports are planned but not enabled yet. Sections below that describe those workflows are marked as planned so this guide does not imply unfinished behavior is available.
 
 ## Installation
 
@@ -165,6 +169,21 @@ Frontend    npm run prod
 ```
 
 These commands are stored only. A later validation workflow will show the exact command and working directory before it runs, then record start time, duration, exit code, stdout, stderr, and final status.
+
+### Run a read-only repository explanation
+
+After registering a project, go to **02 — Read-only agent run**:
+
+1. Select the registered project.
+2. Select Codex or Claude Code. The provider must show **Ready**.
+3. Edit the explanation prompt if needed.
+4. Optionally enter a model ID. Leave it blank to use the provider default.
+5. Select **Run explanation**. This is the deliberate action that may use provider credits.
+6. Watch the streamed answer, or select **Cancel** while it is queued or running.
+
+These runs use a read-only repository profile and disable web access. They cannot edit repository files. Prompts, visible output, structured CLI events, process messages, timestamps, status, CLI version, requested model, and provider-reported actual model are stored in the local SQLite database. Output is capped at 5 MiB per channel.
+
+Claude Code may be installed but show **Authentication required**. Run `claude auth login` yourself in a terminal, then select **Recheck tools**. The application never asks for or stores the provider credential.
 
 ### Select Claude and Codex models — planned
 
@@ -371,4 +390,3 @@ npm run dev
 ```
 
 If the database migration fails, preserve the `data/` directory and inspect the error before retrying. Do not delete the database as a first troubleshooting step.
-

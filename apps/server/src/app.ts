@@ -1,9 +1,11 @@
 import Fastify from "fastify";
+import { ClaudeAdapter, CodexAdapter, type AgentAdapter, type AgentProvider } from "@aiew/agents";
 import { createDatabase } from "./db/database.js";
+import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { inspectLocalTools } from "./services/tool-health.js";
 
-export function buildApp(options: { databasePath?: string } = {}) {
+export function buildApp(options: { databasePath?: string; adapters?: AgentAdapter[] } = {}) {
   const app = Fastify({ logger: true });
   const { db, sqlite } = createDatabase(options.databasePath);
 
@@ -19,6 +21,10 @@ export function buildApp(options: { databasePath?: string } = {}) {
   });
 
   registerProjectRoutes(app, db);
+  const adapters = new Map<AgentProvider, AgentAdapter>(
+    (options.adapters ?? [new ClaudeAdapter(), new CodexAdapter()]).map((adapter) => [adapter.name, adapter]),
+  );
+  registerAgentRunRoutes(app, db, adapters);
 
   return app;
 }

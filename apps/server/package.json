@@ -12,6 +12,7 @@
     "db:migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
+    "@aiew/agents": "*",
     "@aiew/shared": "*",
     "better-sqlite3": "^11.7.0",
     "drizzle-orm": "^0.38.3",

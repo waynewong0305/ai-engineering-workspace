@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, and saved validation-command configuration. It does not yet invoke Claude or Codex for engineering work, create worktrees, run saved project commands, or implement task workflows.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, and deliberate read-only Claude Code/Codex repository-explanation runs with SSE output, cancellation, timeouts, and persisted history. It does not yet create worktrees, run saved project commands, or implement multi-agent task workflows.
 
 ## Phase 0 — Bootstrap
 
@@ -59,21 +59,23 @@ Completion record:
 - [x] Permission profile types
 - [x] Web-access policy and recorded-decision types
 - [x] Requested/actual model audit metadata
-- [ ] Shared process supervisor
-- [ ] Claude adapter
-- [ ] Codex adapter
-- [ ] Streaming transport
-- [ ] Cancellation
-- [ ] Run persistence
-- [ ] Dynamic capability/model discovery or editable fallback
+- [x] Environment allowlist and credential-variable rejection
+- [x] Shared read-only process supervisor
+- [x] Claude adapter
+- [x] Codex adapter
+- [x] SSE streaming transport
+- [x] Cancellation and timeouts
+- [x] Run and event persistence
+- [x] Editable model fallback when discovery is unavailable
+- [x] Explicit read-only repository-explanation screen
 
 Current record:
 
 - Date: 2026-09-13
-- Decisions: provider-specific CLI behavior remains inside adapters; unavailable actual model values are represented as `null`, never silently copied from the request.
-- Modules introduced: `packages/agents`.
-- Tests executed: interface package TypeScript check.
-- Known limitations: interfaces only, by explicit scope. Claude Code is not installed/discoverable on the current `PATH`.
+- Decisions: provider-specific CLI behavior remains inside adapters; unavailable actual model values are represented as `null`; Phase 2 launches only `READ_ONLY` runs with web access disabled; model IDs remain editable because neither CLI exposes authoritative model discovery.
+- Modules introduced: process supervisor, environment sanitizer, Claude/Codex adapters, run manager, run/event schema and migration, agent API routes, SSE stream, and run UI.
+- Tests executed: environment filtering; process output and timeout behavior; fake-adapter run persistence; project/run API tests; full TypeScript check; production build; migrated local API/UI health and visual inspection. Automated tests do not call a live model.
+- Known limitations: Claude Code and Codex are authenticated, but a real paid/provider run remains an explicit user action from the UI and was not triggered during implementation. Codex network reachability was unavailable in the restricted diagnostic environment. Run history is persisted but the UI currently shows only the active run; output storage is capped at 5 MiB per channel.
 
 ## Phase 3 — Brainstorming
 
@@ -116,7 +118,7 @@ Current record:
 
 ## Phase 7 — Hardening
 
-- [ ] Environment sanitization
+- [ ] Expanded environment-sanitization and deny-list hardening
 - [ ] Sensitive path deny list
 - [ ] Process cancellation and timeouts
 - [ ] CLI failure handling
@@ -124,4 +126,3 @@ Current record:
 - [ ] Database backups
 - [ ] Cleanup tools
 - [ ] Audit history
-

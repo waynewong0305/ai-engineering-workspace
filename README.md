@@ -2,7 +2,7 @@
 
 AI Engineering Workspace is a local-only application for coordinating independent Claude Code and Codex engineering workflows against local Git repositories.
 
-The current increment includes the application shell, local tool health checks, SQLite persistence, safe project registration, configurable validation commands, and provider-neutral agent interfaces. It does not yet run AI agents or create worktrees.
+The current increment includes the application shell, local tool health checks, SQLite persistence, safe project registration, configurable validation commands, and explicit read-only Claude Code/Codex runs with streamed, persistent output. It does not yet create worktrees or implement multi-agent task workflows.
 
 ## Quick start
 
@@ -25,4 +25,3 @@ npm run build
 ```
 
 See [USER_GUIDE.md](./USER_GUIDE.md) for product usage, [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) for internals, and [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for current scope.
-

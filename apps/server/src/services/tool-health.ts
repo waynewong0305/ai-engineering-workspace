@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { sanitizeEnvironment } from "@aiew/agents";
 
 export type ToolHealth = {
   available: boolean;
@@ -15,7 +16,7 @@ type CommandResult = {
 function runCommand(command: string, args: string[], timeoutMs = 5_000): Promise<CommandResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      env: { PATH: process.env.PATH ?? "" },
+      env: sanitizeEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -54,11 +55,18 @@ export async function inspectLocalTools() {
     inspectVersion("codex"),
   ]);
 
-  if (codex.available) {
-    const login = await runCommand("codex", ["login", "status"]);
-    codex.authenticated = login.exitCode === 0;
+  const [claudeAuth, codexAuth] = await Promise.all([
+    claude.available ? runCommand("claude", ["auth", "status"]) : null,
+    codex.available ? runCommand("codex", ["login", "status"]) : null,
+  ]);
+  if (claude.available) {
+    try {
+      claude.authenticated = claudeAuth?.exitCode === 0 && JSON.parse(claudeAuth.stdout).loggedIn === true;
+    } catch {
+      claude.authenticated = false;
+    }
   }
+  if (codex.available) codex.authenticated = codexAuth?.exitCode === 0;
 
   return { git, claude, codex };
 }
-
