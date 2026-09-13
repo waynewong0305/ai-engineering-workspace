@@ -218,6 +218,8 @@ legend small { margin-left: 8px; }
 
 .exhausted-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(255, 200, 120, 0.35); background: rgba(255, 200, 120, 0.03); }
 .exhausted-hint p { flex: 1 1 260px; margin: 0; color: #cdd8e8; font-size: 12px; line-height: 1.5; }
+.exhausted-hint.likely { border-color: rgba(255, 140, 140, 0.5); background: rgba(255, 140, 140, 0.05); }
+.exhausted-hint .hint-badge { flex: 0 0 auto; padding: 4px 8px; border: 1px solid rgba(255, 140, 140, 0.5); color: var(--danger); font: 600 9px/1 ui-monospace, monospace; letter-spacing: 0.06em; }
 
 .brainstorm-panel { margin-top: 56px; }
 .brainstorm-panel h2 { max-width: 760px; }

@@ -373,6 +373,23 @@ async function acknowledgeUsageAndRetryStart() {
 }
 
 /**
+ * A soft, advisory hint only — never auto-recorded, never persisted. Deliberately broader/looser
+ * than the server's strict EXHAUSTION_PATTERNS in usage-safety.ts (which must be precise enough to
+ * safely auto-record an EXHAUSTED reading with no human involved); here a false positive only
+ * costs the user one extra glance at an already-visible error, not a wrongly blocked provider. Kept
+ * as a separate, intentionally looser list rather than reusing the strict one.
+ */
+const USAGE_HINT_PATTERNS = [
+  /\busage\b/i, /\bquota\b/i, /\ballowance\b/i, /\bexhausted\b/i, /\bcapacity\b/i,
+  /\bthrottl/i, /\binsufficient (credits?|balance)\b/i, /\b5[- ]hour\b/i, /\bweekly limit\b/i,
+];
+const USAGE_HINT_EXCLUSIONS = /\b(tokens?[- ]per[- ]minute|requests?[- ]per[- ]minute|\btpm\b|\brpm\b|rate[_-]?limit[_-]?error|\b429\b)/i;
+function looksUsageRelated(text: string | null | undefined): boolean {
+  if (!text || USAGE_HINT_EXCLUSIONS.test(text)) return false;
+  return USAGE_HINT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
  * Automatic detection only catches a rate-limit refusal whose wording matches a known pattern
  * (see usage-safety.ts). When it doesn't, a failed run looks like any other failure and nothing
  * blocks the next attempt. This lets a human close that gap explicitly after the fact, the same
@@ -393,9 +410,15 @@ async function markProviderExhausted(provider: AgentProvider) {
   }
 }
 
-function failedProviders(task: BrainstormTask): AgentProvider[] {
-  const failed = new Set((task.runs ?? []).filter((run) => run.status === "FAILED").map((run) => run.provider));
-  return (["CLAUDE", "CODEX"] as const).filter((provider) => failed.has(provider) && worstUsageStatus(provider) !== "EXHAUSTED");
+function failedProviders(task: BrainstormTask): Array<{ provider: AgentProvider; hint: boolean }> {
+  const failedRuns = (task.runs ?? []).filter((run) => run.status === "FAILED");
+  const byProvider = new Map(failedRuns.map((run) => [run.provider, run]));
+  return (["CLAUDE", "CODEX"] as const)
+    .filter((provider) => byProvider.has(provider) && worstUsageStatus(provider) !== "EXHAUSTED")
+    .map((provider) => {
+      const run = byProvider.get(provider)!;
+      return { provider, hint: looksUsageRelated(`${run.errorMessage ?? ""} ${run.errorOutput ?? ""}`) };
+    });
 }
 
 const form = reactive({
@@ -420,6 +443,11 @@ const editProjectForm = reactive({
 const connectedCount = computed(() => {
   if (!health.value) return 0;
   return Object.values(health.value.tools).filter((tool) => tool.available).length;
+});
+
+const currentRunUsageHint = computed(() => {
+  if (!currentRun.value) return false;
+  return looksUsageRelated(`${currentRun.value.errorMessage ?? ""} ${currentRun.value.errorOutput ?? ""}`);
 });
 
 async function loadHealth() {
@@ -1267,8 +1295,16 @@ onUnmounted(() => {
           <p v-if="currentRun.errorMessage" class="error-text">{{ currentRun.errorMessage }}</p>
           <details v-if="currentRun.errorOutput"><summary>Process messages</summary><pre>{{ currentRun.errorOutput }}</pre></details>
           <small v-if="currentRun.durationMs !== null">Completed in {{ (currentRun.durationMs / 1000).toFixed(1) }}s</small>
-          <div v-if="currentRun.status === 'FAILED' && worstUsageStatus(currentRun.provider) !== 'EXHAUSTED'" class="exhausted-hint">
-            <p>Did this fail because {{ providerLabel(currentRun.provider) }} hit its usage limit? The workspace could not tell automatically.</p>
+          <div
+            v-if="currentRun.status === 'FAILED' && worstUsageStatus(currentRun.provider) !== 'EXHAUSTED'"
+            :class="['exhausted-hint', { likely: currentRunUsageHint }]"
+          >
+            <span v-if="currentRunUsageHint" class="hint-badge">LOOKS LIKE A USAGE LIMIT</span>
+            <p>
+              {{ currentRunUsageHint
+                ? `This failure's wording suggests ${providerLabel(currentRun.provider)} may have hit its usage limit — the workspace could not confirm that automatically.`
+                : `Did this fail because ${providerLabel(currentRun.provider)} hit its usage limit? The workspace could not tell automatically.` }}
+            </p>
             <button class="ghost-button" type="button" @click="markProviderExhausted(currentRun.provider)">Mark {{ providerLabel(currentRun.provider) }} as exhausted</button>
           </div>
         </article>
@@ -1453,12 +1489,17 @@ onUnmounted(() => {
               </div>
             </div>
             <p v-if="selectedTask.errorMessage" class="form-message error-text">{{ selectedTask.errorMessage }}</p>
-            <div v-if="failedProviders(selectedTask).length" class="exhausted-hint">
-              <p>Did this fail because a provider hit its usage limit? The workspace could not tell automatically.</p>
-              <button
-                v-for="provider in failedProviders(selectedTask)" :key="provider"
-                class="ghost-button" type="button" @click="markProviderExhausted(provider)"
-              >Mark {{ providerLabel(provider) }} as exhausted</button>
+            <div
+              v-for="entry in failedProviders(selectedTask)" :key="entry.provider"
+              :class="['exhausted-hint', { likely: entry.hint }]"
+            >
+              <span v-if="entry.hint" class="hint-badge">LOOKS LIKE A USAGE LIMIT</span>
+              <p>
+                {{ entry.hint
+                  ? `This failure's wording suggests ${providerLabel(entry.provider)} may have hit its usage limit — the workspace could not confirm that automatically.`
+                  : `Did ${providerLabel(entry.provider)} fail because it hit its usage limit? The workspace could not tell automatically.` }}
+              </p>
+              <button class="ghost-button" type="button" @click="markProviderExhausted(entry.provider)">Mark {{ providerLabel(entry.provider) }} as exhausted</button>
             </div>
 
             <div v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section">
