@@ -36,9 +36,7 @@ The current implementation can:
 - promote an ADR into one or more linked implementation tasks, each keeping a real link back to its ADR (and, transitively, to the originating architecture discussion and any related experiments).
 - create integrity-checked local database backups, stage a restore for the next restart, recover
   records interrupted by a prior application process at startup, inspect cleanup warnings, and export audit
-  metadata without exporting prompts or model output; and
-- request, approve, or refuse a frontend review approval per task — the just-in-time gate that keeps any
-  model-backed agent from seeing a screenshot or rendered page without your separate, explicit, one-time approval.
+  metadata without exporting prompts or model output.
 
 Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
@@ -458,53 +456,36 @@ Choose:
 
 You can disable web access at the task level before a run. A denied web request must remain visible in run history and cannot be bypassed silently.
 
-## Frontend review approval
+## Frontend verification and review approval — planned
 
 Today, a build can run the validation commands you configured for the project and an independent
 reviewer can inspect its code diff. The workspace does not yet open the changed application in a
-browser or automatically show any model-backed agent rendered pages, screenshots, console failures,
-accessibility results, or responsive comparisons — that deterministic browser-checking piece is
-still planned (see below). A successful type-check or frontend build therefore does not guarantee
-that the UI still looks or behaves correctly; you must currently exercise consequential UI changes
-yourself before merging.
-
-What already exists, and is enforced today: no model-backed agent — Claude, Codex, or any future
-provider — may inspect a rendered page or receive a screenshot, DOM/accessibility output, or other
-browser evidence without your separate, explicit, just-in-time approval of that exact request. In
-**10 — Frontend review**:
-
-1. Select a task, then fill in which provider and agent configuration would run, why review is
-   being asked for (reason), and exactly which pages/scenarios/evidence would be shared (scope) —
-   plus, optionally, what automated check or failure prompted the request. Select **Request
-   approval**. This only records the request; it never starts anything by itself.
-2. Each request appears as its own card: **PENDING** until you decide, then **APPROVED** or
-   **REFUSED**. A refused request can never be started. An approved request is good for exactly the
-   one disclosed run it named — starting it consumes the approval (shown as **CONSUMED**), and any
-   broader or later review needs a fresh request.
-3. Starting a build, allowing web access, or approving an ordinary code review never counts as this
-   approval — it is always a separate, additional decision, and every request/decision is kept as
-   its own permanent record.
-
-Since the browser-automation runner below does not exist yet, nothing currently creates these
-requests automatically or consumes an approved one — you would use this panel yourself today if you
-independently wanted to disclose and gate a frontend review. Once the runner is built, it will
-create the request for you (with the reason/scope already filled in from what it found) and will
-only proceed after you approve it here.
-
-### Frontend verification runner — planned
+browser or show any model-backed agent rendered pages, screenshots, console failures, accessibility
+results, or responsive comparisons. A successful type-check or frontend build therefore does not
+guarantee that the UI still looks or behaves correctly; you must currently exercise consequential UI
+changes yourself before merging.
 
 The planned Phase 7 verifier will run configured browser scenarios, console/network checks,
 accessibility checks, and desktop/mobile screenshot comparisons locally inside the task worktree.
-Those deterministic checks do not call a model and do not need the approval above. If their results
-suggest that a model-backed agent should assess the UI/UX, the workspace will create a frontend
-review approval request (as described above) rather than start one on its own — you decide from
-there.
+Those deterministic checks do not call a model. If their results suggest that a model-backed agent
+should assess the UI/UX, the workspace will first ask you for a separate approval — showing why
+review is recommended, which provider/agent configuration would run, which pages/scenarios/evidence
+would be shared, and that the run may consume provider usage — before anything is shared with
+Claude, Codex, or any future provider. Starting a build, allowing web access, or approving an
+ordinary code review will never count as this approval; declining will report that agent UI review
+was skipped or that human review is required, never that the UI was verified.
+
+The server-side enforcement for this approval already exists (`FrontendReviewApprovalService`) and
+is fully tested, but there is no UI for it yet and nothing in the workspace calls it, because the
+browser-verification runner that would actually create these requests hasn't been built. Rather than
+ship a form that makes you hand-author the disclosure a runner is meant to generate, the approval
+screen stays hidden until the runner exists to drive it automatically.
 
 To conserve tokens, the workspace will normally recommend no agent review when the configured
 checks pass and approved screenshots are unchanged. When review is warranted, it will use one
 provider and share only the affected pages or screenshot regions plus concise relevant failures.
 It will reuse evidence from that exact build rather than ask a model to inspect it repeatedly. Using
-a second provider or widening the review to substantially more pages/evidence requires another
+the second provider or widening the review to substantially more pages/evidence requires another
 approval with a new reason.
 
 ## Git worktrees

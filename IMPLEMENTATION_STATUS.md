@@ -678,24 +678,27 @@ Completion record:
   never a decision this service makes on its own.
 - New routes (`apps/server/src/routes/frontend-review-approvals.ts`): `GET`/`POST
   /api/tasks/:id/frontend-review-approvals`, `GET /api/frontend-review-approvals/:id`, `POST
-  /api/frontend-review-approvals/:id/decide`. A new **10 — Frontend review** panel in
-  `apps/web/src/App.vue` lets a human request one (provider, agent configuration, reason, scope,
-  optional trigger) and approve or refuse it, with the required "provider usage may be consumed"
-  disclosure shown alongside every pending request. Verified live in the browser against a real
-  registered project: request → PENDING card with Approve/Refuse → Approve → APPROVED with a
-  decided timestamp, no console errors.
+  /api/frontend-review-approvals/:id/decide`.
 - Known, accepted scope limit: this is the gate only, not the recommendation logic or the browser-
   automation runner itself — both remain the separate, not-yet-built "supervised frontend
   verification runner" item above. Nothing in the codebase calls `assertApprovedAndConsume` yet
   because nothing yet starts a model-backed frontend-evidence run; the gate exists so that future
   runner is required to go through it rather than deciding on its own, matching how usage-safety's
   gate was built before every workflow that now calls it.
+- A first App.vue panel ("10 — Frontend review") was built for this and verified live in the
+  browser (request → PENDING card → Approve → APPROVED with a decided timestamp, no console errors)
+  in the same commit, then deliberately reverted in a follow-up unit the same day after direct human
+  feedback: with no runner yet to auto-populate reason/scope/trigger from an actual detected
+  failure, the form only made a human hand-author the disclosure a runner is meant to generate —
+  confusing busywork rather than a usable feature ("i really dont know what to be fill in"). The
+  service/routes/migration/tests all stayed; only the App.vue panel, its nav entry, and its
+  now-unused script state were removed. The UI returns once the runner exists to drive it.
 - Tests added: `apps/server/src/services/frontend-review-approval.test.ts` (5 tests: request
   validation, single-decision enforcement, the full approve/consume/reuse-blocked state machine, a
   refusal blocking consumption, an undecided request blocking consumption) and
   `apps/server/src/routes/frontend-review-approvals.test.ts` (2 tests: the full HTTP request → list
   → decide flow, and validation/not-found error mapping).
-- Full verification: `npm test` (166 workspace tests: 107 server + 35 agents + 31 `packages/git`,
+- Full verification: `npm test` (173 workspace tests: 107 server + 35 agents + 31 `packages/git`,
   plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
   `npm run db:generate` (19 tables; migration `0013` adds `frontend_review_approvals`, no further
   drift), and `git diff --check`; all passed under Node 22.23.2.
