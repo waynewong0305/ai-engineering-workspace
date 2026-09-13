@@ -241,6 +241,41 @@ export const evidenceItems = sqliteTable("evidence_items", {
 
 export type EvidenceItemRecord = typeof evidenceItems.$inferSelect;
 
+export type AdrStatus = "PROPOSED" | "ACCEPTED" | "REJECTED" | "SUPERSEDED";
+
+/**
+ * PROJECT_SPEC.md §18. Numbered sequentially per project (ADR-0001, ADR-0002, ...), not per task —
+ * an ADR log reads as one running history for the repository it's about, the same way a real
+ * ADR directory would. `relatedTaskIds` is a loose, human-curated list of task IDs (not FK-enforced
+ * — a task can be deregistered/deleted independently of an ADR that once referenced it, and this is
+ * a documentation link, not a data-integrity constraint) until Phase 6's plan-promotion work gives
+ * it a first-class relationship table.
+ */
+export const adrs = sqliteTable("adrs", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  number: integer("number").notNull(),
+  title: text("title").notNull(),
+  context: text("context").notNull(),
+  optionsConsidered: text("options_considered").notNull(),
+  decision: text("decision").notNull(),
+  reasons: text("reasons").notNull(),
+  consequences: text("consequences").notNull(),
+  risks: text("risks"),
+  rejectedAlternatives: text("rejected_alternatives"),
+  requiredFollowUp: text("required_follow_up"),
+  relatedTaskIds: text("related_task_ids", { mode: "json" }).$type<string[]>().notNull().default([]),
+  status: text("status", { enum: ["PROPOSED", "ACCEPTED", "REJECTED", "SUPERSEDED"] }).notNull().default("PROPOSED"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("adrs_project_number_idx").on(table.projectId, table.number),
+  index("adrs_task_idx").on(table.taskId),
+]);
+
+export type AdrRecord = typeof adrs.$inferSelect;
+
 export type UsageProvider = "CLAUDE" | "CODEX";
 export type UsageSource = "CLI_REPORTED" | "MANUAL" | "RATE_LIMIT_ERROR";
 export type UsageSourceConfidence = "EXACT" | "ESTIMATED";

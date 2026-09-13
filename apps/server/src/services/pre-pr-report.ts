@@ -2,11 +2,13 @@ import type { AgentProvider } from "@aiew/agents";
 import { eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
+  adrs,
   agentRuns,
   buildRuns,
   reviewFindings,
   tasks,
   validationRuns,
+  type AdrStatus,
   type BuildMergeStatus,
   type ReviewFindingRecord,
   type RiskLevel,
@@ -44,7 +46,7 @@ export type PrePrReport = {
     commitSha: string | null;
     mergedAt: string | null;
   };
-  architectureDecisions: string;
+  architectureDecisions: { id: string; number: number; title: string; status: AdrStatus; decision: string }[];
   humanReviewRequired: true;
   recommendedNextAction: string;
 };
@@ -80,9 +82,10 @@ function recommendNextAction(hasUnresolved: boolean, mergeStatus: BuildMergeStat
 /**
  * PROJECT_SPEC.md §25, adapted to this app's actual build/review shape: a build has exactly one
  * fixed reviewer (not the brainstorm workflow's dual independent review), so findings are grouped
- * by disposition rather than by a second provider. Architecture decisions are always reported as
- * unavailable — ADRs (Phase 6) don't exist yet — never fabricated. Human review is always required;
- * an AI-approved merge is never equivalent to a human's.
+ * by disposition rather than by a second provider. Architecture decisions surfaces any ADR that
+ * either originated from this build's task or explicitly names it in `relatedTaskIds` — an empty
+ * list is reported honestly rather than a fabricated "none" narrative. Human review is always
+ * required; an AI-approved merge is never equivalent to a human's.
  */
 export function buildPrePrReport(db: WorkspaceDatabase, buildRunId: string): PrePrReport | null {
   const build = db.select().from(buildRuns).where(eq(buildRuns.id, buildRunId)).get();
@@ -93,6 +96,8 @@ export function buildPrePrReport(db: WorkspaceDatabase, buildRunId: string): Pre
   const builderRun = build.builderRunId ? db.select().from(agentRuns).where(eq(agentRuns.id, build.builderRunId)).get() : null;
   const findings = db.select().from(reviewFindings).where(eq(reviewFindings.buildRunId, build.id)).all();
   const validations = db.select().from(validationRuns).where(eq(validationRuns.buildRunId, build.id)).all();
+  const relevantAdrs = db.select().from(adrs).where(eq(adrs.projectId, task.projectId)).all()
+    .filter((adr) => adr.taskId === task.id || adr.relatedTaskIds.includes(task.id));
 
   const accepted = findings.filter((finding) => finding.builderVerdict === "ACCEPTED" || finding.builderVerdict === "PARTIALLY_ACCEPTED");
   const rejected = findings.filter((finding) => finding.builderVerdict === "REJECTED");
@@ -115,7 +120,9 @@ export function buildPrePrReport(db: WorkspaceDatabase, buildRunId: string): Pre
     merge: {
       status: build.mergeStatus, targetBranch: build.mergeTargetBranch, commitSha: build.mergeCommitSha, mergedAt: build.mergedAt,
     },
-    architectureDecisions: "Not available — architecture decision records are not implemented yet.",
+    architectureDecisions: relevantAdrs
+      .sort((a, b) => a.number - b.number)
+      .map((adr) => ({ id: adr.id, number: adr.number, title: adr.title, status: adr.status, decision: adr.decision })),
     humanReviewRequired: true,
     recommendedNextAction: recommendNextAction(unresolved.length > 0, build.mergeStatus),
   };

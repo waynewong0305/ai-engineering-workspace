@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. Phase 6 (planning/ADRs) and Phase 7 (hardening) remain unimplemented — see below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. Phase 6 (planning and ADRs) is now underway: architecture decision records (create, list, edit, reclassify status) are implemented; experiments and plan promotion/linked-task creation are not yet. Phase 7 (hardening) remains unimplemented — see below.
 
 ## LLM agent policy
 
@@ -103,7 +103,8 @@ Current record:
 - Modules introduced: task/artifact/comparison/evidence schema and migration, `BrainstormWorkflow`, task APIs, versioned prompt files, and the Phase 3 task/comparison UI.
 - Tests executed: paired fake-provider parallelism barriers; full analysis → review → comparison workflow; structured/raw persistence; evidence creation/update; explicit web-decision validation; full TypeScript check; production build; migrated local API/UI inspection.
 - Acceptance state: the database-sharding task exists as a `DRAFT` for the registered Boostorder project with web disabled. Its real four provider runs were not started automatically because they spend provider usage.
-- Known limitations: active provider processes are not reconciled after a server restart; deterministic comparison depends on structured cross-review quality; the screen edits evidence content while type reclassification is currently API-only.
+- Known limitations: active provider processes are not reconciled after a server restart; deterministic comparison depends on structured cross-review quality.
+- Correction (2026-09-13): this record previously said "the screen edits evidence content while type reclassification is currently API-only." That was inaccurate even at the time — `PATCH /api/tasks/:taskId/evidence/:itemId` and the evidence board's own Edit → type select → Save flow (`editingEvidenceType` in `App.vue`) both shipped in the same commit as this record and already support changing an item's type (e.g. `QUESTION` → `DECISION`). No code changed to fix this; only the stale claim did, caught while scoping Phase 6.
 
 Later addition (2026-09-13): a brainstorm plan export, modeled on the build workflow's existing pre-PR report (`apps/server/src/services/pre-pr-report.ts`). `buildBrainstormPlanReport` (`apps/server/src/services/brainstorm-report.ts`) reads a task's analyses, cross-reviews, comparison, and evidence and assembles them into a report; unlike the build report it never blocks on task status — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed, with a status-appropriate recommended next action, since a brainstorm task has no single fixed reviewer to gate on. Exposed as `GET /api/tasks/:id/report` and a **BRAINSTORM PLAN REPORT** section with a **Generate report** button on the task detail pane, next to the evidence board. Verified with a route-level test that runs the fake-adapter workflow to `READY` and checks the full report shape, a 404 test for an unknown task, `npm test`/`typecheck`/`build`/`check:agent-policy`/`db:generate` (no schema change), and manual browser verification of the button and its output on a `DRAFT` task.
 
@@ -459,11 +460,70 @@ Completion record:
 
 ## Phase 6 — Planning and ADRs
 
-- [ ] Assumption board editing
-- [ ] ADRs
+- [x] Assumption board editing (already shipped in Phase 3 — see the correction above; content and
+      type reclassification both work today)
+- [x] ADRs
 - [ ] Experiments
 - [ ] Plan promotion
 - [ ] Linked implementation tasks
+
+### Phase 6, slice 1 completion record — ADRs
+
+- Date: 2026-09-13
+- Scope: `PROJECT_SPEC.md` §18 — architecture decision records, stored in SQLite, created from a task
+  and editable afterward. Explicitly out of scope per the spec itself ("Optional later... Do not
+  automatically modify the target repo for an ADR without approval"): Markdown export into the
+  target repository. Deliberately out of scope for this slice, tracked as unchecked above:
+  experiments (§19) and plan promotion/linked tasks (§20) — the remaining Phase 6 checklist items.
+- While scoping this phase, corrected a stale claim in the Phase 3 record (see above): evidence-item
+  type reclassification was already implemented, not "API-only" as previously written.
+- Schema: new `adrs` table (`apps/server/src/db/schema.ts`) — a genuine `CREATE TABLE`, not an
+  `ALTER TABLE ... ADD COLUMN ... REFERENCES` (the pattern that caused Phase 5's known SQLite
+  foreign-key-action bug), so both of its foreign keys carry correct `ON DELETE CASCADE` semantics
+  from the start. Numbered sequentially **per project** (`adrs_project_number_idx`, a unique
+  `(project_id, number)` index), not per task, so the numbering reads as one running ADR log across
+  a project's entire history the way a real ADR directory would, matching the spec's own
+  `ADR-0004`-style example. `relatedTaskIds` is a loose, human-curated `json` array of task IDs — not
+  FK-enforced — since Phase 6's later plan-promotion work is what's meant to give task relationships
+  a first-class, constrained model; this is deliberately a documentation link, not a data-integrity
+  one, until then.
+- New `apps/server/src/routes/adrs.ts`: `GET /api/projects/:id/adrs` (project-wide, ordered by
+  number), `GET /api/tasks/:id/adrs`, `POST /api/tasks/:id/adrs` (assigns the next sequential number
+  for that project), `GET /api/adrs/:id`, `PATCH /api/adrs/:id` (partial update of any field
+  including `status`, matching the evidence-item PATCH's already-established omitted-field-keeps-
+  current-value convention). No delete route — PROJECT_SPEC.md §18 describes an ADR as a durable
+  decision record, not something the app should offer to erase.
+- `apps/server/src/services/pre-pr-report.ts` updated for cohesion: `architectureDecisions` changed
+  from a hardcoded "not implemented yet" string to a real, computed list of ADRs that either
+  originated from the build's task or explicitly name it in `relatedTaskIds` — still an honest empty
+  list (never a fabricated "none exist" narrative) when nothing matches.
+- UI: un-disabled nav item `08 — Decisions` (previously a permanent placeholder alongside the
+  still-unimplemented `07 — Reviews`); new `#decisions` section with a task picker, a create form for
+  all §18 fields, and a per-ADR card showing every field plus a status dropdown (`PROPOSED` /
+  `ACCEPTED` / `REJECTED` / `SUPERSEDED`). Initially reused the evidence board's `.evidence-form`/
+  `.evidence-item` CSS classes for consistency, but their fixed 3-column grid (built for evidence's
+  short type/content/source shape) badly overlapped ADRs' much longer multi-paragraph fields —
+  caught in browser verification, not just by reading the code — so `.adr-form`/`.adr-item` override
+  those to a single stacked column instead. Verified live in the browser end-to-end: created a real
+  ADR (no provider usage involved, so this was safe to actually exercise rather than only test with
+  fake adapters), confirmed it persisted and rendered correctly after the CSS fix, and changed its
+  status via the dropdown, confirmed against a fresh `GET`.
+- Found and fixed during this slice, unrelated to ADRs themselves: while investigating what Phase 6
+  needed, discovered a second Claude Code session was concurrently working in this same repository
+  (on an equivalent brainstorm/architecture-task report — see the "Later addition" note under Phase
+  3 above). Confirmed with the user this was expected before continuing; no conflicting edits
+  occurred since the two efforts touched different routes/files, but this is worth knowing for
+  future agents: check `git status --short` for changes you didn't make before assuming something is
+  broken, the way `AGENTS.md`'s "Preserving unrelated changes" section already advises.
+- Tests executed: full workspace `npm test` (103 tests: 80 `apps/server` + 12 `packages/agents` + 11
+  `packages/git`, up from 91 — the increase also includes the concurrent session's own brainstorm-
+  report tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
+  db:generate` (reports only the new `adrs` table), `git diff --check` — all clean. New coverage in
+  `adrs.test.ts` (9 tests): sequential per-project numbering (including across two different tasks
+  in the same project), a required-field validation failure, 404s for a nonexistent task/ADR/project,
+  task-scoped listing, a partial `PATCH` that leaves omitted fields unchanged, and rejecting an
+  invalid status value. Extended `build-runs.test.ts`'s pre-PR report tests with a case proving an
+  ADR linked via `relatedTaskIds` (or originating from the build's own task) appears in the report.
 
 ## Phase 7 — Hardening
 

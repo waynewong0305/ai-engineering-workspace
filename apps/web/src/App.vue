@@ -92,6 +92,24 @@ type EvidenceItem = {
   content: string;
   sourceProvider: AgentProvider | null;
 };
+type AdrStatus = "PROPOSED" | "ACCEPTED" | "REJECTED" | "SUPERSEDED";
+type Adr = {
+  id: string;
+  projectId: string;
+  taskId: string;
+  number: number;
+  title: string;
+  context: string;
+  optionsConsidered: string;
+  decision: string;
+  reasons: string;
+  consequences: string;
+  risks: string | null;
+  rejectedAlternatives: string | null;
+  requiredFollowUp: string | null;
+  relatedTaskIds: string[];
+  status: AdrStatus;
+};
 type BrainstormTask = {
   id: string;
   projectId: string;
@@ -233,7 +251,7 @@ type PrePrReport = {
   findings: { total: number; accepted: ReviewFinding[]; rejected: ReviewFinding[]; unresolved: ReviewFinding[] };
   tests: { commandLabel: string; status: ValidationRunStatus; exitCode: number | null; phase: "BUILD" | "POST_MERGE" }[];
   merge: { status: BuildMergeStatus; targetBranch: string | null; commitSha: string | null; mergedAt: string | null };
-  architectureDecisions: string;
+  architectureDecisions: { id: string; number: number; title: string; status: AdrStatus; decision: string }[];
   humanReviewRequired: true;
   recommendedNextAction: string;
 };
@@ -377,6 +395,15 @@ const prePrReport = ref<PrePrReport | null>(null);
 const loadingReport = ref(false);
 const reportError = ref("");
 let buildPollTimer: number | null = null;
+
+const selectedAdrTaskId = ref("");
+const adrsForTask = ref<Adr[]>([]);
+const adrError = ref("");
+const creatingAdr = ref(false);
+const adrForm = reactive({
+  title: "", context: "", optionsConsidered: "", decision: "", reasons: "", consequences: "",
+  risks: "", rejectedAlternatives: "", requiredFollowUp: "",
+});
 
 const usage = ref<Record<AgentProvider, UsageWindowView[]>>({ CLAUDE: [], CODEX: [] });
 const usagePolicy = ref<UsagePolicy | null>(null);
@@ -955,6 +982,62 @@ async function loadPrePrReport() {
   }
 }
 
+async function loadAdrsForTask() {
+  adrError.value = "";
+  if (!selectedAdrTaskId.value) {
+    adrsForTask.value = [];
+    return;
+  }
+  const response = await fetch(`/api/tasks/${selectedAdrTaskId.value}/adrs`);
+  if (!response.ok) {
+    adrError.value = "Could not load ADRs for this task.";
+    return;
+  }
+  adrsForTask.value = await response.json();
+}
+
+async function createAdr() {
+  if (!selectedAdrTaskId.value) return;
+  creatingAdr.value = true;
+  adrError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedAdrTaskId.value}/adrs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: adrForm.title, context: adrForm.context, optionsConsidered: adrForm.optionsConsidered,
+        decision: adrForm.decision, reasons: adrForm.reasons, consequences: adrForm.consequences,
+        risks: adrForm.risks || undefined, rejectedAlternatives: adrForm.rejectedAlternatives || undefined,
+        requiredFollowUp: adrForm.requiredFollowUp || undefined,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not create the ADR.");
+    Object.assign(adrForm, {
+      title: "", context: "", optionsConsidered: "", decision: "", reasons: "", consequences: "",
+      risks: "", rejectedAlternatives: "", requiredFollowUp: "",
+    });
+    await loadAdrsForTask();
+  } catch (error) {
+    adrError.value = error instanceof Error ? error.message : "Could not create the ADR.";
+  } finally {
+    creatingAdr.value = false;
+  }
+}
+
+async function updateAdrStatus(adr: Adr, status: AdrStatus) {
+  adrError.value = "";
+  const response = await fetch(`/api/adrs/${adr.id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    adrError.value = result.message ?? "Could not update the ADR's status.";
+    return;
+  }
+  await loadAdrsForTask();
+}
+
 async function selectTask(taskId: string) {
   taskError.value = "";
   const response = await fetch(`/api/tasks/${taskId}`);
@@ -1381,7 +1464,7 @@ onUnmounted(() => {
         <a :class="['nav-item', { active: activeSection === 'usage-safety' }]" href="#usage-safety"><span>05</span>Usage safety</a>
         <a :class="['nav-item', { active: activeSection === 'build' }]" href="#build"><span>06</span>Build</a>
         <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>07</span>Reviews</a>
-        <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>08</span>Decisions</a>
+        <a :class="['nav-item', { active: activeSection === 'decisions' }]" href="#decisions"><span>08</span>Decisions</a>
       </nav>
 
       <div class="sidebar-foot">
@@ -2374,11 +2457,74 @@ onUnmounted(() => {
                 <template v-if="!prePrReport.tests.length">No validation commands ran.</template>
               </p>
               <p><strong>Merge</strong><br />{{ prePrReport.merge.status }}<template v-if="prePrReport.merge.targetBranch"> into {{ prePrReport.merge.targetBranch }}</template></p>
-              <p><strong>Architecture decisions</strong><br />{{ prePrReport.architectureDecisions }}</p>
+              <p><strong>Architecture decisions</strong><br />
+                <template v-if="prePrReport.architectureDecisions.length">
+                  <template v-for="adr in prePrReport.architectureDecisions" :key="adr.id">ADR-{{ String(adr.number).padStart(4, '0') }} {{ adr.title }} ({{ adr.status }})<br /></template>
+                </template>
+                <template v-else>None linked to this task.</template>
+              </p>
               <p><strong>Human review required</strong><br />YES — AI approval is never equivalent to human approval.</p>
               <p><strong>Recommended next action</strong><br />{{ prePrReport.recommendedNextAction }}</p>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section id="decisions" class="project-panel worktree-panel" aria-labelledby="decisions-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">08 — ARCHITECTURE DECISIONS</p>
+            <h2 id="decisions-heading">Turn a discussion into a record you can point back to.</h2>
+            <p>Create and edit ADRs for a task. Stored locally; never exported into the repository automatically.</p>
+          </div>
+          <span class="safety-badge">SQLITE ONLY · NO AUTO-EXPORT</span>
+        </div>
+
+        <div class="worktree-task-picker">
+          <label>
+            <span>Task</span>
+            <select v-model="selectedAdrTaskId" @change="loadAdrsForTask">
+              <option disabled value="">Select a task</option>
+              <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.title }}</option>
+            </select>
+          </label>
+        </div>
+
+        <p v-if="adrError" class="form-message error-text" role="alert">{{ adrError }}</p>
+
+        <form v-if="selectedAdrTaskId" class="evidence-form adr-form" @submit.prevent="createAdr">
+          <label><span>Title</span><input v-model="adrForm.title" maxlength="300" required /></label>
+          <label><span>Context</span><textarea v-model="adrForm.context" maxlength="10000" required></textarea></label>
+          <label><span>Options considered</span><textarea v-model="adrForm.optionsConsidered" maxlength="10000" required></textarea></label>
+          <label><span>Decision</span><textarea v-model="adrForm.decision" maxlength="10000" required></textarea></label>
+          <label><span>Reasons</span><textarea v-model="adrForm.reasons" maxlength="10000" required></textarea></label>
+          <label><span>Consequences</span><textarea v-model="adrForm.consequences" maxlength="10000" required></textarea></label>
+          <label><span>Risks (optional)</span><textarea v-model="adrForm.risks" maxlength="10000"></textarea></label>
+          <label><span>Rejected alternatives (optional)</span><textarea v-model="adrForm.rejectedAlternatives" maxlength="10000"></textarea></label>
+          <label><span>Required follow-up (optional)</span><textarea v-model="adrForm.requiredFollowUp" maxlength="10000"></textarea></label>
+          <button class="ghost-button" type="submit" :disabled="creatingAdr">{{ creatingAdr ? "Creating…" : "Create ADR" }}</button>
+        </form>
+
+        <p v-if="selectedAdrTaskId && !adrsForTask.length" class="form-hint">No ADRs yet for this task.</p>
+        <div v-for="adr in adrsForTask" :key="adr.id" class="evidence-item adr-item">
+          <header>
+            <strong>ADR-{{ String(adr.number).padStart(4, '0') }} {{ adr.title }}</strong>
+            <select :value="adr.status" @change="updateAdrStatus(adr, ($event.target as HTMLSelectElement).value as AdrStatus)">
+              <option value="PROPOSED">Proposed</option>
+              <option value="ACCEPTED">Accepted</option>
+              <option value="REJECTED">Rejected</option>
+              <option value="SUPERSEDED">Superseded</option>
+            </select>
+          </header>
+          <p><strong>Context</strong> {{ adr.context }}</p>
+          <p><strong>Options considered</strong> {{ adr.optionsConsidered }}</p>
+          <p><strong>Decision</strong> {{ adr.decision }}</p>
+          <p><strong>Reasons</strong> {{ adr.reasons }}</p>
+          <p><strong>Consequences</strong> {{ adr.consequences }}</p>
+          <p v-if="adr.risks"><strong>Risks</strong> {{ adr.risks }}</p>
+          <p v-if="adr.rejectedAlternatives"><strong>Rejected alternatives</strong> {{ adr.rejectedAlternatives }}</p>
+          <p v-if="adr.requiredFollowUp"><strong>Required follow-up</strong> {{ adr.requiredFollowUp }}</p>
+          <small>Related tasks: {{ adr.relatedTaskIds.length || "none" }}</small>
         </div>
       </section>
     </main>

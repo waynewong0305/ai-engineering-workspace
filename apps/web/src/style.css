@@ -367,6 +367,18 @@ legend small { margin-left: 8px; }
 .evidence-item > span { color: var(--cyan); font: 600 10px/1.4 ui-monospace, monospace; }
 .evidence-item p { margin: 0; font-size: 12px; }
 .evidence-item small { color: #647792; }
+
+/* ADRs have many long-form fields, not evidence-board's fixed 3-column shape, so both reused
+   classes are overridden to a single stacked column rather than inheriting that grid. */
+.adr-form.evidence-form { grid-template-columns: 1fr; max-width: 640px; }
+.adr-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.adr-form textarea { min-height: 70px; height: auto; }
+.adr-form .ghost-button { justify-self: start; }
+.adr-item.evidence-item { grid-template-columns: 1fr; gap: 4px; }
+.adr-item header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.adr-item header strong { font-size: 13px; }
+.adr-item p { margin: 4px 0 0; color: #9bb0ca; }
+.adr-item p strong { color: var(--cyan); font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: 0.04em; display: block; margin-bottom: 2px; }
 .evidence-edit { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px; }
 .text-button { padding: 3px 0; border: 0; color: #8297b3; background: none; font-size: 11px; }
 .text-button:hover { color: var(--cyan); }

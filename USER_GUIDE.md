@@ -30,9 +30,10 @@ The current implementation can:
 - run a build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings;
 - send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3);
 - merge a completed build's worktree into a target branch once you explicitly approve it, re-run validation against the merged result, and automatically clean up the worktree and (optionally) its branch only when every safety condition holds; and
-- generate a pre-PR report for a build on demand, summarizing the problem, implementation, files changed, findings by disposition, tests, and merge state, always marking human review as required.
+- generate a pre-PR report for a build on demand, summarizing the problem, implementation, files changed, findings by disposition, tests, and merge state, always marking human review as required; and
+- create, edit, and reclassify architecture decision records (ADRs) for a task, numbered sequentially per project, stored locally and never exported into your repository automatically.
 
-Brainstorming, architecture comparison, worktree isolation, and the full build/review/response/merge/report loop are all available now.
+Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, and ADRs are all available now.
 
 ## Installation
 
@@ -295,17 +296,37 @@ The **BRAINSTORM PLAN REPORT** section on a task's detail pane generates a summa
 
 You can generate this report at any point in the workflow, not only once the task reaches READY — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed so far, never fabricating what hasn't happened yet. The report always states **Human decision required: YES**: it's a plan to review, not an approved decision — see "Reviews and human responsibility" below.
 
-## Feature planning — planned
+## Feature planning — partially planned
 
 The planning path is:
 
 ```text
-idea → brainstorm → architecture → ADR → implementation plan → coding tasks
+idea → brainstorm → architecture → ADR       ) available now — see "Architecture decisions" below
+→ implementation plan → coding tasks         — planned
 ```
 
-Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Create an Architecture Decision Record only after you choose an option. The ADR records context, alternatives, decision, consequences, risks, and follow-up. Promote the approved decision into small implementation phases, then create linked coding tasks with explicit acceptance criteria.
+Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Create an Architecture Decision Record only after you choose an option.
 
-The links matter: a future reviewer should be able to move from a code task back to the plan, ADR, experiment, and original problem.
+Promoting an approved decision into implementation phases and linked coding tasks with explicit acceptance criteria is not implemented yet. The links that would matter — a future reviewer moving from a code task back to the plan, ADR, experiment, and original problem — are not yet tracked as a relationship; an ADR's `relatedTaskIds` field is a loose, human-curated list you fill in yourself, not an enforced link.
+
+### Architecture decisions
+
+In **08 — Decisions**, select a task and fill in an ADR:
+
+1. **Title** — a short name for the decision.
+2. **Context** — the situation that makes a decision necessary.
+3. **Options considered** — what was on the table.
+4. **Decision** — what was chosen.
+5. **Reasons** — why.
+6. **Consequences** — what follows from it.
+7. Optionally: **Risks**, **Rejected alternatives**, **Required follow-up**.
+8. Select **Create ADR**.
+
+Each ADR is numbered sequentially within its project (`ADR-0001`, `ADR-0002`, ...) — one running log across the project's history, not per task. You can change its **status** (Proposed / Accepted / Rejected / Superseded) at any time from the dropdown on its card; every other field can be edited the same way (via the API today — a dedicated edit-in-place UI beyond status is not built yet).
+
+ADRs are stored only in this application's local database. Nothing is ever written into your registered repository automatically — if you want an ADR committed as a Markdown file in the repo itself, that would be a separate, explicit, human-approved action, and is not implemented.
+
+A build's pre-PR report (see "Build and review" below) automatically surfaces any ADR that either originated from that build's task or names it in `relatedTaskIds`.
 
 ## Bug fixing — partially planned
 
@@ -448,7 +469,7 @@ The **PRE-PR REPORT** section on a build's detail pane generates a summary on de
 - a findings breakdown: how many were accepted, rejected, or are still unresolved;
 - every validation command's result, labeled by whether it ran before or after the merge;
 - the merge's current state and target branch; and
-- architecture decisions — reported as unavailable, since ADRs are not implemented yet (never fabricated).
+- architecture decisions — any ADR linked to the build's task (see "Architecture decisions" under "Feature planning" above), or an honest empty list when none are linked (never fabricated).
 
 The report always states **Human review required: YES** and a recommended next action. It is a summary to help you review, not a substitute for your own judgment — see "Reviews and human responsibility" below.
 

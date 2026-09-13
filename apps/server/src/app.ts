@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { ClaudeAdapter, CodexAdapter, type AgentAdapter, type AgentProvider } from "@aiew/agents";
 import { WorktreeService } from "@aiew/git";
 import { createDatabase } from "./db/database.js";
+import { registerAdrRoutes } from "./routes/adrs.js";
 import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerBuildRoutes } from "./routes/build-runs.js";
 import { registerProjectRoutes } from "./routes/projects.js";
@@ -41,6 +42,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   registerWorktreeRoutes(app, db, worktreeService, worktreeUsageManager);
   registerBuildRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
   registerUsageSafetyRoutes(app, usageSafety);
+  registerAdrRoutes(app, db);
 
   return app;
 }

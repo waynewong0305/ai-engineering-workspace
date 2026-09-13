@@ -590,10 +590,29 @@ describe("pre-PR report", () => {
     expect(report.findings.unresolved).toHaveLength(2);
     expect(report.merge.status).toBe("MERGED");
     expect(report.merge.targetBranch).toBe("main");
-    expect(report.architectureDecisions).toContain("not implemented yet");
+    expect(report.architectureDecisions).toEqual([]);
     expect(report.humanReviewRequired).toBe(true);
     expect(typeof report.recommendedNextAction).toBe("string");
     expect(report.recommendedNextAction.length).toBeGreaterThan(0);
+  });
+
+  it("includes an ADR in the report when it originates from the build's task or names it in relatedTaskIds", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+    const adr = (await app.inject({
+      method: "POST", url: `/api/tasks/${build.task.id}/adrs`,
+      payload: {
+        title: "Use explicit tenant-to-shard mapping", context: "Context.", optionsConsidered: "Options.",
+        decision: "Explicit mapping.", reasons: "Reasons.", consequences: "Consequences.",
+      },
+    })).json();
+
+    const response = await app.inject({ method: "GET", url: `/api/builds/${build.id}/report` });
+    const report = response.json();
+    expect(report.architectureDecisions).toEqual([
+      { id: adr.id, number: 1, title: "Use explicit tenant-to-shard mapping", status: "PROPOSED", decision: "Explicit mapping." },
+    ]);
   });
 
   it("404s for a build that doesn't exist", async () => {
