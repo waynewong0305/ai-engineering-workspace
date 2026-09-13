@@ -16,6 +16,7 @@ import {
 } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
 import { BrainstormWorkflow } from "../services/brainstorm-workflow.js";
+import { UsageSafetyService } from "../services/usage-safety.js";
 
 type CreateTaskBody = {
   projectId?: unknown;
@@ -46,8 +47,9 @@ export function registerTaskRoutes(
   db: WorkspaceDatabase,
   adapters: Map<AgentProvider, AgentAdapter>,
   manager: AgentRunManager,
+  usageSafety = new UsageSafetyService(db),
 ) {
-  const workflow = new BrainstormWorkflow(db, manager, adapters);
+  const workflow = new BrainstormWorkflow(db, manager, adapters, usageSafety);
 
   app.get<{ Querystring: { projectId?: string } }>("/api/tasks", async (request) => {
     const query = db.select().from(tasks);
@@ -123,12 +125,32 @@ export function registerTaskRoutes(
     if (db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, task.id)).get()?.status !== "DRAFT") {
       return reply.code(409).send({ message: "The task was already started while provider readiness was checked." });
     }
+    const usageDecision = providers
+      .map((provider) => usageSafety.evaluate(provider, { combined: true }))
+      .find((decision) => !decision.allowed);
+    if (usageDecision) {
+      return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
     void workflow.start(task.id, {
       models: { CLAUDE: text(request.body?.claudeModel) ?? undefined, CODEX: text(request.body?.codexModel) ?? undefined },
       claudeEffort: text(request.body?.claudeEffort) ?? undefined,
       timeoutMs,
     });
     return reply.code(202).send({ message: "Independent analyses are starting.", taskId: task.id });
+  });
+
+  app.post<{ Params: { id: string } }>("/api/tasks/:id/resume", async (request, reply) => {
+    const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
+    if (!task) return reply.code(404).send({ message: "Task not found." });
+    if (task.status !== "CHECKPOINTED") return reply.code(409).send({ message: "Only a checkpointed task can be resumed." });
+    const usageDecision = (["CLAUDE", "CODEX"] as const)
+      .map((provider) => usageSafety.evaluate(provider, { combined: true }))
+      .find((decision) => !decision.allowed);
+    if (usageDecision) {
+      return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    void workflow.resume(task.id);
+    return reply.code(202).send({ message: "Resuming the checkpointed workflow.", taskId: task.id });
   });
 
   app.post<{ Params: { id: string } }>("/api/tasks/:id/cancel", async (request, reply) => {

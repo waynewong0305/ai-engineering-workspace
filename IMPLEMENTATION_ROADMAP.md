@@ -135,6 +135,18 @@ Goal: permit scoped modifications without touching the developer's active checko
 
 Exit gate: task-specific Claude and Codex worktrees can coexist, generated names are editable and renameable without silently renaming branches, and cleanup refuses to discard uncommitted or in-use work. Met, with one known gap: deregistration does not yet block on linked managed worktrees (tracked for a Phase 5-adjacent follow-up).
 
+## Provider usage safety (cross-cutting, added 2026-09-13)
+
+Not one of the phases above: a safety requirement that must guard every phase's provider-consuming actions. See `IMPLEMENTATION_STATUS.md` for the full completion record.
+
+- [x] Provider-neutral usage data model, thresholds, and status computation
+- [x] Manual snapshot and rate-limit-error data sources (no automatic CLI-based source exists today)
+- [x] Preflight checks wired into the single read-only agent run and the combined brainstorm workflow, rechecked before every provider call
+- [x] Checkpoint/resume workflow state (`CHECKPOINTED`) that preserves completed work and requires acknowledgement or a fresh reading to continue
+- [x] Usage API and UI, including a pre-action warning and manual-snapshot controls
+
+Exit gate: met. A provider-consuming action cannot start while its provider is reliably exhausted or at the checkpoint threshold without an explicit override, and unknown usage in a combined workflow requires acknowledgement rather than being silently treated as safe.
+
 ## Phase 5 — Build, validate, and review
 
 Goal: run one builder and one independent reviewer through a bounded review loop.

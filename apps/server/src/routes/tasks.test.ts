@@ -110,6 +110,21 @@ async function createTestRepository() {
   return repositoryPath;
 }
 
+/**
+ * Combined, multi-stage workflows default to requiring an explicit human acknowledgement before
+ * spending provider usage when that usage is unknown (see usage-safety.test.ts and
+ * IMPLEMENTATION_STATUS.md). These fixtures have no usage readings at all, so tests that start a
+ * brainstorm workflow must acknowledge both providers first, exactly as a human would in the UI.
+ */
+async function acknowledgeUnknownUsage(app: ReturnType<typeof buildApp>) {
+  for (const provider of ["CLAUDE", "CODEX"] as const) {
+    await app.inject({
+      method: "POST", url: "/api/usage/acknowledge",
+      payload: { provider, status: "UNAVAILABLE", userAction: "PROCEED", reason: "No usage data yet in this test fixture." },
+    });
+  }
+}
+
 describe("brainstorm task routes", () => {
   it("runs independent analyses and reciprocal reviews, then persists comparison and evidence", async () => {
     const app = buildApp({
@@ -131,6 +146,7 @@ describe("brainstorm task routes", () => {
     const created = createResponse.json();
     expect(created).toMatchObject({ status: "DRAFT", webAccessPolicy: "DISABLED", webAccessDecidedBy: "USER" });
 
+    await acknowledgeUnknownUsage(app);
     const startResponse = await app.inject({ method: "POST", url: `/api/tasks/${created.id}/start`, payload: {} });
     expect(startResponse.statusCode).toBe(202);
     let task;
@@ -223,6 +239,7 @@ describe("brainstorm task routes", () => {
       },
     })).json();
 
+    await acknowledgeUnknownUsage(app);
     const responses = await Promise.all([
       app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} }),
       app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} }),

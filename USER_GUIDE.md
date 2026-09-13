@@ -23,8 +23,9 @@ The current implementation can:
 - run Claude and Codex analyses independently, then cross-review in both directions;
 - retain structured and raw responses and compare consensus, disagreements, questions, missing evidence, and experiments; and
 - add or correct facts, assumptions, questions, decisions, and experiment results on a persistent evidence board;
-- preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout; and
-- inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation.
+- preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout;
+- inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation; and
+- check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement.
 
 Implementation/review loops, ADRs, and reports are planned but not enabled yet. Brainstorming, architecture comparison, and worktree isolation are available now.
 
@@ -366,6 +367,27 @@ AI Engineering Workspace uses separate task worktrees so a builder cannot overwr
 If a worktree creation is interrupted (for example, a Claude or Codex worktree that failed partway through), the record is not deleted or discarded automatically. If Git no longer lists a live worktree at its path, requesting removal recovers the record — clearing the stale entry so the task/provider slot is free again — without ever discarding real work: a real, live worktree with uncommitted, staged, locked, prunable, or in-use state is still refused.
 
 An active usage lease (recorded when a future build workflow uses a worktree) that outlives its process is labeled **STALE** after 6 hours and can be released explicitly from the inspector; nothing is released automatically.
+
+## Usage safety
+
+**05 — Usage safety** tracks Claude's and Codex's own provider allowance separately from everything else in this workspace. This is not the same thing as an API's tokens-per-minute rate limit: it is the Claude Code / ChatGPT plan allowance a run can exhaust (for example, Claude's rolling 5-hour window, or a weekly plan allowance), and it is checked before every provider-consuming action so you never spend it blind.
+
+Neither the inspected Claude Code CLI nor the inspected Codex CLI exposes a documented local command that reports exact usage percentages, so:
+
+- **Refresh** always reports that no automatic reading is available. It never shows a fabricated number.
+- Use **Submit manual snapshot** to record what the provider's own interface (claude.ai, ChatGPT) shows you. Manual readings are always labeled **MANUAL** and **ESTIMATED**, with the time you entered them, so they are never confused with an automatic reading.
+- If a provider process itself reports a rate-limit refusal, the workspace makes a best-effort attempt to parse it and records that provider as exhausted automatically. This parsing is heuristic; treat it as a helpful signal, not a certainty, and re-check with a manual snapshot if in doubt.
+
+Each provider/window card shows used and remaining percentage, when it resets, its source, when it was last updated, and one of six states: **Safe**, **Warning**, **Checkpoint required**, **Exhausted**, **Unavailable**, or **Stale**. State is always shown as text, never color alone.
+
+Before **Start independent analyses**, the brainstorm screen shows both providers' current state. If either provider is unknown, stale, at the checkpoint threshold, or exhausted:
+
+- **Exhausted** blocks the action outright. There is no override; wait for reset or record a fresh reading once you have confirmed capacity.
+- **Checkpoint required** or **unknown/stale** usage shows an explanation and an **Acknowledge and continue** button. Acknowledging is a deliberate action, recorded with the provider, the reading, your action, and the time, and only covers that specific situation — it expires after 15 minutes by default.
+
+If usage crosses the checkpoint threshold while a brainstorm task is already running, the workflow pauses rather than continuing blind: the task shows status **CHECKPOINTED**, both completed independent analyses remain saved, and no further provider process starts. Resolve the checkpoint (acknowledge, wait for reset, or record a fresh safe reading), then select **Resume workflow**. Nothing already completed is re-run.
+
+Adjust **Warning threshold %** and **Checkpoint threshold %** under Safety thresholds; both apply to Claude and Codex together. The defaults are 75% and 90%.
 
 ## Reviews and human responsibility — planned
 

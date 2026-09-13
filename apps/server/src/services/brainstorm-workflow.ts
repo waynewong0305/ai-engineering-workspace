@@ -19,6 +19,7 @@ import {
   type TaskRecord,
 } from "../db/schema.js";
 import { AgentRunManager } from "./agent-run-manager.js";
+import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
 
 const ANALYSIS_VERSION = "brainstorm-analysis:v1";
 const REVIEW_VERSION = "cross-review:v1";
@@ -164,11 +165,14 @@ function compare(analyses: BrainstormAnalysis[], reviews: CrossReview[]): TaskCo
   };
 }
 
+type StoredAnalysis = { provider: AgentProvider; data: BrainstormAnalysis | null };
+
 export class BrainstormWorkflow {
   constructor(
     private readonly db: WorkspaceDatabase,
     private readonly manager: AgentRunManager,
     private readonly adapters: Map<AgentProvider, AgentAdapter>,
+    private readonly usageSafety?: UsageSafetyService,
   ) {}
 
   async start(taskId: string, options: WorkflowOptions = {}) {
@@ -179,55 +183,129 @@ export class BrainstormWorkflow {
     this.updateStatus(task.id, "ANALYZING");
 
     try {
-      const analysisPrompt = replace(analysisTemplate, {
-        TITLE: task.title,
-        TYPE: task.type,
-        RISK_LEVEL: task.riskLevel,
-        PROJECT_CONTEXT: project.projectContext ?? "No project context was supplied.",
-        PROBLEM_STATEMENT: task.problemStatement,
-      });
-      const analysisRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) =>
-        this.run(task, project.repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options),
-      ));
-      if (this.isCancelled(task.id)) return;
-      const analyses = analysisRuns.map((run) => this.storeAnalysis(task, run));
-      if (analysisRuns.some((run) => run.status !== "COMPLETED") || analyses.some((entry) => !entry.data)) {
-        return this.fail(task.id, "One or more independent analyses failed or returned invalid structured output.");
-      }
-
-      this.updateStatus(task.id, "CROSS_REVIEW");
-      const byProvider = new Map(analyses.map((entry) => [entry.provider, entry]));
-      const reviewRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) => {
-        const targetProvider = provider === "CLAUDE" ? "CODEX" : "CLAUDE";
-        const target = byProvider.get(targetProvider)!;
-        const prompt = replace(reviewTemplate, {
-          TITLE: task.title,
-          PROBLEM_STATEMENT: task.problemStatement,
-          TARGET_PROVIDER: targetProvider,
-          ANALYSIS: JSON.stringify(target.data, null, 2),
-        });
-        return this.run(task, project.repositoryPath, provider, "CROSS_REVIEW", targetProvider, REVIEW_VERSION, prompt, options);
-      }));
-      if (this.isCancelled(task.id)) return;
-      const reviews = reviewRuns.map((run) => this.storeReview(task, run));
-      if (reviewRuns.some((run) => run.status !== "COMPLETED") || reviews.some((entry) => !entry.data)) {
-        return this.fail(task.id, "One or more cross-reviews failed or returned invalid structured output.");
-      }
-
-      const comparison = compare(
-        analyses.map((entry) => entry.data!),
-        reviews.map((entry) => entry.data!),
-      );
-      this.db.insert(taskComparisons).values({ taskId: task.id, content: comparison, generatedAt: new Date().toISOString() }).run();
-      this.updateStatus(task.id, "READY");
+      const analyses = await this.runAnalysisPhase(task, project.repositoryPath, project.projectContext, options);
+      if (!analyses) return;
+      await this.runCrossReviewPhase(task, project.repositoryPath, analyses, options);
     } catch (error) {
-      this.fail(task.id, error instanceof Error ? error.message : "The brainstorming workflow failed.");
+      this.handleWorkflowError(task.id, error);
     }
+  }
+
+  /**
+   * Resume a task paused by a usage-safety checkpoint. If both independent analyses already
+   * completed and persisted before the checkpoint, nothing already done is re-run or lost: the
+   * workflow proceeds straight to cross-review (rechecking usage again first). Otherwise it
+   * restarts the analysis phase, which is safe to redo since a checkpoint before analysis means
+   * no provider run for this task had started.
+   */
+  async resume(taskId: string, options: WorkflowOptions = {}) {
+    const task = this.db.select().from(tasks).where(eq(tasks.id, taskId)).get();
+    if (!task || task.status !== "CHECKPOINTED") return;
+    const project = this.db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+    if (!project) return this.fail(task.id, "The registered project no longer exists.");
+
+    try {
+      const existing = this.db.select().from(taskArtifacts).where(and(
+        eq(taskArtifacts.taskId, task.id), eq(taskArtifacts.kind, "ANALYSIS"),
+      )).all();
+      const byProvider = new Map(existing.map((artifact) => [artifact.provider, artifact.structuredData as BrainstormAnalysis | null]));
+      const analyses: StoredAnalysis[] = (["CLAUDE", "CODEX"] as const).map((provider) => ({ provider, data: byProvider.get(provider) ?? null }));
+      if (analyses.every((entry) => entry.data)) {
+        this.updateStatus(task.id, "CROSS_REVIEW");
+        await this.runCrossReviewPhase(task, project.repositoryPath, analyses, options);
+      } else {
+        this.updateStatus(task.id, "ANALYZING");
+        const restarted = await this.runAnalysisPhase(task, project.repositoryPath, project.projectContext, options);
+        if (!restarted) return;
+        await this.runCrossReviewPhase(task, project.repositoryPath, restarted, options);
+      }
+    } catch (error) {
+      this.handleWorkflowError(task.id, error);
+    }
+  }
+
+  /**
+   * Check every provider this phase is about to call, together, before starting any of them.
+   * Without this, Promise.all lets a ready provider's process actually start and spend usage even
+   * though its sibling call is refused a moment later — wasting a call whose result can never be
+   * used once the phase as a whole cannot complete. The per-call check inside `run()` remains as
+   * well, since usage can still change while a phase is already in flight.
+   */
+  private assertPhaseReady(providers: readonly AgentProvider[]) {
+    for (const provider of providers) this.usageSafety?.assertReady(provider, { combined: true });
+  }
+
+  private async runAnalysisPhase(
+    task: TaskRecord,
+    repositoryPath: string,
+    projectContext: string | null,
+    options: WorkflowOptions,
+  ): Promise<StoredAnalysis[] | null> {
+    this.assertPhaseReady(["CLAUDE", "CODEX"]);
+    const analysisPrompt = replace(analysisTemplate, {
+      TITLE: task.title,
+      TYPE: task.type,
+      RISK_LEVEL: task.riskLevel,
+      PROJECT_CONTEXT: projectContext ?? "No project context was supplied.",
+      PROBLEM_STATEMENT: task.problemStatement,
+    });
+    const analysisRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) =>
+      this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options),
+    ));
+    if (this.isCancelled(task.id)) return null;
+    const analyses = analysisRuns.map((run) => this.storeAnalysis(task, run));
+    if (analysisRuns.some((run) => run.status !== "COMPLETED") || analyses.some((entry) => !entry.data)) {
+      this.fail(task.id, "One or more independent analyses failed or returned invalid structured output.");
+      return null;
+    }
+    this.updateStatus(task.id, "CROSS_REVIEW");
+    return analyses;
+  }
+
+  private async runCrossReviewPhase(
+    task: TaskRecord,
+    repositoryPath: string,
+    analyses: StoredAnalysis[],
+    options: WorkflowOptions,
+  ) {
+    this.assertPhaseReady(["CLAUDE", "CODEX"]);
+    const byProvider = new Map(analyses.map((entry) => [entry.provider, entry]));
+    const reviewRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) => {
+      const targetProvider = provider === "CLAUDE" ? "CODEX" : "CLAUDE";
+      const target = byProvider.get(targetProvider)!;
+      const prompt = replace(reviewTemplate, {
+        TITLE: task.title,
+        PROBLEM_STATEMENT: task.problemStatement,
+        TARGET_PROVIDER: targetProvider,
+        ANALYSIS: JSON.stringify(target.data, null, 2),
+      });
+      return this.run(task, repositoryPath, provider, "CROSS_REVIEW", targetProvider, REVIEW_VERSION, prompt, options);
+    }));
+    if (this.isCancelled(task.id)) return;
+    const reviews = reviewRuns.map((run) => this.storeReview(task, run));
+    if (reviewRuns.some((run) => run.status !== "COMPLETED") || reviews.some((entry) => !entry.data)) {
+      return this.fail(task.id, "One or more cross-reviews failed or returned invalid structured output.");
+    }
+
+    const comparison = compare(
+      analyses.map((entry) => entry.data!),
+      reviews.map((entry) => entry.data!),
+    );
+    this.db.insert(taskComparisons).values({ taskId: task.id, content: comparison, generatedAt: new Date().toISOString() }).run();
+    this.updateStatus(task.id, "READY");
+  }
+
+  private handleWorkflowError(taskId: string, error: unknown) {
+    if (error instanceof UsageCheckpointError) {
+      this.checkpoint(taskId, error.message);
+      return;
+    }
+    this.fail(taskId, error instanceof Error ? error.message : "The brainstorming workflow failed.");
   }
 
   async cancel(taskId: string) {
     const task = this.db.select().from(tasks).where(eq(tasks.id, taskId)).get();
-    if (!task || !["ANALYZING", "CROSS_REVIEW"].includes(task.status)) return false;
+    if (!task || !["ANALYZING", "CROSS_REVIEW", "CHECKPOINTED"].includes(task.status)) return false;
     const runs = this.db.select().from(agentRuns).where(and(
       eq(agentRuns.taskId, taskId),
       inArray(agentRuns.status, ["QUEUED", "RUNNING"]),
@@ -249,6 +327,10 @@ export class BrainstormWorkflow {
   ) {
     const adapter = this.adapters.get(provider);
     if (!adapter) throw new Error(`${provider} adapter is unavailable.`);
+    // Recheck usage immediately before every provider process this workflow starts, not only once
+    // at the start of the workflow: this call site covers both independent-analysis and
+    // cross-review runs for both providers.
+    this.usageSafety?.assertReady(provider, { combined: true });
     const now = new Date().toISOString();
     const requestedModel = options.models?.[provider]?.trim() || "(provider default)";
     const run: AgentRunRecord = {
@@ -322,6 +404,16 @@ export class BrainstormWorkflow {
 
   private fail(taskId: string, message: string) {
     this.db.update(tasks).set({ status: "FAILED", errorMessage: message, updatedAt: new Date().toISOString() }).where(eq(tasks.id, taskId)).run();
+  }
+
+  /**
+   * Pause for a usage-safety checkpoint rather than fail. Whatever analyses/reviews already
+   * persisted (via storeAnalysis/storeReview, which run before the next stage starts) remain
+   * intact; `resume` picks the workflow back up once a fresh reading or an explicit override
+   * clears the checkpoint.
+   */
+  private checkpoint(taskId: string, message: string) {
+    this.db.update(tasks).set({ status: "CHECKPOINTED", errorMessage: message, updatedAt: new Date().toISOString() }).where(eq(tasks.id, taskId)).run();
   }
 
   private isCancelled(taskId: string) {

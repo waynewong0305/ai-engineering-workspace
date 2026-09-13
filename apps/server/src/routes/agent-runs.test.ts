@@ -87,6 +87,39 @@ describe("agent run routes", () => {
     ]);
   });
 
+  it("refuses to start a run when the provider is exhausted, and never invokes the adapter", async () => {
+    const adapter = new FakeCodexAdapter();
+    let runCalls = 0;
+    const originalRun = adapter.run.bind(adapter);
+    adapter.run = (input) => {
+      runCalls += 1;
+      return originalRun(input);
+    };
+    const app = buildApp({ databasePath: ":memory:", adapters: [adapter] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const snapshot = await app.inject({
+      method: "POST", url: "/api/usage/manual-snapshot",
+      payload: { provider: "CODEX", windowId: "5H", windowLabel: "5-hour window", usedPercent: 100 },
+    });
+    expect(snapshot.statusCode).toBe(201);
+
+    const blocked = await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: { projectId: project.id, provider: "CODEX", prompt: "Explain this repository." },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: "USAGE_CHECKPOINT" });
+    expect(runCalls).toBe(0);
+    expect((await app.inject({ method: "GET", url: "/api/agent-runs" })).json()).toEqual([]);
+
+    const audit = (await app.inject({ method: "GET", url: "/api/usage/audit?provider=CODEX" })).json();
+    expect(audit[0]).toMatchObject({ eventType: "CHECKPOINT_TRIGGERED", status: "EXHAUSTED" });
+  });
+
   it("rejects an unregistered project", async () => {
     const app = buildApp({ databasePath: ":memory:", adapters: [new FakeCodexAdapter()] });
     apps.push(app);

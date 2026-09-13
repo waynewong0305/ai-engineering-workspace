@@ -54,7 +54,7 @@ type AgentRun = {
   durationMs: number | null;
 };
 
-type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED";
+type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 type BrainstormAnalysis = {
   summary: string;
   facts: string[];
@@ -146,6 +146,39 @@ type ManagedWorktree = {
   inspectionError: string | null;
 };
 
+type UsageStatus = "SAFE" | "WARNING" | "CHECKPOINT_REQUIRED" | "EXHAUSTED" | "UNAVAILABLE" | "STALE";
+type UsageWindowView = {
+  provider: AgentProvider;
+  windowId: string;
+  windowLabel: string;
+  windowDurationMs: number | null;
+  usedPercent: number | null;
+  remainingPercent: number | null;
+  resetAt: string | null;
+  timeUntilReset: string | null;
+  source: "CLI_REPORTED" | "MANUAL" | "RATE_LIMIT_ERROR" | null;
+  sourceConfidence: "EXACT" | "ESTIMATED" | null;
+  lastRefreshedAt: string | null;
+  freshness: "FRESH" | "STALE" | "UNKNOWN";
+  status: UsageStatus;
+  readingId: string | null;
+};
+type UsagePolicy = {
+  warningThresholdPercent: number;
+  checkpointThresholdPercent: number;
+  staleAfterMs: number;
+  acknowledgementTtlMs: number;
+};
+type UsageDecision = {
+  allowed: boolean;
+  requiresAcknowledgement: boolean;
+  status: UsageStatus;
+  provider: AgentProvider;
+  windowId: string;
+  readingId: string | null;
+  reason: string;
+};
+
 const health = ref<HealthResponse | null>(null);
 const loading = ref(true);
 const healthError = ref("");
@@ -211,6 +244,133 @@ const worktreeDrafts = reactive<Record<AgentProvider, { path: string; branchName
   CLAUDE: { path: "", branchName: "", baseRef: "" },
   CODEX: { path: "", branchName: "", baseRef: "" },
 });
+
+const usage = ref<Record<AgentProvider, UsageWindowView[]>>({ CLAUDE: [], CODEX: [] });
+const usagePolicy = ref<UsagePolicy | null>(null);
+const usageError = ref("");
+const usageMessage = ref("");
+const usageLoading = ref(false);
+const refreshingProvider = ref<AgentProvider | null>(null);
+const manualSnapshotForm = reactive<Record<AgentProvider, { windowId: string; windowLabel: string; usedPercent: string; resetAt: string }>>({
+  CLAUDE: { windowId: "5H", windowLabel: "5-hour window", usedPercent: "", resetAt: "" },
+  CODEX: { windowId: "5H", windowLabel: "5-hour window", usedPercent: "", resetAt: "" },
+});
+const policyForm = reactive({ warningThresholdPercent: "", checkpointThresholdPercent: "" });
+const usageBlockedDecision = ref<UsageDecision | null>(null);
+const acknowledging = ref(false);
+
+function providerLabel(provider: AgentProvider) {
+  return provider === "CLAUDE" ? "Claude Code" : "Codex";
+}
+
+const USAGE_STATUS_RANK: Record<UsageStatus, number> = { SAFE: 0, WARNING: 1, UNAVAILABLE: 2, STALE: 2, CHECKPOINT_REQUIRED: 3, EXHAUSTED: 4 };
+function worstUsageStatus(provider: AgentProvider): UsageStatus {
+  const views = usage.value[provider];
+  if (!views.length) return "UNAVAILABLE";
+  return views.reduce((worst, view) => (USAGE_STATUS_RANK[view.status] > USAGE_STATUS_RANK[worst] ? view.status : worst), "SAFE" as UsageStatus);
+}
+
+function usageStatusLabel(status: UsageStatus) {
+  return {
+    SAFE: "Safe", WARNING: "Warning", CHECKPOINT_REQUIRED: "Checkpoint required",
+    EXHAUSTED: "Exhausted", UNAVAILABLE: "Unavailable", STALE: "Stale",
+  }[status];
+}
+
+async function loadUsage() {
+  usageLoading.value = true;
+  usageError.value = "";
+  try {
+    const [usageResponse, policyResponse] = await Promise.all([fetch("/api/usage"), fetch("/api/usage/policy")]);
+    if (!usageResponse.ok) throw new Error("Could not load provider usage.");
+    usage.value = await usageResponse.json();
+    if (policyResponse.ok) {
+      usagePolicy.value = await policyResponse.json();
+      policyForm.warningThresholdPercent = String(usagePolicy.value!.warningThresholdPercent);
+      policyForm.checkpointThresholdPercent = String(usagePolicy.value!.checkpointThresholdPercent);
+    }
+  } catch (error) {
+    usageError.value = error instanceof Error ? error.message : "Could not load provider usage.";
+  } finally {
+    usageLoading.value = false;
+  }
+}
+
+async function refreshUsage(provider: AgentProvider) {
+  refreshingProvider.value = provider;
+  usageError.value = "";
+  try {
+    const response = await fetch(`/api/usage/${provider}/refresh`, { method: "POST" });
+    const result = await response.json();
+    usageMessage.value = result.message ?? "Refreshed.";
+    await loadUsage();
+  } catch (error) {
+    usageError.value = error instanceof Error ? error.message : "Could not refresh usage.";
+  } finally {
+    refreshingProvider.value = null;
+  }
+}
+
+async function submitManualSnapshot(provider: AgentProvider) {
+  usageError.value = "";
+  usageMessage.value = "";
+  const draft = manualSnapshotForm[provider];
+  const usedPercent = Number(draft.usedPercent);
+  const response = await fetch("/api/usage/manual-snapshot", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider, windowId: draft.windowId, windowLabel: draft.windowLabel, usedPercent,
+      resetAt: draft.resetAt ? new Date(draft.resetAt).toISOString() : null,
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) usageError.value = result.message ?? "Could not submit the manual snapshot.";
+  else {
+    usageMessage.value = `Manual ${providerLabel(provider)} snapshot recorded. Manual readings are estimates you entered, not automatic provider data.`;
+    await loadUsage();
+  }
+}
+
+async function updateUsagePolicy() {
+  usageError.value = "";
+  const response = await fetch("/api/usage/policy", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      warningThresholdPercent: Number(policyForm.warningThresholdPercent),
+      checkpointThresholdPercent: Number(policyForm.checkpointThresholdPercent),
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) usageError.value = result.message ?? "Could not update the policy.";
+  else {
+    usagePolicy.value = result;
+    usageMessage.value = "Usage safety thresholds updated.";
+  }
+}
+
+async function acknowledgeUsageAndRetryStart() {
+  const decision = usageBlockedDecision.value;
+  if (!decision) return;
+  acknowledging.value = true;
+  try {
+    await fetch("/api/usage/acknowledge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: decision.provider, status: decision.status, windowId: decision.windowId,
+        relatedReadingId: decision.readingId,
+        userAction: decision.status === "CHECKPOINT_REQUIRED" ? "OVERRIDE" : "PROCEED",
+        reason: `Human acknowledged from the UI: ${decision.reason}`,
+      }),
+    });
+    usageBlockedDecision.value = null;
+    await startBrainstorm();
+  } finally {
+    acknowledging.value = false;
+  }
+}
 const form = reactive({
   name: "",
   repositoryPath: "",
@@ -490,6 +650,7 @@ async function startBrainstorm() {
   startingTask.value = true;
   taskError.value = "";
   taskMessage.value = "";
+  usageBlockedDecision.value = null;
   try {
     const response = await fetch(`/api/tasks/${selectedTask.value.id}/start`, {
       method: "POST",
@@ -501,11 +662,36 @@ async function startBrainstorm() {
       }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.message ?? "Could not start the task.");
+    if (!response.ok) {
+      if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      throw new Error(result.message ?? "Could not start the task.");
+    }
     taskMessage.value = "Both independent analyses are starting. Cross-reviews will follow only after both finish.";
     await selectTask(selectedTask.value.id);
   } catch (error) {
     taskError.value = error instanceof Error ? error.message : "Could not start the task.";
+  } finally {
+    startingTask.value = false;
+  }
+}
+
+async function resumeBrainstorm() {
+  if (!selectedTask.value) return;
+  startingTask.value = true;
+  taskError.value = "";
+  taskMessage.value = "";
+  usageBlockedDecision.value = null;
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/resume`, { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      throw new Error(result.message ?? "Could not resume the task.");
+    }
+    taskMessage.value = "Resuming the checkpointed workflow.";
+    await selectTask(selectedTask.value.id);
+  } catch (error) {
+    taskError.value = error instanceof Error ? error.message : "Could not resume the task.";
   } finally {
     startingTask.value = false;
   }
@@ -778,7 +964,7 @@ async function deregisterProject(project: Project) {
   }
 }
 
-onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks()]));
+onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage()]));
 onUnmounted(() => {
   eventSource?.close();
   if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
@@ -802,9 +988,10 @@ onUnmounted(() => {
         <a class="nav-item" href="#agent-runs"><span>02</span>Agent runs</a>
         <a class="nav-item" href="#brainstorm"><span>03</span>Brainstorm</a>
         <a class="nav-item" href="#worktrees"><span>04</span>Worktrees</a>
-        <a class="nav-item disabled" href="#build" aria-disabled="true"><span>05</span>Build</a>
-        <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>06</span>Reviews</a>
-        <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>07</span>Decisions</a>
+        <a class="nav-item" href="#usage-safety"><span>05</span>Usage safety</a>
+        <a class="nav-item disabled" href="#build" aria-disabled="true"><span>06</span>Build</a>
+        <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>07</span>Reviews</a>
+        <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>08</span>Decisions</a>
       </nav>
 
       <div class="sidebar-foot">
@@ -1163,6 +1350,19 @@ onUnmounted(() => {
               <div :class="{ current: selectedTask.status === 'READY', complete: selectedTask.status === 'READY' }"><span>04</span><strong>Compare</strong></div>
             </div>
 
+            <div v-if="usageBlockedDecision" class="usage-checkpoint-block" role="alert">
+              <span>USAGE SAFETY CHECKPOINT</span>
+              <strong>{{ usageBlockedDecision.provider === 'CLAUDE' ? 'Claude Code' : 'Codex' }} · {{ usageStatusLabel(usageBlockedDecision.status) }}</strong>
+              <p>{{ usageBlockedDecision.reason }}</p>
+              <button
+                v-if="usageBlockedDecision.requiresAcknowledgement"
+                class="danger-outline-button" type="button"
+                :disabled="acknowledging"
+                @click="acknowledgeUsageAndRetryStart"
+              >{{ acknowledging ? "Acknowledging…" : "Acknowledge and continue" }}</button>
+              <p v-else class="form-hint">A reliably exhausted provider cannot be overridden. Wait for reset, or record a fresh reading once capacity is confirmed.</p>
+            </div>
+
             <div class="web-audit">
               <span>WEB DECISION</span>
               <strong>{{ selectedTask.webAccessPermitted ? "Allowed for this task" : "Disabled" }}</strong>
@@ -1185,6 +1385,12 @@ onUnmounted(() => {
                 <span><i :class="['status-light', agentHealth.CLAUDE?.authenticated ? 'ok' : 'missing']"></i>Claude {{ agentHealth.CLAUDE?.authenticated ? "ready" : "not ready" }}</span>
                 <span><i :class="['status-light', agentHealth.CODEX?.authenticated ? 'ok' : 'missing']"></i>Codex {{ agentHealth.CODEX?.authenticated ? "ready" : "not ready" }}</span>
               </div>
+              <p class="usage-preflight-note">
+                <strong>Before you spend usage:</strong>
+                Claude is <em>{{ usageStatusLabel(worstUsageStatus('CLAUDE')) }}</em>,
+                Codex is <em>{{ usageStatusLabel(worstUsageStatus('CODEX')) }}</em>.
+                Starting spends usage for both providers across up to four runs.
+              </p>
               <button
                 class="primary-button"
                 type="button"
@@ -1200,6 +1406,20 @@ onUnmounted(() => {
               <div><span>Claude review</span><strong>{{ runStatus('CLAUDE', 'CROSS_REVIEW') }}</strong></div>
               <div><span>Codex review</span><strong>{{ runStatus('CODEX', 'CROSS_REVIEW') }}</strong></div>
               <button class="ghost-button" type="button" @click="cancelBrainstorm">Cancel workflow</button>
+            </div>
+
+            <div v-if="selectedTask.status === 'CHECKPOINTED'" class="live-stages checkpointed">
+              <p>
+                This workflow paused at a usage-safety checkpoint rather than continuing blind. Everything completed so
+                far is saved. Resolve the checkpoint above (acknowledge, wait for reset, or record a fresh reading), then
+                resume — nothing already completed is re-run.
+              </p>
+              <div class="provider-pair">
+                <button class="primary-button" type="button" :disabled="startingTask" @click="resumeBrainstorm">
+                  {{ startingTask ? "Resuming…" : "Resume workflow" }}
+                </button>
+                <button class="ghost-button" type="button" @click="cancelBrainstorm">Cancel workflow</button>
+              </div>
             </div>
             <p v-if="selectedTask.errorMessage" class="form-message error-text">{{ selectedTask.errorMessage }}</p>
 
@@ -1430,6 +1650,78 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+      </section>
+
+      <section id="usage-safety" class="project-panel usage-panel" aria-labelledby="usage-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">05 — CLAUDE &amp; CODEX USAGE SAFETY</p>
+            <h2 id="usage-heading">Never spend provider usage blind.</h2>
+            <p>
+              A provider subscription allowance (what this page tracks) is not the same thing as an API token rate
+              limit: this is about the Claude Code / ChatGPT plan allowance a run can exhaust, not per-request
+              tokens-per-minute limits. No supported local command reports exact usage today, so automatic refresh
+              honestly reports unavailable; use a manual snapshot to record what the provider's own interface shows you.
+            </p>
+          </div>
+          <span class="safety-badge">CHECK BEFORE EVERY CALL</span>
+        </div>
+
+        <p v-if="usageError" class="form-message error-text" role="alert">{{ usageError }}</p>
+        <p v-if="usageMessage" class="form-message success-text" role="status">{{ usageMessage }}</p>
+        <p v-if="usageLoading" class="worktree-loading">Loading provider usage…</p>
+
+        <div class="usage-grid">
+          <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="usage-card">
+            <header>
+              <strong>{{ providerLabel(provider) }}</strong>
+              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)">
+                {{ refreshingProvider === provider ? "Refreshing…" : "Refresh" }}
+              </button>
+            </header>
+
+            <div v-for="window in usage[provider]" :key="window.windowId" class="usage-window">
+              <div class="usage-window-heading">
+                <span>{{ window.windowLabel }}</span>
+                <span :class="['usage-state', window.status.toLowerCase()]">{{ usageStatusLabel(window.status) }}</span>
+              </div>
+              <div class="usage-bar" role="progressbar" :aria-valuenow="window.usedPercent ?? 0" aria-valuemin="0" aria-valuemax="100"
+                :aria-valuetext="window.usedPercent === null ? 'No data' : `${window.usedPercent}% used`">
+                <div class="usage-bar-fill" :class="window.status.toLowerCase()" :style="{ width: `${window.usedPercent ?? 0}%` }"></div>
+              </div>
+              <dl class="usage-detail-grid">
+                <div><dt>Used</dt><dd>{{ window.usedPercent === null ? "Unknown" : `${window.usedPercent}%` }}</dd></div>
+                <div><dt>Remaining</dt><dd>{{ window.remainingPercent === null ? "Unknown" : `${window.remainingPercent}%` }}</dd></div>
+                <div><dt>Resets</dt><dd>{{ window.timeUntilReset ? `in ${window.timeUntilReset}` : "Unknown" }}</dd></div>
+                <div><dt>Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
+                <div><dt>Last updated</dt><dd>{{ window.lastRefreshedAt ? new Date(window.lastRefreshedAt).toLocaleString() : "Never" }}</dd></div>
+                <div><dt>Freshness</dt><dd>{{ window.freshness }}</dd></div>
+              </dl>
+            </div>
+
+            <form class="usage-manual-form" @submit.prevent="submitManualSnapshot(provider)">
+              <div class="field-row">
+                <label><span>Window</span><input v-model="manualSnapshotForm[provider].windowId" placeholder="5H" maxlength="40" required /></label>
+                <label><span>Label</span><input v-model="manualSnapshotForm[provider].windowLabel" placeholder="5-hour window" maxlength="120" required /></label>
+              </div>
+              <div class="field-row">
+                <label><span>Used % <small>From the provider's own display</small></span><input v-model="manualSnapshotForm[provider].usedPercent" type="number" min="0" max="100" step="1" required /></label>
+                <label><span>Resets at <small>Optional</small></span><input v-model="manualSnapshotForm[provider].resetAt" type="datetime-local" /></label>
+              </div>
+              <button class="ghost-button" type="submit">Submit manual snapshot</button>
+              <p class="form-hint">Manual readings are estimates you enter yourself; they are labeled MANUAL and never confused with an automatic reading.</p>
+            </form>
+          </article>
+        </div>
+
+        <form class="usage-policy-form" @submit.prevent="updateUsagePolicy">
+          <div class="subsection-heading"><span>SAFETY THRESHOLDS</span><strong>Applies to both providers</strong></div>
+          <div class="field-row">
+            <label><span>Warning threshold %</span><input v-model="policyForm.warningThresholdPercent" type="number" min="0" max="100" required /></label>
+            <label><span>Checkpoint threshold %</span><input v-model="policyForm.checkpointThresholdPercent" type="number" min="0" max="100" required /></label>
+          </div>
+          <button class="ghost-button" type="submit">Update thresholds</button>
+        </form>
       </section>
     </main>
   </div>

@@ -5,6 +5,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import { agentRuns, projects } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
+import { UsageCheckpointError, UsageSafetyService } from "../services/usage-safety.js";
 
 type CreateRunBody = {
   projectId?: unknown;
@@ -26,6 +27,7 @@ export function registerAgentRunRoutes(
   db: WorkspaceDatabase,
   adapters: Map<AgentProvider, AgentAdapter>,
   manager = new AgentRunManager(db),
+  usageSafety = new UsageSafetyService(db),
 ) {
   app.get("/api/agents/health", async () => {
     const entries = await Promise.all([...adapters].map(async ([provider, adapter]) => [provider, await adapter.healthCheck()] as const));
@@ -56,6 +58,13 @@ export function registerAgentRunRoutes(
     if (!project) return reply.code(404).send({ message: "Project not found." });
     const adapter = adapters.get(provider);
     if (!adapter) return reply.code(503).send({ message: `${provider} adapter is unavailable.` });
+
+    try {
+      usageSafety.assertReady(provider, { combined: false });
+    } catch (error) {
+      if (error instanceof UsageCheckpointError) return reply.code(409).send({ message: error.message, code: "USAGE_CHECKPOINT", decision: error.decision });
+      throw error;
+    }
 
     const timeoutMs = typeof request.body.timeoutMs === "number" ? request.body.timeoutMs : 300_000;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {

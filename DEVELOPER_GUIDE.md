@@ -184,6 +184,31 @@ Git push, force push, hard reset, branch deletion outside the explicit merged-br
 
 Every route validates its body at the boundary and returns 400 for invalid input, 404 for a missing project/task/worktree, and 409 for a collision, dirty/locked/prunable state, an in-use worktree, or a database uniqueness conflict; unexpected failures return a generic 500 without leaking internals beyond what this local-only tool already assumes (the caller is the trusted local user).
 
+## Provider usage safety
+
+`apps/server/src/services/usage-safety.ts` (`UsageSafetyService`) is the single provider-neutral safety system covering both CLAUDE and CODEX; nothing downstream branches on provider name.
+
+Data model (`apps/server/src/db/schema.ts`):
+
+- `provider_usage_readings`: one row per point-in-time reading of a provider's usage against one window (`windowId`/`windowLabel`, e.g. a 5-hour or weekly allowance). History is retained; the latest row per `(provider, windowId)` (ties broken by SQLite `rowid`, since two readings can share a millisecond `createdAt`) is what is shown and evaluated. `source` is `CLI_REPORTED` (unused today — see below), `MANUAL`, or `RATE_LIMIT_ERROR`; `sourceConfidence` is `EXACT` or `ESTIMATED`.
+- `usage_safety_settings`: one configurable policy row (`id = "default"`) — `warningThresholdPercent`, `checkpointThresholdPercent`, `staleAfterMs`, `acknowledgementTtlMs`.
+- `usage_safety_audit`: append-only log of `CHECKPOINT_TRIGGERED` (recorded automatically whenever `assertReady` blocks a call) and `ACKNOWLEDGEMENT` (recorded only via an explicit human action) events, each with the provider, window, status, an optional `relatedReadingId`, and (for acknowledgements) the user action (`PROCEED`/`OVERRIDE`/`PAUSE`).
+- `tasks.status` gained a `CHECKPOINTED` value. This needed no migration: Drizzle's `enum` option on a `text` column is a TypeScript-level annotation, not a database `CHECK` constraint.
+
+Status derivation (`UsageSafetyService.getProviderUsage`): no reading at all is `UNAVAILABLE` (never a fabricated percentage); a reading older than `staleAfterMs` is `STALE`; a `RATE_LIMIT_ERROR` source or `usedPercent >= 100` is `EXHAUSTED`; then `CHECKPOINT_REQUIRED` / `WARNING` / `SAFE` by threshold. `evaluate(provider, { combined })` turns that into a decision: `EXHAUSTED` always blocks with no override; `CHECKPOINT_REQUIRED` blocks unless a matching `OVERRIDE` acknowledgement tied to that exact `readingId` was recorded within `acknowledgementTtlMs`; `UNAVAILABLE`/`STALE` blocks only when `combined: true` (a single, isolated provider action is allowed to proceed) unless a matching `PROCEED` acknowledgement is still within its TTL. `assertReady` calls `evaluate` and throws `UsageCheckpointError`, recording a `CHECKPOINT_TRIGGERED` audit row, when blocked.
+
+There is no supported local CLI or API surface that reports exact Claude Code / Codex CLI usage percentages today (see the CLI capability findings above), and this project's safety rules forbid probing further for one. `refresh()` therefore always reports "no automatic source" rather than fabricating a value. The two real data sources are `submitManualSnapshot` (validated, always labeled `MANUAL`) and `recordRateLimitError`, which heuristically pattern-matches a provider process's stderr/failure text (`parseRateLimitMessage`) for wording like "usage limit reached" or "rate limit reached" plus a nearby reset-time phrase — a best-effort signal, not a verified parser, since validating it against a real exhausted response would require spending real usage.
+
+Preflight call sites:
+
+- `POST /api/agent-runs` (single-provider, `combined: false`) — blocks on `EXHAUSTED`/unresolved `CHECKPOINT_REQUIRED`; allows `UNAVAILABLE`/`STALE` through for an isolated read-only run.
+- `BrainstormWorkflow` (`combined: true`) checks at two levels: `assertPhaseReady` once for both providers before either the analysis or the cross-review `Promise.all` starts (so a ready provider's process is never started only to have its sibling call refused a moment later — Promise.all does not cancel sibling promises), and again inside the shared `run()` helper immediately before every one of the four individual provider calls. On block, the workflow checkpoints (`status: "CHECKPOINTED"`, `errorMessage` holds the reason) instead of failing; whatever analyses/reviews already persisted are untouched. `BrainstormWorkflow.resume` reconstructs already-completed analyses from `task_artifacts` and continues from wherever the workflow left off — it never re-runs a stage that already finished.
+- `AgentRunManager` accepts an optional `UsageSafetyService` and calls `recordRateLimitError` on every `stderr` chunk and `failed` event, independent of the preflight checks above.
+
+Routes (`apps/server/src/routes/usage-safety.ts`): `GET /api/usage`, `GET /api/usage/:provider`, `POST /api/usage/:provider/refresh`, `POST /api/usage/manual-snapshot`, `GET`/`PATCH /api/usage/policy`, `POST /api/usage/acknowledge`, `GET /api/usage/audit`. `POST /api/tasks/:id/resume` resumes a `CHECKPOINTED` task after rechecking both providers.
+
+Never: automatically redeem provider reset credits, automatically start a replacement provider, automatically downgrade a requested model, or silently treat unknown/stale usage as safe in a combined workflow.
+
 ## Security model
 
 Three permission profiles define intent:

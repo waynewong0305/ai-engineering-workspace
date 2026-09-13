@@ -4,6 +4,7 @@ import type { AgentAdapter, AgentEvent, AgentRunInput } from "@aiew/agents";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import { agentRunEvents, agentRuns, type AgentRunEventRecord, type AgentRunRecord } from "../db/schema.js";
+import type { UsageSafetyService } from "./usage-safety.js";
 
 const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "CANCELLED"] as const;
 const MAX_STORED_TEXT = 5 * 1024 * 1024;
@@ -29,7 +30,7 @@ export class AgentRunManager {
   private readonly cancellationRequested = new Set<string>();
   private readonly sequenceByRun = new Map<string, number>();
 
-  constructor(private readonly db: WorkspaceDatabase) {
+  constructor(private readonly db: WorkspaceDatabase, private readonly usageSafety?: UsageSafetyService) {
     this.emitter.setMaxListeners(100);
   }
 
@@ -106,6 +107,7 @@ export class AgentRunManager {
       this.db.update(agentRuns).set({ output: appendBounded(current.output, event.chunk), updatedAt }).where(eq(agentRuns.id, runId)).run();
     } else if (event.type === "stderr") {
       this.db.update(agentRuns).set({ errorOutput: appendBounded(current.errorOutput, event.chunk), updatedAt }).where(eq(agentRuns.id, runId)).run();
+      this.usageSafety?.recordRateLimitError(current.provider, event.chunk);
     } else if (event.type === "structured_output") {
       this.db.update(agentRuns).set({ rawOutput: appendBounded(current.rawOutput, `${JSON.stringify(event.value)}\n`), updatedAt }).where(eq(agentRuns.id, runId)).run();
     } else if (event.type === "completed") {
@@ -123,6 +125,7 @@ export class AgentRunManager {
         status: "FAILED", errorMessage: event.message, exitCode: event.exitCode,
         durationMs: Date.now() - started, completedAt: event.occurredAt, updatedAt,
       }).where(eq(agentRuns.id, runId)).run();
+      this.usageSafety?.recordRateLimitError(current.provider, event.message);
     } else if (event.type === "cancelled") {
       this.db.update(agentRuns).set({
         status: "CANCELLED", durationMs: Date.now() - started, completedAt: event.occurredAt, updatedAt,

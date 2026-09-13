@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export type ValidationCommand = {
   id: string;
@@ -25,7 +25,7 @@ export const projects = sqliteTable("projects", {
 export type ProjectRecord = typeof projects.$inferSelect;
 
 export type TaskType = "BRAINSTORM" | "ARCHITECTURE";
-export type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED";
+export type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 export const tasks = sqliteTable("tasks", {
@@ -34,7 +34,7 @@ export const tasks = sqliteTable("tasks", {
   title: text("title").notNull(),
   problemStatement: text("problem_statement").notNull(),
   type: text("type", { enum: ["BRAINSTORM", "ARCHITECTURE"] }).notNull(),
-  status: text("status", { enum: ["DRAFT", "ANALYZING", "CROSS_REVIEW", "READY", "FAILED", "CANCELLED"] }).notNull(),
+  status: text("status", { enum: ["DRAFT", "ANALYZING", "CROSS_REVIEW", "READY", "FAILED", "CANCELLED", "CHECKPOINTED"] }).notNull(),
   riskLevel: text("risk_level", { enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"] }).notNull(),
   webAccessPolicy: text("web_access_policy", { enum: ["DISABLED", "ENABLED_FOR_TASK"] }).notNull(),
   webAccessPermitted: integer("web_access_permitted", { mode: "boolean" }).notNull(),
@@ -196,3 +196,60 @@ export const evidenceItems = sqliteTable("evidence_items", {
 }, (table) => [index("evidence_items_task_type_idx").on(table.taskId, table.type)]);
 
 export type EvidenceItemRecord = typeof evidenceItems.$inferSelect;
+
+export type UsageProvider = "CLAUDE" | "CODEX";
+export type UsageSource = "CLI_REPORTED" | "MANUAL" | "RATE_LIMIT_ERROR";
+export type UsageSourceConfidence = "EXACT" | "ESTIMATED";
+
+/**
+ * A single point-in-time reading of a provider's usage against one rate/allowance window (for
+ * example Claude's rolling 5-hour window, or a weekly plan allowance). History is retained so the
+ * latest reading per (provider, windowId) can be distinguished from a stale one, and so an
+ * acknowledgement/override can be tied to the exact reading a human accepted.
+ */
+export const providerUsageReadings = sqliteTable("provider_usage_readings", {
+  id: text("id").primaryKey(),
+  provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  windowId: text("window_id").notNull(),
+  windowLabel: text("window_label").notNull(),
+  windowDurationMs: integer("window_duration_ms"),
+  usedPercent: real("used_percent").notNull(),
+  resetAt: text("reset_at"),
+  source: text("source", { enum: ["CLI_REPORTED", "MANUAL", "RATE_LIMIT_ERROR"] }).notNull(),
+  sourceConfidence: text("source_confidence", { enum: ["EXACT", "ESTIMATED"] }).notNull(),
+  recordedAt: text("recorded_at").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("provider_usage_readings_provider_window_idx").on(table.provider, table.windowId, table.createdAt)]);
+
+export type ProviderUsageReadingRecord = typeof providerUsageReadings.$inferSelect;
+
+/** A single configurable policy row (id is always "default"). */
+export const usageSafetySettings = sqliteTable("usage_safety_settings", {
+  id: text("id").primaryKey(),
+  warningThresholdPercent: real("warning_threshold_percent").notNull(),
+  checkpointThresholdPercent: real("checkpoint_threshold_percent").notNull(),
+  staleAfterMs: integer("stale_after_ms").notNull(),
+  acknowledgementTtlMs: integer("acknowledgement_ttl_ms").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type UsageSafetySettingsRecord = typeof usageSafetySettings.$inferSelect;
+
+export type UsageStatus = "SAFE" | "WARNING" | "CHECKPOINT_REQUIRED" | "EXHAUSTED" | "UNAVAILABLE" | "STALE";
+export type UsageSafetyEventType = "CHECKPOINT_TRIGGERED" | "ACKNOWLEDGEMENT" | "OVERRIDE_DENIED";
+export type UsageSafetyUserAction = "PROCEED" | "OVERRIDE" | "PAUSE";
+
+/** Append-only audit trail: every checkpoint pause, acknowledgement, and refused override. */
+export const usageSafetyAudit = sqliteTable("usage_safety_audit", {
+  id: text("id").primaryKey(),
+  provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  windowId: text("window_id"),
+  eventType: text("event_type", { enum: ["CHECKPOINT_TRIGGERED", "ACKNOWLEDGEMENT", "OVERRIDE_DENIED"] }).notNull(),
+  status: text("status", { enum: ["SAFE", "WARNING", "CHECKPOINT_REQUIRED", "EXHAUSTED", "UNAVAILABLE", "STALE"] }).notNull(),
+  relatedReadingId: text("related_reading_id").references(() => providerUsageReadings.id, { onDelete: "set null" }),
+  userAction: text("user_action", { enum: ["PROCEED", "OVERRIDE", "PAUSE"] }),
+  reason: text("reason").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("usage_safety_audit_provider_created_idx").on(table.provider, table.createdAt)]);
+
+export type UsageSafetyAuditRecord = typeof usageSafetyAudit.$inferSelect;

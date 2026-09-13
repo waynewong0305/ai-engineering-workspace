@@ -4,9 +4,11 @@ import { createDatabase } from "./db/database.js";
 import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerUsageSafetyRoutes } from "./routes/usage-safety.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { AgentRunManager } from "./services/agent-run-manager.js";
 import { inspectLocalTools } from "./services/tool-health.js";
+import { UsageSafetyService } from "./services/usage-safety.js";
 
 export function buildApp(options: { databasePath?: string; adapters?: AgentAdapter[] } = {}) {
   const app = Fastify({ logger: true });
@@ -27,10 +29,12 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   const adapters = new Map<AgentProvider, AgentAdapter>(
     (options.adapters ?? [new ClaudeAdapter(), new CodexAdapter()]).map((adapter) => [adapter.name, adapter]),
   );
-  const runManager = new AgentRunManager(db);
-  registerAgentRunRoutes(app, db, adapters, runManager);
-  registerTaskRoutes(app, db, adapters, runManager);
+  const usageSafety = new UsageSafetyService(db);
+  const runManager = new AgentRunManager(db, usageSafety);
+  registerAgentRunRoutes(app, db, adapters, runManager, usageSafety);
+  registerTaskRoutes(app, db, adapters, runManager, usageSafety);
   registerWorktreeRoutes(app, db);
+  registerUsageSafetyRoutes(app, usageSafety);
 
   return app;
 }
