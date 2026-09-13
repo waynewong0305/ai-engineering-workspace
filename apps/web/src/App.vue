@@ -134,6 +134,7 @@ type ManagedWorktree = {
   status: "CREATING" | "ACTIVE" | "ERROR";
   lastError: string | null;
   inUse: boolean;
+  activeUsages: Array<{ id: string; ownerType: string; ownerId: string; startedAt: string; stale: boolean }>;
   inspection: {
     head: string | null;
     branchName: string | null;
@@ -411,11 +412,25 @@ async function removeWorktree() {
   const result = await response.json();
   if (!response.ok) worktreeError.value = result.message ?? "Could not remove the worktree.";
   else {
-    worktreeMessage.value = result.deletedBranch
-      ? "Clean worktree and merged branch removed."
-      : `Clean worktree removed; branch ${result.retainedBranch} was retained.`;
+    worktreeMessage.value = result.forgotten
+      ? "No live Git worktree was found for this record, so the stale entry was cleared. Nothing was deleted from Git."
+      : result.deletedBranch
+        ? "Clean worktree and merged branch removed."
+        : `Clean worktree removed; branch ${result.retainedBranch} was retained.`;
     selectedWorktree.value = null;
     worktreeDiff.value = null;
+    await loadWorktreesForTask();
+  }
+}
+
+async function releaseUsage(usageId: string) {
+  if (!selectedWorktree.value) return;
+  worktreeError.value = "";
+  const response = await fetch(`/api/worktrees/${selectedWorktree.value.id}/usages/${usageId}`, { method: "DELETE" });
+  const result = await response.json();
+  if (!response.ok) worktreeError.value = result.message ?? "Could not release the usage lease.";
+  else {
+    worktreeMessage.value = "Usage lease released. Confirm no process is actually still running before trusting this worktree as idle.";
     await loadWorktreesForTask();
   }
 }
@@ -1352,16 +1367,41 @@ onUnmounted(() => {
               <span :class="selectedWorktree.inUse ? 'busy' : 'idle'">{{ selectedWorktree.inUse ? 'IN USE' : 'IDLE' }}</span>
             </div>
           </div>
-          <p v-if="selectedWorktree.inspectionError" class="error-text">{{ selectedWorktree.inspectionError }}</p>
+          <p v-if="selectedWorktree.inspectionError" class="error-text" role="alert">{{ selectedWorktree.inspectionError }}</p>
+          <p v-if="selectedWorktree.lastError" class="error-text" role="alert">Last error: {{ selectedWorktree.lastError }}</p>
+          <p v-if="!selectedWorktree.inspection" class="form-hint">
+            Git no longer reports a live worktree at this path. Directory move and branch rename are disabled; use removal below to clear the stale record.
+          </p>
+
+          <div v-if="selectedWorktree.activeUsages.length" class="worktree-usages">
+            <div class="subsection-heading"><span>ACTIVE USAGE LEASES</span></div>
+            <ul>
+              <li v-for="lease in selectedWorktree.activeUsages" :key="lease.id" :class="{ stale: lease.stale }">
+                <span>{{ lease.ownerType }} · {{ lease.ownerId }} · started {{ new Date(lease.startedAt).toLocaleString() }}</span>
+                <span v-if="lease.stale" class="usage-stale-label">STALE — no update in over 6 hours</span>
+                <button class="text-button" type="button" @click="releaseUsage(lease.id)">Release lease</button>
+              </li>
+            </ul>
+          </div>
 
           <div class="worktree-management-grid">
             <form @submit.prevent="renameWorktreePath">
               <label><span>Move directory <small>Branch stays unchanged</small></span><input v-model="renamePath" required /></label>
-              <button class="ghost-button" type="submit" :disabled="selectedWorktree.inUse || selectedWorktree.inspection?.gitStatus === 'DIRTY'">Move directory</button>
+              <button
+                class="ghost-button" type="submit"
+                :disabled="selectedWorktree.inUse || !selectedWorktree.inspection || selectedWorktree.inspection.gitStatus === 'DIRTY'"
+              >Move directory</button>
+              <p v-if="selectedWorktree.inUse" class="form-hint">Disabled: an active process is using this worktree.</p>
+              <p v-else-if="selectedWorktree.inspection?.gitStatus === 'DIRTY'" class="form-hint">Disabled: the worktree has uncommitted changes.</p>
             </form>
             <form @submit.prevent="renameWorktreeBranch">
               <label><span>Rename branch <small>Directory stays unchanged</small></span><input v-model="renameBranch" required /></label>
-              <button class="ghost-button" type="submit" :disabled="selectedWorktree.inUse || selectedWorktree.inspection?.gitStatus === 'DIRTY'">Rename branch</button>
+              <button
+                class="ghost-button" type="submit"
+                :disabled="selectedWorktree.inUse || !selectedWorktree.inspection || selectedWorktree.inspection.gitStatus === 'DIRTY'"
+              >Rename branch</button>
+              <p v-if="selectedWorktree.inUse" class="form-hint">Disabled: an active process is using this worktree.</p>
+              <p v-else-if="selectedWorktree.inspection?.gitStatus === 'DIRTY'" class="form-hint">Disabled: the worktree has uncommitted changes.</p>
             </form>
           </div>
 

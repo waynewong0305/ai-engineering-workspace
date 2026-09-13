@@ -28,6 +28,7 @@ apps/
   server/    Fastify API, database, routes, local service integration
 packages/
   agents/    provider-neutral contracts, CLI adapters, environment policy, process supervisor
+  git/       WorktreeService, worktree naming/validation, Git subprocess helpers
   shared/    shared types with no platform dependencies
 prompts/     versioned analysis and cross-review prompt files
 data/        ignored local SQLite database
@@ -36,7 +37,7 @@ docs/
 scripts/     local development process launcher
 ```
 
-`packages/core` and `packages/git` should be introduced when workflow and worktree responsibilities become concrete. The Phase 1 repository inspector currently lives in the server because it is a small read-only integration; move stable Git/worktree logic into `packages/git` during Phase 4 rather than inventing an empty abstraction now.
+`packages/git` now holds the Phase 4 `WorktreeService` and worktree-naming helpers. `packages/core` should still be introduced when workflow-engine responsibilities (state machines shared across task types) become concrete; the Phase 1 read-only repository inspector remains in the server since it is a small integration that has not needed to move.
 
 ## Runtime and commands
 
@@ -162,9 +163,26 @@ The current inspector uses `execFile` with an argument array and a timeout. It n
 - `symbolic-ref --short refs/remotes/origin/HEAD`; and
 - `status --porcelain=v1`.
 
-Phase 4 should move Git behavior into `packages/git` and add a `WorktreeService`. Every mutating method must validate canonical source path, default branch/ref, generated task branch, target root, ownership, and collisions. Cleanup must inspect tracked, staged, unstaged, and untracked changes and refuse implicit loss.
+`packages/git`'s `WorktreeService` owns all worktree-mutating Git behavior for Phase 4. `proposeWorktree` derives a deterministic path (`<worktreeRoot>/TASK-<id>-<slug>/<role>`) and branch (`ai/TASK-<id>/<slug>/<role>`) from the task ID, a bounded slug of the task title, and the provider role; both remain independently editable up to creation. Every mutating method validates the canonical source repository path, the target root (rejecting traversal and paths outside the configured root or inside the source repository), the generated/edited branch name (`check-ref-format`), the base ref (`rev-parse --verify`), and collisions against both Git's own worktree list and (at the route layer) the `worktrees` table's unique `(taskId, provider)` and `(projectId, branchName)` indexes. All Git subprocess calls go through a single `execFile`-based helper with an argument array, a 10 MiB output cap, and a 30s timeout — never a shell.
 
-Git push, force push, hard reset, branch deletion, deployment, and production migration are outside the automated workflow.
+`move`, `renameBranch`, and `remove` share an `assertSafeToMutate` guard that refuses a locked, prunable, dirty, or in-use worktree (`WORKTREE_LOCKED` / `WORKTREE_PRUNABLE` / `WORKTREE_DIRTY` / `WORKTREE_IN_USE`, mapped to HTTP 409). If Git no longer registers a worktree at all — an interrupted `CREATING` record, a failed creation, or a worktree removed outside the application — `remove` recognizes `WORKTREE_NOT_REGISTERED`, runs `git worktree prune`, and reports `{ forgotten: true }` instead of throwing, so the route can delete the orphaned DB record and free its task/provider and project/branch slots. This is the only case where a managed record is deleted without a live Git worktree behind it; a record with a real, non-clean worktree is never silently discarded. At the route layer, a DB write that fails after a Git move/rename already succeeded triggers an automatic rollback attempt; whether or not the rollback succeeds, the outcome is recorded on the worktree row (`lastError`, and `status: "ERROR"` if the rollback itself also failed) so the inconsistency is inspectable rather than only surfaced to the immediate caller.
+
+`WorktreeUsageManager` (`apps/server/src/services/worktree-usage-manager.ts`) tracks which run/validation/system process currently owns a worktree (`worktreeUsages`, keyed by worktree + owner). `listActive` flags a lease `stale` once it has been open longer than a configurable threshold (default 6 hours), and `releaseById` gives a human an explicit recovery path (`DELETE /api/worktrees/:id/usages/:usageId`) for a lease a crashed process never released. No production code calls `acquire`/`release` yet — that begins with the Phase 5 worktree-scoped builder run — so `isInUse` is always `false` today; this is expected, not a bug.
+
+Git push, force push, hard reset, branch deletion outside the explicit merged-branch-deletion flow, deployment, and production migration are outside the automated workflow. Project deregistration does not yet check for linked managed worktrees; that is a known Phase 4 gap (see `IMPLEMENTATION_STATUS.md`).
+
+### Worktree HTTP API
+
+- `GET /api/projects/:id/worktrees` — managed records (each with live inspection, `inUse`, and `activeUsages`) plus the raw `git worktree list`.
+- `GET /api/tasks/:id/worktrees/preview` — a proposal per provider, validated but not created; `available: false` carries the specific collision reason.
+- `GET /api/tasks/:id/worktrees` / `GET /api/worktrees/:id` — managed record detail.
+- `POST /api/tasks/:id/worktrees` — validates, inserts a `CREATING` row, runs `git worktree add`, then updates to `ACTIVE` (or `ERROR` with `lastError` on failure).
+- `GET /api/worktrees/:id/diff` — staged and unstaged unified diff.
+- `PATCH /api/worktrees/:id/path` / `PATCH /api/worktrees/:id/branch` — independent move/rename, each refusing a dirty/locked/prunable/in-use worktree.
+- `DELETE /api/worktrees/:id` — requires `{ confirm: true }`; `deleteBranch: true` additionally requires Git to confirm the branch is merged before either the worktree or the branch is touched.
+- `DELETE /api/worktrees/:id/usages/:usageId` — explicit human release of an active (typically stale) usage lease.
+
+Every route validates its body at the boundary and returns 400 for invalid input, 404 for a missing project/task/worktree, and 409 for a collision, dirty/locked/prunable state, an in-use worktree, or a database uniqueness conflict; unexpected failures return a generic 500 without leaking internals beyond what this local-only tool already assumes (the caller is the trusted local user).
 
 ## Security model
 

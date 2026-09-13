@@ -112,4 +112,55 @@ describe("worktree routes", () => {
     const retained = await execFileAsync("git", ["-C", fixture.repositoryPath, "show-ref", "--verify", `refs/heads/${claude.branchName}`]);
     expect(retained.stdout).toContain(claude.branchName);
   });
+
+  it("recovers an orphaned managed-worktree record instead of permanently blocking its task/provider slot", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const fixture = await createRepository();
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects",
+      payload: { repositoryPath: fixture.repositoryPath, worktreeRoot: fixture.worktreeRoot },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Add promotion versioning", problemStatement: "Recover an interrupted worktree.",
+        type: "ARCHITECTURE", riskLevel: "MEDIUM", webAccessPermitted: false,
+      },
+    })).json();
+    const proposals = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees/preview` })).json().proposals;
+    const claudeProposal = proposals.find((proposal: { provider: string }) => proposal.provider === "CLAUDE");
+    const created = (await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal,
+    })).json();
+
+    // Simulate the record becoming orphaned: Git no longer lists this worktree (an interrupted
+    // creation, or a worktree removed outside the application), but the managed record remains.
+    await execFileAsync("git", ["-C", fixture.repositoryPath, "worktree", "remove", "--force", "--", created.path]);
+
+    const blockedRetry = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal });
+    expect(blockedRetry.statusCode).toBe(409);
+
+    const removal = await app.inject({
+      method: "DELETE", url: `/api/worktrees/${created.id}`, payload: { confirm: true, deleteBranch: false },
+    });
+    expect(removal.statusCode).toBe(200);
+    expect(removal.json()).toMatchObject({ removed: false, forgotten: true });
+
+    const afterRemoval = await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees` });
+    expect(afterRemoval.json()).toEqual([]);
+
+    // The DB slot for this task/provider is free again, but Git still remembers the abandoned
+    // branch from the interrupted attempt, so the identical auto-generated proposal correctly
+    // still collides at the branch level -- recovery never silently reuses stale branch history.
+    const retryPreview = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees/preview` })).json().proposals;
+    const retryClaude = retryPreview.find((proposal: { provider: string }) => proposal.provider === "CLAUDE");
+    expect(retryClaude.available).toBe(false);
+
+    const recreated = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/worktrees`,
+      payload: { ...claudeProposal, branchName: `${claudeProposal.branchName}-retry` },
+    });
+    expect(recreated.statusCode).toBe(201);
+  });
 });

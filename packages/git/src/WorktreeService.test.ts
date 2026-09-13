@@ -82,4 +82,67 @@ describe("WorktreeService", () => {
     await expect(service.validateProposal(repositoryPath, worktreeRoot, proposal))
       .rejects.toMatchObject({ code: "PATH_COLLISION" } satisfies Partial<WorktreeSafetyError>);
   });
+
+  it("refuses to delete a branch that is not merged into its base ref", async () => {
+    const { repositoryPath, worktreeRoot } = await createRepository();
+    const service = new WorktreeService();
+    const proposal = proposeWorktree(worktreeRoot, "301-abcd", "Unmerged branch", "CLAUDE", "main");
+    await service.create(repositoryPath, worktreeRoot, proposal);
+    await writeFile(join(proposal.path, "feature.txt"), "unmerged work\n", "utf8");
+    await execFileAsync("git", ["-C", proposal.path, "add", "feature.txt"]);
+    await execFileAsync("git", [
+      "-C", proposal.path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "Unmerged commit",
+    ]);
+
+    await expect(service.ensureBranchMerged(repositoryPath, proposal.branchName, "main"))
+      .rejects.toMatchObject({ code: "BRANCH_NOT_MERGED" } satisfies Partial<WorktreeSafetyError>);
+    await expect(service.deleteMergedBranch(repositoryPath, proposal.branchName, "main"))
+      .rejects.toMatchObject({ code: "BRANCH_NOT_MERGED" } satisfies Partial<WorktreeSafetyError>);
+
+    // The branch must still exist: an unmerged branch is never silently discarded.
+    const stillExists = await execFileAsync("git", ["-C", repositoryPath, "show-ref", "--verify", `refs/heads/${proposal.branchName}`]);
+    expect(stillExists.stdout).toContain(proposal.branchName);
+  });
+
+  it("refuses to move, rename, or remove a locked worktree", async () => {
+    const { repositoryPath, worktreeRoot } = await createRepository();
+    const service = new WorktreeService();
+    const proposal = proposeWorktree(worktreeRoot, "303-abcd", "Locked worktree", "CLAUDE", "main");
+    await service.create(repositoryPath, worktreeRoot, proposal);
+    await execFileAsync("git", ["-C", repositoryPath, "worktree", "lock", proposal.path, "--reason", "manual maintenance"]);
+
+    await expect(service.move(repositoryPath, worktreeRoot, proposal.path, join(worktreeRoot, "elsewhere"), false))
+      .rejects.toMatchObject({ code: "WORKTREE_LOCKED" } satisfies Partial<WorktreeSafetyError>);
+    await expect(service.renameBranch(repositoryPath, proposal.path, "ai/renamed", false))
+      .rejects.toMatchObject({ code: "WORKTREE_LOCKED" } satisfies Partial<WorktreeSafetyError>);
+    await expect(service.remove(repositoryPath, proposal.path, false))
+      .rejects.toMatchObject({ code: "WORKTREE_LOCKED" } satisfies Partial<WorktreeSafetyError>);
+
+    await execFileAsync("git", ["-C", repositoryPath, "worktree", "unlock", proposal.path]);
+    await expect(service.remove(repositoryPath, proposal.path, false)).resolves.toMatchObject({ retainedBranch: proposal.branchName });
+  });
+
+  it("forgets an orphaned managed-worktree record instead of blocking its slot forever", async () => {
+    const { repositoryPath, worktreeRoot } = await createRepository();
+    const service = new WorktreeService();
+    const proposal = proposeWorktree(worktreeRoot, "302-abcd", "Interrupted creation", "CLAUDE", "main");
+    await service.create(repositoryPath, worktreeRoot, proposal);
+
+    // Simulate a creation failure/interruption recorded by the application: Git no longer knows
+    // about this worktree (e.g. the process crashed before the DB row moved out of CREATING, or
+    // the worktree was removed outside the application), but the managed record still points at it.
+    await execFileAsync("git", ["-C", repositoryPath, "worktree", "remove", "--force", "--", proposal.path]);
+
+    const result = await service.remove(repositoryPath, proposal.path, false);
+    expect(result).toEqual({ removed: false, forgotten: true, retainedBranch: null });
+    expect((await service.list(repositoryPath)).some((entry) => entry.path === proposal.path)).toBe(false);
+
+    // The path is free again for a fresh proposal even though the abandoned branch itself remains
+    // (branch collisions are still enforced, so recovery never silently reuses stale history).
+    const retry = proposeWorktree(worktreeRoot, "302-abcd", "Interrupted creation retry", "CLAUDE", "main");
+    await expect(service.validateProposal(repositoryPath, worktreeRoot, retry)).resolves.toMatchObject({ branchName: retry.branchName });
+    await expect(service.validateProposal(repositoryPath, worktreeRoot, proposal))
+      .rejects.toMatchObject({ code: "BRANCH_COLLISION" } satisfies Partial<WorktreeSafetyError>);
+  });
 });

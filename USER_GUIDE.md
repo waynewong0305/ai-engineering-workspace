@@ -22,9 +22,11 @@ The current implementation can:
 - create brainstorm and architecture task drafts with an explicit per-task web decision;
 - run Claude and Codex analyses independently, then cross-review in both directions;
 - retain structured and raw responses and compare consensus, disagreements, questions, missing evidence, and experiments; and
-- add or correct facts, assumptions, questions, decisions, and experiment results on a persistent evidence board.
+- add or correct facts, assumptions, questions, decisions, and experiment results on a persistent evidence board;
+- preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout; and
+- inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation.
 
-Worktrees, implementation/review loops, ADRs, and reports are planned but not enabled yet. Brainstorming and architecture comparison are available now and remain read-only.
+Implementation/review loops, ADRs, and reports are planned but not enabled yet. Brainstorming, architecture comparison, and worktree isolation are available now.
 
 ## Installation
 
@@ -340,18 +342,30 @@ Choose:
 
 You can disable web access at the task level before a run. A denied web request must remain visible in run history and cannot be bypassed silently.
 
-## Git worktrees — planned
+## Git worktrees
 
 A Git worktree is another checked-out folder connected to the same repository history. It lets a branch have its own directory without copying the entire repository or disturbing your current checkout.
 
-AI Engineering Workspace uses separate task worktrees so a builder cannot overwrite your active work and Claude and Codex do not edit the same files concurrently. A task may create paths such as:
+AI Engineering Workspace uses separate task worktrees so a builder cannot overwrite your active work and Claude and Codex do not edit the same files concurrently. In **04 — Worktrees**:
 
-```text
-.ai-worktrees/example/TASK-123/claude
-.ai-worktrees/example/TASK-123/codex
-```
+1. Select a task. The screen proposes a Claude and a Codex worktree, for example:
 
-The worktree service will show the branch, status, diff, and owning run. Cleanup will check for uncommitted or untracked work first. If any work could be lost, cleanup stops and asks you what to do. The application will never silently delete a dirty worktree, branch, or uncommitted file.
+   ```text
+   .ai-worktrees/example/TASK-123-add-promotion-versioning/claude
+   .ai-worktrees/example/TASK-123-add-promotion-versioning/codex
+   ai/TASK-123/add-promotion-versioning/claude
+   ai/TASK-123/add-promotion-versioning/codex
+   ```
+
+2. Edit the directory path, branch name, and base ref if the generated values are not what you want. All three are independent and previewed before anything is created.
+3. Select **Create Claude worktree** or **Create Codex worktree**. This is the explicit action that creates the worktree; nothing is created automatically. Creation never switches or modifies your active checkout, and Git rejects (and the screen reports) any path, branch, ref, or ownership collision before anything changes.
+4. Select **Inspect and manage** on a created worktree to see its branch, HEAD, clean/dirty status, staged and unstaged diff, and any active usage lease.
+5. **Move directory** and **Rename branch** are independent controls: moving the directory never renames the branch, and renaming the branch never moves the directory. Both are disabled while the worktree is dirty, locked, or in use, and disabled (with an explanation) if Git no longer reports a live worktree at that path.
+6. **Prepare removal** arms a two-step confirmation. You must check both "I confirm this worktree should be removed" and, separately, whether to also delete the branch. Branch deletion only succeeds when Git confirms the branch is merged into its base ref; the worktree directory is retained by default and the branch is retained unless you explicitly ask for its deletion too.
+
+If a worktree creation is interrupted (for example, a Claude or Codex worktree that failed partway through), the record is not deleted or discarded automatically. If Git no longer lists a live worktree at its path, requesting removal recovers the record — clearing the stale entry so the task/provider slot is free again — without ever discarding real work: a real, live worktree with uncommitted, staged, locked, prunable, or in-use state is still refused.
+
+An active usage lease (recorded when a future build workflow uses a worktree) that outlives its process is labeled **STALE** after 6 hours and can be released explicitly from the inspector; nothing is released automatically.
 
 ## Reviews and human responsibility — planned
 
@@ -389,9 +403,9 @@ Check whether the task was too broad or the configured timeout was too short. In
 
 Dirty status does not prevent registration. Before creating a future worktree or changing branches, review the existing changes. The platform must not clean, stash, reset, or delete them automatically.
 
-### Worktree conflict — planned
+### Worktree conflict
 
-Inspect the worktree path and branch shown by the application. Resolve external Git use first, or choose a new task branch/path. Never delete a worktree directory manually while Git still tracks it unless you understand the recovery steps.
+Inspect the worktree path and branch shown by the application. A path, branch, ref, or ownership collision is reported before anything is created; choose a new task branch/path or reuse the existing managed worktree instead. If a worktree record shows an inspection error because Git no longer lists it (for example, after an interrupted creation or a worktree removed outside the application), use removal to clear the stale record — this only ever discards the database record, never a live, uncommitted worktree. Never delete a worktree directory manually while Git still tracks it unless you understand the recovery steps.
 
 ### Tests failed — planned
 

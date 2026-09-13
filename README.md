@@ -2,7 +2,7 @@
 
 AI Engineering Workspace is a local-only application for coordinating independent Claude Code and Codex engineering workflows against local Git repositories.
 
-The current increment includes the application shell, local tool health checks, SQLite persistence, safe project registration, explicit read-only Claude Code/Codex runs, and persisted brainstorm/architecture tasks with independent analysis, reciprocal cross-review, comparison, and an evidence board. It does not yet create worktrees or run implementation workflows.
+The current increment includes the application shell, local tool health checks, SQLite persistence, safe project registration, explicit read-only Claude Code/Codex runs, persisted brainstorm/architecture tasks with independent analysis, reciprocal cross-review, comparison, and an evidence board, and isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work. It does not yet run implementation/review workflows inside those worktrees (Phase 5).
 
 ## Quick start
 

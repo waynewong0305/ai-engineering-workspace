@@ -27,7 +27,11 @@ function provider(input: unknown): WorktreeProvider {
 
 function safetyError(reply: FastifyReply, error: unknown) {
   if (error instanceof WorktreeSafetyError) {
-    const conflict = error.code.includes("COLLISION") || error.code === "WORKTREE_IN_USE" || error.code === "WORKTREE_DIRTY";
+    const conflict = error.code.includes("COLLISION")
+      || error.code === "WORKTREE_IN_USE"
+      || error.code === "WORKTREE_DIRTY"
+      || error.code === "WORKTREE_LOCKED"
+      || error.code === "WORKTREE_PRUNABLE";
     return reply.code(conflict ? 409 : 400).send({ message: error.message, code: error.code });
   }
   if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
@@ -44,6 +48,30 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDataba
     const project = db.select().from(projects).where(eq(projects.id, record.projectId)).get();
     if (!project) throw new WorktreeSafetyError("The owning project no longer exists.", "PROJECT_NOT_FOUND");
     return project;
+  };
+
+  const recordMoveOrRenameFailure = async (
+    record: WorktreeRecord,
+    field: "path" | "branch",
+    persistError: unknown,
+    rollback: () => Promise<void>,
+    attemptedValue: string,
+  ) => {
+    const persistMessage = persistError instanceof Error ? persistError.message : "Database update failed.";
+    try {
+      await rollback();
+      db.update(worktrees).set({
+        lastError: `A ${field} update reached Git but could not be saved, so it was rolled back automatically. ${persistMessage}`,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(worktrees.id, record.id)).run();
+    } catch (rollbackError) {
+      const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : "Rollback failed.";
+      db.update(worktrees).set({
+        status: "ERROR",
+        lastError: `A ${field} update reached Git (now ${attemptedValue}) but the database record could not be saved, and automatic rollback also failed. Reconcile manually. Persistence error: ${persistMessage} Rollback error: ${rollbackMessage}`,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(worktrees.id, record.id)).run();
+    }
   };
 
   const detailFor = async (record: WorktreeRecord) => {
@@ -163,7 +191,9 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDataba
       try {
         db.update(worktrees).set({ path: inspection.path, updatedAt: new Date().toISOString() }).where(eq(worktrees.id, record.id)).run();
       } catch (error) {
-        await service.move(project.repositoryPath, project.worktreeRoot, inspection.path, record.path, false);
+        await recordMoveOrRenameFailure(record, "path", error, async () => {
+          await service.move(project.repositoryPath, project.worktreeRoot, inspection.path, record.path, false);
+        }, inspection.path);
         throw error;
       }
       return detailFor({ ...record, path: inspection.path, updatedAt: new Date().toISOString() });
@@ -182,7 +212,9 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDataba
       try {
         db.update(worktrees).set({ branchName, updatedAt: new Date().toISOString() }).where(eq(worktrees.id, record.id)).run();
       } catch (error) {
-        await service.renameBranch(project.repositoryPath, record.path, record.branchName, false);
+        await recordMoveOrRenameFailure(record, "branch", error, async () => {
+          await service.renameBranch(project.repositoryPath, record.path, record.branchName, false);
+        }, inspection.branchName ?? branchName);
         throw error;
       }
       return detailFor({ ...record, branchName: inspection.branchName!, updatedAt: new Date().toISOString() });
@@ -208,5 +240,13 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDataba
     } catch (error) {
       return safetyError(reply, error);
     }
+  });
+
+  app.delete<{ Params: { id: string; usageId: string } }>("/api/worktrees/:id/usages/:usageId", async (request, reply) => {
+    const record = db.select().from(worktrees).where(eq(worktrees.id, request.params.id)).get();
+    if (!record) return reply.code(404).send({ message: "Worktree not found." });
+    const released = usage.releaseById(record.id, request.params.usageId);
+    if (!released) return reply.code(404).send({ message: "Active usage lease not found." });
+    return detailFor(record);
   });
 }

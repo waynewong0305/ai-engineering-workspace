@@ -186,6 +186,12 @@ export class WorktreeService {
     return { ...entry, registered: true, gitStatus: porcelain.trim() ? "DIRTY" : "CLEAN", porcelain };
   }
 
+  private assertSafeToMutate(current: WorktreeInspection, action: string) {
+    if (current.locked) throw new WorktreeSafetyError(`A locked worktree cannot ${action}.`, "WORKTREE_LOCKED");
+    if (current.prunable) throw new WorktreeSafetyError(`A prunable worktree (its directory is missing) cannot ${action}.`, "WORKTREE_PRUNABLE");
+    if (current.gitStatus !== "CLEAN") throw new WorktreeSafetyError(`A dirty worktree cannot ${action}.`, "WORKTREE_DIRTY");
+  }
+
   async diff(worktreePath: string) {
     const [unstaged, staged] = await Promise.all([
       git(worktreePath, ["diff", "--no-ext-diff", "--"]),
@@ -197,7 +203,7 @@ export class WorktreeService {
   async move(repositoryPath: string, worktreeRoot: string, oldPath: string, newPath: string, inUse: boolean) {
     if (inUse) throw new WorktreeSafetyError("An active process is using this worktree.", "WORKTREE_IN_USE");
     const current = await this.inspect(repositoryPath, oldPath);
-    if (current.gitStatus !== "CLEAN") throw new WorktreeSafetyError("A dirty worktree cannot be moved.", "WORKTREE_DIRTY");
+    this.assertSafeToMutate(current, "be moved");
     const branchName = current.branchName;
     if (!branchName) throw new WorktreeSafetyError("A detached worktree cannot be managed by this workflow.", "DETACHED_WORKTREE");
     const validated = await this.validateTargetPath(repositoryPath, worktreeRoot, newPath);
@@ -209,7 +215,7 @@ export class WorktreeService {
   async renameBranch(repositoryPath: string, worktreePath: string, newBranchName: string, inUse: boolean) {
     if (inUse) throw new WorktreeSafetyError("An active process is using this worktree.", "WORKTREE_IN_USE");
     const current = await this.inspect(repositoryPath, worktreePath);
-    if (current.gitStatus !== "CLEAN") throw new WorktreeSafetyError("A dirty worktree cannot rename its branch.", "WORKTREE_DIRTY");
+    this.assertSafeToMutate(current, "rename its branch");
     if (!newBranchName.trim() || newBranchName.startsWith("-")) throw new WorktreeSafetyError("Branch name is invalid.", "INVALID_BRANCH");
     const format = await git(repositoryPath, ["check-ref-format", "--branch", newBranchName], [0, 128]);
     if (format.exitCode !== 0) throw new WorktreeSafetyError("Branch name is not a valid Git branch.", "INVALID_BRANCH");
@@ -221,10 +227,23 @@ export class WorktreeService {
 
   async remove(repositoryPath: string, worktreePath: string, inUse: boolean) {
     if (inUse) throw new WorktreeSafetyError("An active process is using this worktree.", "WORKTREE_IN_USE");
-    const current = await this.inspect(repositoryPath, worktreePath);
-    if (current.gitStatus !== "CLEAN") throw new WorktreeSafetyError("A dirty worktree cannot be removed.", "WORKTREE_DIRTY");
+    let current: WorktreeInspection;
+    try {
+      current = await this.inspect(repositoryPath, worktreePath);
+    } catch (error) {
+      if (error instanceof WorktreeSafetyError && error.code === "WORKTREE_NOT_REGISTERED") {
+        // Git never registered (or no longer registers) this path: a failed creation, an
+        // interrupted CREATING record, or a worktree removed outside this application. There is
+        // no live worktree to protect, so the orphaned record can be safely forgotten instead of
+        // permanently blocking its task/provider and project/branch slots.
+        await git(repositoryPath, ["worktree", "prune"]).catch(() => undefined);
+        return { removed: false, forgotten: true, retainedBranch: null };
+      }
+      throw error;
+    }
+    this.assertSafeToMutate(current, "be removed");
     await git(repositoryPath, ["worktree", "remove", "--", worktreePath]);
-    return { removed: true, retainedBranch: current.branchName };
+    return { removed: true, forgotten: false, retainedBranch: current.branchName };
   }
 
   async deleteMergedBranch(repositoryPath: string, branchName: string, baseRef: string) {
