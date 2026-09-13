@@ -1305,11 +1305,22 @@ async function deregisterProject(project: Project) {
   }
 }
 
-onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage()]));
+const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions"];
+const activeSection = ref(NAV_SECTIONS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "projects");
+function updateActiveSection() {
+  const hash = window.location.hash.slice(1);
+  if (NAV_SECTIONS.includes(hash)) activeSection.value = hash;
+}
+
+onMounted(() => {
+  window.addEventListener("hashchange", updateActiveSection);
+  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage()]);
+});
 onUnmounted(() => {
   eventSource?.close();
   if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
   if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
+  window.removeEventListener("hashchange", updateActiveSection);
 });
 </script>
 
@@ -1326,12 +1337,12 @@ onUnmounted(() => {
 
       <nav aria-label="Main navigation">
         <p class="nav-label">Workspace</p>
-        <a class="nav-item active" href="#projects"><span>01</span>Projects</a>
-        <a class="nav-item" href="#agent-runs"><span>02</span>Agent runs</a>
-        <a class="nav-item" href="#brainstorm"><span>03</span>Brainstorm</a>
-        <a class="nav-item" href="#worktrees"><span>04</span>Worktrees</a>
-        <a class="nav-item" href="#usage-safety"><span>05</span>Usage safety</a>
-        <a class="nav-item" href="#build"><span>06</span>Build</a>
+        <a :class="['nav-item', { active: activeSection === 'projects' }]" href="#projects"><span>01</span>Projects</a>
+        <a :class="['nav-item', { active: activeSection === 'agent-runs' }]" href="#agent-runs"><span>02</span>Agent runs</a>
+        <a :class="['nav-item', { active: activeSection === 'brainstorm' }]" href="#brainstorm"><span>03</span>Brainstorm</a>
+        <a :class="['nav-item', { active: activeSection === 'worktrees' }]" href="#worktrees"><span>04</span>Worktrees</a>
+        <a :class="['nav-item', { active: activeSection === 'usage-safety' }]" href="#usage-safety"><span>05</span>Usage safety</a>
+        <a :class="['nav-item', { active: activeSection === 'build' }]" href="#build"><span>06</span>Build</a>
         <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>07</span>Reviews</a>
         <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>08</span>Decisions</a>
       </nav>
