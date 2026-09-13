@@ -29,11 +29,12 @@ protects, and the UI it will drive) was evaluated in detail and deliberately def
 unstarted by oversight — see `IMPLEMENTATION_STATUS.md`'s record before reconsidering it. Recovery,
 database backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost
 monitoring (Phase 8, spec in `USAGE_MONITORING_SPEC.md`) was pulled forward by explicit human
-instruction and has its first slice done: real-time usage-safety readings from both CLIs' own
-structured output (not just Claude's — Codex too), and per-run token capture with historical
-backfill. The pricing registry, cost figures, dashboards, cross-review breakdown, budgets, and
-settings UI remain — see `IMPLEMENTATION_STATUS.md`'s record for what's actually built versus still
-open, including a known Codex real-CLI verification gap.
+instruction and has its first slice done: real-time usage-safety readings from Claude's own
+structured output, and per-run token capture (both providers) with historical backfill. Confirmed,
+via a real completion once its usage limit reset, that Codex's `exec --json` invocation path does
+not expose plan-usage percentages the way Claude's does — it stays honestly `UNAVAILABLE` there, no
+fabrication. The pricing registry, cost figures, dashboards, cross-review breakdown, budgets, and
+settings UI remain — see `IMPLEMENTATION_STATUS.md`'s record for the full detail.
 
 ## Source-of-truth specifications
 

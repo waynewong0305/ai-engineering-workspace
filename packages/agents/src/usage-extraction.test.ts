@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { extractRateLimitReadings, extractTokenUsage } from "./usage-extraction.js";
 
 // Real shapes captured from the installed CLIs during Phase 8 Step 0 investigation (2026-09-13):
-// Claude 2.1.269's actual `--output-format stream-json` output, and Codex 0.154.0's real local
-// session logs (~/.codex/sessions). Codex's exact `codex exec --json` wrapping is not yet
-// separately confirmed — see usage-extraction.ts's findCodexShaped doc comment.
+// Claude 2.1.269's actual `--output-format stream-json` output, Codex 0.154.0's real local session
+// logs (~/.codex/sessions), and — once Codex's own usage limit reset — a real `codex exec --json`
+// completion run through the actual app. See usage-extraction.ts's findCodexShaped doc comment for
+// what that confirmed: exec's own stream reports token usage but never a rate-limit reading.
 const CLAUDE_RATE_LIMIT_EVENT = {
   type: "rate_limit_event",
   rate_limit_info: {
@@ -65,6 +66,18 @@ const CODEX_TOKEN_USAGE_RECORD = {
   },
 };
 
+// A real `codex exec --json` completion run through the actual app (once Codex's usage limit
+// reset) — its exec stream, unlike the interactive session-log format above, puts `usage` directly
+// at the top level with no `payload` wrapper, and never emits a rate-limit reading at all.
+const CODEX_EXEC_TURN_COMPLETED_EVENT = {
+  type: "turn.completed",
+  usage: { input_tokens: 12_340, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 11, reasoning_output_tokens: 0 },
+};
+const CODEX_EXEC_ITEM_COMPLETED_EVENT = {
+  type: "item.completed",
+  item: { id: "item_0", type: "agent_message", text: "USAGE_TEST_CODEX_1" },
+};
+
 describe("extractRateLimitReadings", () => {
   it("extracts both windows from a real Claude rate_limit_event", () => {
     expect(extractRateLimitReadings("CLAUDE", CLAUDE_RATE_LIMIT_EVENT)).toEqual([
@@ -99,6 +112,11 @@ describe("extractRateLimitReadings", () => {
     const oddWindow = { rate_limits: { primary: { used_percent: 10, window_minutes: 60, resets_at: 1 } } };
     expect(extractRateLimitReadings("CODEX", oddWindow)).toEqual([]);
   });
+
+  it("confirms a real codex exec --json completion never reports a rate-limit reading", () => {
+    expect(extractRateLimitReadings("CODEX", CODEX_EXEC_TURN_COMPLETED_EVENT)).toEqual([]);
+    expect(extractRateLimitReadings("CODEX", CODEX_EXEC_ITEM_COMPLETED_EVENT)).toEqual([]);
+  });
 });
 
 describe("extractTokenUsage", () => {
@@ -126,6 +144,16 @@ describe("extractTokenUsage", () => {
       reasoningOutputTokens: 0,
       totalTokens: 29593,
     });
+  });
+
+  it("extracts every reported field from a real codex exec --json turn.completed event", () => {
+    expect(extractTokenUsage("CODEX", CODEX_EXEC_TURN_COMPLETED_EVENT)).toEqual({
+      inputTokens: 12_340, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 11, reasoningOutputTokens: 0,
+    });
+  });
+
+  it("returns null for a real codex exec --json event with no usage (thread.started/item.completed)", () => {
+    expect(extractTokenUsage("CODEX", CODEX_EXEC_ITEM_COMPLETED_EVENT)).toBeNull();
   });
 
   it("returns null for a Codex event with no usage object", () => {

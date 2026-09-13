@@ -37,9 +37,11 @@ The current implementation can:
 - create integrity-checked local database backups, stage a restore for the next restart, recover
   records interrupted by a prior application process at startup, inspect cleanup warnings, and export audit
   metadata without exporting prompts or model output.
-- read exact Claude/Codex plan-usage percentages automatically from each provider's own output after
-  every run (no more manual-only tracking), and capture each run's own exact token counts (input,
-  output, cached), including recovering them for every run that already happened before this existed.
+- read exact Claude plan-usage percentages automatically from its own output after every run (no
+  more manual-only tracking — Codex doesn't expose this the same way, confirmed by testing it, so
+  its card still relies on a manual snapshot), and capture each run's own exact token counts (input,
+  output, cached) for both providers, including recovering them for every run that already happened
+  before this existed.
 
 Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
@@ -583,7 +585,7 @@ The report always states **Human review required: YES** and a recommended next a
 
 **05 — Usage safety** tracks Claude's and Codex's own provider allowance separately from everything else in this workspace. This is not the same thing as an API's tokens-per-minute rate limit: it is the Claude Code / ChatGPT plan allowance a run can exhaust (for example, Claude's rolling 5-hour window, or a weekly plan allowance), and it is checked before every provider-consuming action so you never spend it blind.
 
-Both Claude Code and Codex report exact, current plan usage automatically in their own output after every run — this workspace reads it directly and records it for you, labeled **CLI_REPORTED** and **EXACT**. You don't need to do anything for this; it just happens once you've run something.
+Claude Code reports exact, current plan usage automatically in its own output after every run — this workspace reads it directly and records it for you, labeled **CLI_REPORTED** and **EXACT**. You don't need to do anything for this; it just happens once you've run something. Codex does not currently expose the equivalent through the command this workspace uses to run it, so its card stays **Unavailable** until you submit a manual snapshot — this was confirmed by actually testing it, not assumed.
 
 - **Refresh** doesn't poll on demand — there's no such command in either CLI — it just explains that usage updates automatically after each run. The label always tells you honestly whether that's happened yet.
 - Use **Submit manual snapshot** to record what the provider's own interface (claude.ai, ChatGPT) shows you before you've run anything yet, or for a provider that hasn't reported automatically for some other reason. Manual readings are always labeled **MANUAL** and **ESTIMATED**, with the time you entered them, so they are never confused with an automatic reading.

@@ -32,13 +32,18 @@ function epochSecondsToIso(value: unknown): string | null {
 }
 
 /**
- * Codex's rate-limit/usage payloads were only confirmed against its interactive session-log
- * format (`~/.codex/sessions/**`), not yet against `codex exec --json`'s own event wrapping — its
- * usage limit was exhausted for real during verification, before a successful completion could be
- * inspected directly. This searches for the recognizable data shape at the top level or one level
- * of nesting under a handful of plausible wrapper keys, rather than requiring one exact event
- * envelope, so it tolerates a wrapping difference between the two formats. Tighten this once a
- * real `codex exec --json` completion confirms the exact shape.
+ * Confirmed against a real `codex exec --json` completion (0.154.0): its `turn.completed` event
+ * carries `usage` directly at the top level — `{ input_tokens, cached_input_tokens,
+ * cache_write_input_tokens, output_tokens, reasoning_output_tokens }`, no wrapper. Real Codex
+ * *session-log* telemetry (`~/.codex/sessions/**`, the interactive/desktop-app format) additionally
+ * nests an equivalent shape under a `payload` key and separately reports a `rate_limits` object —
+ * but a live `codex exec --json` run producing the same simple prompt emitted no such rate-limit
+ * event at all: `exec` mode's non-interactive, single-turn `usage_records`-equivalent stream simply
+ * doesn't surface plan-usage percentages (also checked `codex doctor --json` — no rate-limit/usage
+ * check exists there either). So `extractRateLimitReadings("CODEX", ...)` below will reliably
+ * return `[]` for anything this app actually invokes today; it stays shape-based (rather than
+ * deleted) in case a future CLI version starts including it in `exec`'s stream, and stays tolerant
+ * of the session-log wrapper shape too, since both are harmless to check for.
  */
 function findCodexShaped(value: unknown, key: string): Record<string, unknown> | null {
   const top = record(value);

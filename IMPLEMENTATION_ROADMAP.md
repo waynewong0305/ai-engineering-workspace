@@ -41,13 +41,15 @@ Claude Code 2.1.269 exposes non-interactive `--print`, `stream-json`, restricted
   servers". `ClaudeAdapter.ts` was passing the bare form; every real Claude run through this app was
   failing before reaching the model until this was fixed. A reminder that "re-verify before trusting
   a prior finding" applies to *already-shipped* invocation code, not only new phases.
-- Both Claude Code and the installed Codex CLI report exact, real-time subscription-plan usage
-  percentages in their own structured output (Claude: a `rate_limit_event` message; Codex: a
-  `token_count` event's `rate_limits` object, confirmed from real local session logs since its usage
-  limit was exhausted mid-investigation) — see `IMPLEMENTATION_STATUS.md`'s Phase 8 completion
-  record for the full detail. This means an earlier finding in this same document and in
-  `usage-safety.ts` ("no supported local CLI/API surface reports exact usage percentages") no longer
-  holds and has been corrected rather than left stale.
+- Claude Code reports exact, real-time subscription-plan usage percentages directly in its
+  `--output-format stream-json` output (a `rate_limit_event` message) — confirmed live and wired
+  into `UsageSafetyService`. Codex's *interactive session* telemetry contains the equivalent data
+  (a `token_count` event's `rate_limits` object, confirmed from real local session logs), but a
+  follow-up real test — once Codex's own usage limit reset the same session — confirmed
+  `codex exec --json` (the invocation path this app actually drives) never emits it; only per-turn
+  token counts. So this finding only overturns the "no supported surface" assumption for Claude in
+  practice; Codex's plan-usage percentage remains genuinely `UNAVAILABLE` through this app today.
+  See `IMPLEMENTATION_STATUS.md`'s Phase 8 completion record for the full detail.
 
 ## Architecture guardrails
 
@@ -243,12 +245,15 @@ first slice (below) came out of what that investigation found. Full spec, data m
 budget behavior, backfill rules, and testing/reporting requirements: `USAGE_MONITORING_SPEC.md`.
 See `IMPLEMENTATION_STATUS.md`'s completion record for the full first-slice detail, including a
 real, pre-existing `ClaudeAdapter` bug this investigation found and fixed along the way, and a
-known Codex real-CLI verification gap (its usage limit was genuinely exhausted mid-session).
+confirmed Codex real-time-usage-safety gap (its usage limit reset mid-session, letting a real
+`codex exec --json` completion confirm it never reports plan-usage percentages — per-run token
+capture works fine for it, only the plan-usage-percentage half doesn't).
 
 - [x] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability —
-      found both CLIs already report exact, real-time plan-usage percentages, not just per-run
-      tokens; folded a real-time usage-safety upgrade into this phase as a result (by explicit
-      human instruction, since it wasn't part of the original Phase 8 scope)
+      found Claude reports exact, real-time plan-usage percentages in its own output, not just
+      per-run tokens; folded a real-time usage-safety upgrade into this phase as a result (by
+      explicit human instruction, since it wasn't part of the original Phase 8 scope). Confirmed
+      Codex's `exec --json` invocation path does not expose the equivalent — see above.
 - [x] `UsageRecord` data model and migration, linked to run/task/project — per-run token counts
       only in this slice; no cost fields yet (see the deferred items below)
 - [ ] Centralized, versioned pricing registry and auditable API-equivalent cost calculation

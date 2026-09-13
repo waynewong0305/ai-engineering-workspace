@@ -937,8 +937,11 @@ what this first slice actually covers, deliberately smaller than the full spec.
 - [x] Historical backfill with a backfill report
 - [ ] Usage & Cost settings
 - [x] *(Not originally scoped as a Phase 8 checklist item, but discovered during Step 0 and folded in
-  by explicit human instruction)* Real-time automatic usage-safety readings from both CLIs' own
-  structured output, replacing the previous permanent `UNAVAILABLE` status
+  by explicit human instruction)* Real-time automatic usage-safety readings from Claude's own
+  structured output, replacing the previous permanent `UNAVAILABLE` status. Confirmed **not**
+  available from Codex through the invocation path this app drives (`codex exec --json` never
+  emits a rate-limit reading, confirmed against a real completion) — Codex still reports
+  `UNAVAILABLE` honestly rather than a fabricated reading; its per-run *token* capture works fine.
 
 ### Phase 8 first-slice completion record — real-time usage-safety data and per-run token capture
 
@@ -1004,30 +1007,43 @@ what this first slice actually covers, deliberately smaller than the full spec.
   (`scanned: 0` — every existing run already had a usage record, either from this same
   verification or captured live, confirming the idempotency guarantee holds in practice, not just
   in tests).
-- **Known, current-environment limitation, honestly not worked around:** Codex's real usage limit
-  was genuinely exhausted during this session (resets ~11 PM the same day), so the equivalent
-  real-CLI check could not be run for Codex — its token/rate-limit *data shapes* were confirmed from
-  real historical session logs, but the exact event wrapping inside `codex exec --json` specifically
-  (the invocation path `CodexAdapter` actually drives) remains unconfirmed; the live exec stream
-  observed during this investigation used different top-level event naming
-  (`thread.started`/`turn.started`/`turn.failed`) than the session-log format the data shapes were
-  read from. `usage-extraction.ts`'s Codex-side parsing is deliberately shape-based (searches for
-  the recognizable data rather than requiring one exact wrapper) specifically to tolerate this, but
-  should be reconfirmed for certain against a real successful `codex exec --json` completion once
-  Codex's usage limit resets, before being fully trusted in production.
+- **Codex real-CLI verification, completed once its usage limit reset the same day:** installed
+  `@openai/codex` globally under Node 22 (it was runnable only via `npx` before, which
+  `CodexAdapter`'s bare `codex` executable name can't resolve) and ran one real minimal Codex prompt
+  through the actual app. This confirmed the real `codex exec --json` (0.154.0) event shape for
+  certain: a `turn.completed` event carries `usage` *directly at the top level* — `{input_tokens:
+  12340, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 11,
+  reasoning_output_tokens: 0}` — no wrapper at all, different from both the interactive session-log
+  format's nesting and the earlier guess. The existing shape-based, defensive `findCodexShaped`
+  handled this correctly with no code change needed (it checks the top level before any wrapper
+  key). `GET /api/agent-runs/:id` returned a correct `usage_records` row
+  (`usageSource: "provider_reported"`, real token counts).
+- **One real, confirmed (not just suspected) capability gap:** that same real Codex run emitted no
+  rate-limit/plan-usage event at all — `codex exec --json`'s non-interactive, single-turn stream
+  reports token usage but never plan-usage percentages. Separately checked `codex doctor --json` for
+  an alternative surface — no rate-limit/usage check exists there either. So the real-time
+  usage-safety upgrade (Part A) is confirmed working for Claude but does **not** work for Codex
+  through the invocation path this app actually drives (`GET /api/usage/CODEX` stayed
+  `UNAVAILABLE` after the real run, correctly — no reading was fabricated). Per-run token capture
+  (Part B) works correctly for both providers; this is specifically about the plan-usage-percentage
+  half. `extractRateLimitReadings`'s Codex branch is kept rather than removed (harmless, and ready
+  if a future Codex version starts including this in `exec`'s own stream), with its doc comment and
+  test suite updated to state this as a confirmed finding, not an open question.
 - Explicitly deferred to a later slice: the pricing registry and any *labeled* cost figure (Claude's
   `total_cost_usd` is captured verbatim in `rawUsageMetadata` but not surfaced as a labeled field —
   correctly labeling it `actualCostUsd` vs `apiEquivalentCostUsd` needs billing-mode inference this
   slice doesn't build), the workspace/task dashboards, cross-review cost breakdown, token-efficiency
   metrics, task usage budgets, and the Usage & Cost settings page.
-- Tests added: `packages/agents/src/usage-extraction.test.ts` (12), `ClaudeAdapter.test.ts` (+1
-  regression test), `usage-safety.test.ts` (+2), `agent-runs.test.ts` (+3), `usage-backfill.test.ts`
-  (3) — 21 new tests.
-- Full verification: `npm test` (194 workspace tests: 115 server + 48 agents + 31 `packages/git`,
+- Tests added: `packages/agents/src/usage-extraction.test.ts` (15, including the real
+  `codex exec --json` shapes above), `ClaudeAdapter.test.ts` (+1 regression test),
+  `usage-safety.test.ts` (+2), `agent-runs.test.ts` (+3), `usage-backfill.test.ts` (3) — 24 new
+  tests.
+- Full verification: `npm test` (197 workspace tests: 115 server + 51 agents + 31 `packages/git`,
   plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
   `npm run db:generate` (migration `0014` adds `usage_records`, no further drift), and
-  `git diff --check` — all passed under Node 22.23.2, plus the real-CLI verification and live
-  browser check described above.
+  `git diff --check` — all passed under Node 22.23.2, plus real-CLI verification against the actual
+  running app for *both* providers (Claude at first pass, Codex once its usage limit reset the same
+  session) and a live browser check of the Usage Safety panel and run-detail token line.
 
 ## End-to-end workflow verification (cross-cutting)
 
