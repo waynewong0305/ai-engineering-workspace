@@ -657,6 +657,7 @@ Completion record:
 - [x] Startup recovery for interrupted work
 - [ ] Supervised frontend verification runner for registered projects
 - [x] Just-in-time approval gate before provider-based frontend UI/UX review
+- [x] Accessibility and responsive UI audit of this workspace itself
 
 ### Frontend review approval gate completion record
 
@@ -702,6 +703,45 @@ Completion record:
   plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
   `npm run db:generate` (19 tables; migration `0013` adds `frontend_review_approvals`, no further
   drift), and `git diff --check`; all passed under Node 22.23.2.
+
+### Accessibility and responsive UI audit completion record
+
+- Date: 2026-09-13
+- Audited this workspace's own UI (`apps/web/src/App.vue`/`style.css`) live in the browser rather
+  than by code reading alone: emulated mobile (375px) and tablet (768px) viewports against a real
+  registered project, reloaded at each size, and checked for real layout overflow with a
+  `getBoundingClientRect()` sweep of every element (not just a visual screenshot — the Browser
+  pane's mobile-emulation screenshots render at 2x device-pixel-ratio and visually appear to clip
+  text at the right edge even when nothing actually overflows; the DOM measurement is the authority,
+  and confirmed zero real overflow beyond the sidebar nav's own intentionally-scrollable tab strip
+  at both widths). Also checked landmark structure (`nav`/`main`/`aside` present, exactly one `h1`),
+  label association (all 45 `<label>` elements wrap their control; zero orphaned), and the existing
+  `@media (max-width: 820px)`/`(max-width: 520px)`/`(prefers-reduced-motion: reduce)` rules, which
+  were already reasonably thorough going in.
+- Found and fixed two real issues:
+  1. The "Reviews" sidebar placeholder was an `<a href="#reviews" aria-disabled="true">` — `aria-disabled`
+     alone does not stop an anchor from being focusable or activatable, so despite reading as
+     disabled to a screen reader, a keyboard user could still Tab to it and navigate there. Removing
+     the now-pointless `href` makes it genuinely non-focusable and non-navigable (verified: calling
+     `.focus()` on it no longer moves focus there), matching how `:disabled` already behaves
+     correctly on real `<button>` elements elsewhere in this file.
+  2. `:focus-visible` had a custom, clearly visible cyan outline on `.ghost-button` and `.nav-item`
+     only; `.primary-button`, `.text-button`, and `.danger-outline-button` fell back to the browser
+     default outline. Extended the same rule to all four button variants for a consistent, clearly
+     visible keyboard-focus indicator across every interactive control in the app.
+- Checked, found already correct, no change needed: color contrast (computed WCAG relative-luminance
+  ratios by hand for the palette's actual text/background pairings — `--muted` #8ea0ba and
+  `.form-hint` #71849f both clear 5:1+ against every panel background in use; error/success text
+  clears 8:1+); the responsive breakpoints already collapse the sidebar, tool grids, form grids, and
+  task lists to single/adjusted columns correctly at both audited widths with no overflow.
+- Known, deliberately out of scope: this covers the workspace's own control-room UI only, not a
+  generalized, configurable, reusable browser-accessibility-scanning capability for a *registered
+  project's* frontend — that remains part of the separate, not-yet-built supervised frontend
+  verification runner item above.
+- Full verification: `npm test` (173 workspace tests: 107 server + 35 agents + 31 `packages/git`,
+  plus 9 policy-script tests — unchanged, this unit touched only `apps/web`), `npm run typecheck`,
+  `npm run build`, and `git diff --check`; all passed under Node 22.23.2. No console errors observed
+  at any audited viewport.
 
 ### Frontend verification policy recorded — implementation pending
 

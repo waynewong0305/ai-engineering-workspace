@@ -22,9 +22,10 @@ recorded: project registration, agent adapters, independent brainstorming, Git w
 the cross-cutting Claude/Codex usage-safety system, build/review workflows inside worktrees (Phase
 5), and planning/ADRs/experiments/plan promotion (Phase 6) are implemented. Phase 7 hardening is in
 progress; process/environment, CLI-failure hardening, cross-phase verification, the sensitive-path
-deny list, worktree-conflict handling, and the just-in-time frontend-review approval gate are
-complete, while the supervised frontend verification runner itself (the browser-automation piece
-the gate protects) and an accessibility/responsive audit of this workspace remain. Recovery,
+deny list, worktree-conflict handling, the just-in-time frontend-review approval gate (server-side
+only; no UI yet), and an accessibility/responsive audit of this workspace are complete, while the
+supervised frontend verification runner itself (the browser-automation piece the approval gate
+protects, and the UI it will drive) remains. Recovery,
 database backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost
 monitoring (Phase 8, spec in
 `USAGE_MONITORING_SPEC.md`) is queued behind Phase 7 — do not start it early without an explicit

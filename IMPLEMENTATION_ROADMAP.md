@@ -202,12 +202,12 @@ Goal: make normal failure safe and understandable.
       accessibility, responsive screenshots, and optional approved-baseline comparison)
 - [x] Separate just-in-time human approval, with a displayed reason and persisted scope, before any
       current or future model-backed agent reviews frontend UI/UX or receives browser evidence —
-      `FrontendReviewApprovalService` and its routes/UI; the runner this gate protects is not yet
-      built, so nothing calls it yet
+      `FrontendReviewApprovalService` and its routes (server-side only; the runner this gate
+      protects, and the UI that will drive it, are not yet built, so nothing calls it yet)
 - [ ] Token-efficient evidence selection: exception-only provider review, one-provider default,
       affected-region/failure-excerpt inputs, exact-revision artifact reuse, and separate approval
       before second-provider escalation or material scope expansion
-- [ ] Accessibility and responsive UI audit of this workspace itself
+- [x] Accessibility and responsive UI audit of this workspace itself
 
 Exit gate: documented failure drills preserve source code, history, and user control.
 

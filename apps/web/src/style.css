@@ -111,7 +111,10 @@ p { color: var(--muted); font-size: 16px; line-height: 1.65; }
   background: #101827;
 }
 .ghost-button:hover { border-color: var(--cyan); }
-.ghost-button:focus-visible, .nav-item:focus-visible { outline: 3px solid rgba(105, 227, 255, 0.35); outline-offset: 2px; }
+.ghost-button:focus-visible, .nav-item:focus-visible, .primary-button:focus-visible, .text-button:focus-visible, .danger-outline-button:focus-visible {
+  outline: 3px solid rgba(105, 227, 255, 0.35);
+  outline-offset: 2px;
+}
 
 .intro-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.7fr); gap: 50px; padding: 64px 0 42px; align-items: end; }
 .intro-copy > p:last-child { max-width: 680px; margin-bottom: 0; }
