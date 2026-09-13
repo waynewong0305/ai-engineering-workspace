@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -52,6 +52,7 @@ class FakeBuildAdapter implements AgentAdapter {
     readonly name: AgentProvider,
     private readonly options: {
       reviewerOutput?: string; builderDelayMs?: number; responseOutput?: string; recheckOutput?: string;
+      builderEditsReadme?: string;
     } = {},
   ) {}
 
@@ -68,8 +69,13 @@ class FakeBuildAdapter implements AgentAdapter {
     if (input.promptVersion === "build:v1") {
       if (input.permissionProfile !== "WORKTREE_WRITE") throw new Error("Builder must run WORKTREE_WRITE.");
       if (this.options.builderDelayMs) await new Promise((resolve) => setTimeout(resolve, this.options.builderDelayMs));
-      await writeFile(join(input.cwd, "feature.txt"), "built by the fake builder\n", "utf8");
-      yield { type: "stdout", runId: input.runId, occurredAt, chunk: "Added feature.txt." };
+      if (this.options.builderEditsReadme !== undefined) {
+        await writeFile(join(input.cwd, "README.md"), this.options.builderEditsReadme, "utf8");
+        yield { type: "stdout", runId: input.runId, occurredAt, chunk: "Edited README.md." };
+      } else {
+        await writeFile(join(input.cwd, "feature.txt"), "built by the fake builder\n", "utf8");
+        yield { type: "stdout", runId: input.runId, occurredAt, chunk: "Added feature.txt." };
+      }
     } else if (input.promptVersion === "code-review:v1") {
       if (input.permissionProfile !== "READ_ONLY") throw new Error("Reviewer must run READ_ONLY.");
       yield { type: "stdout", runId: input.runId, occurredAt, chunk: this.options.reviewerOutput ?? VALID_FINDINGS };
@@ -144,9 +150,11 @@ async function pollUntilTerminal(app: ReturnType<typeof buildApp>, buildRunId: s
 }
 
 /** Round 1 only: a completed build with exactly VALID_FINDINGS' single OPEN finding at ordinal 0. */
-async function startCompletedBuild(app: ReturnType<typeof buildApp>, body: Record<string, unknown> = {}) {
+async function startCompletedBuild(
+  app: ReturnType<typeof buildApp>, body: Record<string, unknown> = {}, validationCommands: Array<{ label: string; command: string }> = [],
+) {
   await acknowledgeUnknownUsage(app);
-  const { task } = await createTaskAndProject(app, []);
+  const { task, repositoryPath } = await createTaskAndProject(app, validationCommands);
   const startResponse = await app.inject({
     method: "POST", url: `/api/tasks/${task.id}/builds`,
     payload: { builderProvider: "CLAUDE", reviewerProvider: "CODEX", ...body },
@@ -154,8 +162,16 @@ async function startCompletedBuild(app: ReturnType<typeof buildApp>, body: Recor
   expect(startResponse.statusCode).toBe(202);
   const build = await pollUntilTerminal(app, startResponse.json().buildRunId);
   expect(build.status).toBe("COMPLETED");
-  expect(build.findings).toHaveLength(1);
-  expect(build.findings[0]).toMatchObject({ ordinal: 0, status: "OPEN" });
+  return { ...build, repositoryPath, task };
+}
+
+async function pollUntilMerged(app: ReturnType<typeof buildApp>, buildRunId: string) {
+  let build;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    build = (await app.inject({ method: "GET", url: `/api/builds/${buildRunId}` })).json();
+    if (["MERGED", "MERGE_CONFLICT", "MERGE_FAILED"].includes(build.mergeStatus)) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   return build;
 }
 
@@ -393,5 +409,149 @@ describe("build finding-response and re-review rounds", () => {
     const respondResponse = await app.inject({ method: "POST", url: `/api/builds/${startResponse.json().buildRunId}/respond` });
     expect(respondResponse.statusCode).toBe(409);
     expect(respondResponse.json().message).toContain("Only a completed build");
+    // Let the delayed builder run actually finish before the app closes, so its background promise
+    // doesn't try to write to a DB this test has already torn down.
+    await pollUntilTerminal(app, startResponse.json().buildRunId);
+  });
+});
+
+describe("build merge", () => {
+  it("commits the builder's uncommitted changes, merges into main, and cleans up the worktree afterward", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+    // The builder's change is present but never committed by the workflow itself (there is no
+    // other commit path in this app) until merge does it explicitly.
+    expect((await execFileAsync("git", ["-C", build.repositoryPath, "log", "--all", "--oneline"])).stdout.trim().split("\n")).toHaveLength(1);
+
+    const mergeResponse = await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge` });
+    expect(mergeResponse.statusCode).toBe(202);
+    const finalBuild = await pollUntilMerged(app, build.id);
+
+    expect(finalBuild.mergeStatus).toBe("MERGED");
+    expect(finalBuild.mergeTargetBranch).toBe("main");
+    expect(finalBuild.mergeCommitSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(finalBuild.mergedAt).toBeTruthy();
+    expect(finalBuild.mergeError).toBeNull();
+    // The fixture repository has "main" checked out throughout, so the detection must fire.
+    expect(await realpath(finalBuild.mergeTargetCheckedOutAt)).toBe(await realpath(build.repositoryPath));
+    expect(finalBuild.worktreeRemovedAfterMerge).toBe(true);
+    expect(finalBuild.branchDeletedAfterMerge).toBe(false);
+    expect(finalBuild.worktreeCleanupSkippedReason).toBeNull();
+
+    expect((await execFileAsync("git", ["-C", build.repositoryPath, "rev-parse", "main"])).stdout.trim()).toBe(finalBuild.mergeCommitSha);
+    // finalizeMerge only ever moves the ref — the primary checkout's own working files are
+    // deliberately left untouched (see WorktreeService.test.ts), so read the committed content
+    // through Git rather than expecting it to already be on disk in the working directory.
+    const committedContent = await execFileAsync("git", ["-C", build.repositoryPath, "show", "main:feature.txt"]);
+    expect(committedContent.stdout).toContain("built by the fake builder");
+    const worktreeGone = await app.inject({ method: "GET", url: `/api/worktrees/${build.worktreeId}` });
+    expect(worktreeGone.statusCode).toBe(404);
+  });
+
+  it("keeps the worktree when keepWorktreeAfterMerge is requested, even though the merge itself still lands", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge`, payload: { keepWorktreeAfterMerge: true } });
+    const finalBuild = await pollUntilMerged(app, build.id);
+
+    expect(finalBuild.mergeStatus).toBe("MERGED");
+    expect(finalBuild.worktreeRemovedAfterMerge).toBe(false);
+    expect(finalBuild.worktreeCleanupSkippedReason).toContain("Kept by request");
+    const worktreeStillThere = await app.inject({ method: "GET", url: `/api/worktrees/${build.worktreeId}` });
+    expect(worktreeStillThere.statusCode).toBe(200);
+  });
+
+  it("deletes the task branch after merge when deleteBranchAfterMerge is requested", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+    const worktreeBefore = (await app.inject({ method: "GET", url: `/api/worktrees/${build.worktreeId}` })).json();
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge`, payload: { deleteBranchAfterMerge: true } });
+    const finalBuild = await pollUntilMerged(app, build.id);
+
+    expect(finalBuild.mergeStatus).toBe("MERGED");
+    expect(finalBuild.branchDeletedAfterMerge).toBe(true);
+    const branchGone = await execFileAsync("git", ["-C", build.repositoryPath, "show-ref", "--verify", `refs/heads/${worktreeBefore.branchName}`]).catch((error) => error);
+    expect(branchGone).toBeInstanceOf(Error);
+  });
+
+  it("leaves the worktree and target branch untouched and reports the conflicting file on a real merge conflict", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [
+        new FakeBuildAdapter("CLAUDE", { builderEditsReadme: "# Fixture\ntask branch change\n" }),
+        new FakeBuildAdapter("CODEX", { reviewerOutput: JSON.stringify({ findings: [] }) }),
+      ],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+
+    // Diverge main after the worktree already forked from it, on the same line the builder touched.
+    await writeFile(join(build.repositoryPath, "README.md"), "# Fixture\nmain branch change\n", "utf8");
+    await execFileAsync("git", ["-C", build.repositoryPath, "add", "README.md"]);
+    await execFileAsync("git", ["-C", build.repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Conflicting change on main"]);
+    const mainTipBeforeMerge = (await execFileAsync("git", ["-C", build.repositoryPath, "rev-parse", "main"])).stdout.trim();
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge` });
+    const finalBuild = await pollUntilMerged(app, build.id);
+
+    expect(finalBuild.mergeStatus).toBe("MERGE_CONFLICT");
+    expect(finalBuild.mergeError).toContain("README.md");
+    expect(finalBuild.mergeCommitSha).toBeNull();
+    expect((await execFileAsync("git", ["-C", build.repositoryPath, "rev-parse", "main"])).stdout.trim()).toBe(mainTipBeforeMerge);
+    // The task worktree itself is untouched (still there, still on its own committed change).
+    const worktreeStillThere = await app.inject({ method: "GET", url: `/api/worktrees/${build.worktreeId}` });
+    expect(worktreeStillThere.statusCode).toBe(200);
+  });
+
+  it("keeps the worktree when post-merge validation fails, even though the merge itself already landed", async () => {
+    const failing = `${process.execPath} -e "process.exit(1)"`;
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const build = await startCompletedBuild(app, {}, [{ label: "Always fails", command: failing }]);
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge` });
+    const finalBuild = await pollUntilMerged(app, build.id);
+
+    expect(finalBuild.mergeStatus).toBe("MERGED");
+    expect(finalBuild.worktreeRemovedAfterMerge).toBe(false);
+    expect(finalBuild.worktreeCleanupSkippedReason).toContain("Post-merge validation");
+    const postMergeRuns = finalBuild.validationRuns.filter((run: { commandLabel: string }) => run.commandLabel === "Always fails");
+    // Once from the original build, once again post-merge.
+    expect(postMergeRuns).toHaveLength(2);
+    const worktreeStillThere = await app.inject({ method: "GET", url: `/api/worktrees/${build.worktreeId}` });
+    expect(worktreeStillThere.statusCode).toBe(200);
+  });
+
+  it("refuses to merge a build that isn't COMPLETED", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE", { builderDelayMs: 200 }), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    await acknowledgeUnknownUsage(app);
+    const { task } = await createTaskAndProject(app, []);
+    const startResponse = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/builds`, payload: { builderProvider: "CLAUDE", reviewerProvider: "CODEX" },
+    });
+    const mergeResponse = await app.inject({ method: "POST", url: `/api/builds/${startResponse.json().buildRunId}/merge` });
+    expect(mergeResponse.statusCode).toBe(409);
+    expect(mergeResponse.json().message).toContain("Only a completed build");
+    // Let the delayed builder run actually finish before the app closes, so its background promise
+    // doesn't try to write to a DB this test has already torn down.
+    await pollUntilTerminal(app, startResponse.json().buildRunId);
+  });
+
+  it("refuses a second merge once a build has already been merged", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge`, payload: { keepWorktreeAfterMerge: true } });
+    await pollUntilMerged(app, build.id);
+
+    const secondAttempt = await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge` });
+    expect(secondAttempt.statusCode).toBe(409);
+    expect(secondAttempt.json().message).toContain("already been merged");
   });
 });

@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and Phase 5's builder/validate/review loop through its second slice: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, and now a human-triggered finding-response/re-review round (builder responds ACCEPTED/REJECTED/PARTIALLY_ACCEPTED with evidence, the reviewer rechecks and may raise new findings) capped by a per-build, human-configurable maximum round count. It does not yet implement human-approved merge, guarded auto-cleanup, or the pre-PR report — see Phase 5 below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and Phase 5's builder/validate/review loop through its third slice: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, and now a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds). It does not yet implement the pre-PR report — see Phase 5 below.
 
 ## LLM agent policy
 
@@ -170,9 +170,9 @@ Completion record:
 - [x] Finding response
 - [x] Re-review
 - [x] Maximum review rounds (configurable per build, default 3 — see slice 2 record; not yet a global setting)
-- [ ] Human-approved merge into the target branch
-- [ ] Post-merge validation before cleanup
-- [ ] Guarded automatic worktree removal / `Keep worktree after merge` / merged-branch deletion policy
+- [x] Human-approved merge into the target branch
+- [x] Post-merge validation before cleanup
+- [x] Guarded automatic worktree removal / `Keep worktree after merge` / merged-branch deletion policy
 - [ ] Pre-PR report
 
 ### Phase 5, slice 1 completion record
@@ -322,6 +322,99 @@ Completion record:
   nothing changed); failing cleanly (finding left untouched) when the builder's response can't be
   parsed; failing cleanly (builder's response still recorded) when the reviewer's recheck can't be
   parsed; and rejecting a response round on a build that isn't `COMPLETED`.
+
+### Phase 5, slice 3 completion record
+
+- Date: 2026-09-13
+- Scope: `PROJECT_SPEC.md` §12/§21 — a human-approved merge of a completed build's worktree branch
+  into a target branch, post-merge validation, and guarded automatic cleanup. Deliberately out of
+  scope, tracked as unchecked above: the pre-PR report.
+- **There is no other commit path in this application** — a builder/response run only ever edits
+  files in its worktree (confirmed by slice 1's own end-to-end test, which found the builder's
+  change left uncommitted). Merge is therefore the first place anything gets committed, and it does
+  so explicitly, as part of the human's own approval action, never silently beforehand: `git add -A`
+  + `git commit` inside the task worktree, authored as `AI Engineering Workspace (<provider>
+  builder) <...>` while leaving the *committer* identity as whatever the repository already has
+  configured (so a real registered repository's own commit identity is never overridden).
+- `packages/git/src/WorktreeService.ts` gained `commitAll`, `beginMerge`, `finalizeMerge`, and
+  `abandonMerge`. The merge itself never checks out or touches the developer's active checkout or
+  any existing worktree: `beginMerge` creates a throwaway **detached** worktree at the target
+  branch's current tip (detached, not checked out by branch name, so it never collides with that
+  branch already being checked out elsewhere), runs `git merge --no-ff` there, and on success leaves
+  that temp worktree in place — still uninspected by anything else — so the caller can run
+  post-merge validation against exactly the tree that is about to become the target branch's new
+  tip. `finalizeMerge` then lands the result with a compare-and-swap `git update-ref` (fails loudly
+  rather than silently overwriting if the target branch moved since `beginMerge` read its tip) and
+  removes the temp worktree. On conflict, `beginMerge` aborts the merge, removes the temp worktree,
+  and reports the conflicting file list — the task worktree and target branch are both left exactly
+  as they were.
+- Known, deliberate consequence (not a bug, and directly load-bearing on the "never touch the
+  developer's active checkout" rule this whole application is built around): if the target branch
+  happens to already be checked out somewhere — commonly the developer's own primary checkout —
+  `update-ref` moving its ref out from under that checkout leaves that checkout's index stale
+  relative to its own branch (proven in `WorktreeService.test.ts`: `git status --porcelain` there
+  reports the newly-merged file as a staged deletion until the human runs `git status`/`git reset
+  --hard` themselves). This is the same thing that happens with any tool that moves a checked-out
+  branch's ref without touching the checkout (e.g. a bare `git fetch` into it) — not file corruption,
+  just a checkout that needs a refresh. `BuildReviewWorkflow.mergePipeline` detects this ahead of
+  time (`build_runs.mergeTargetCheckedOutAt`, checked via `WorktreeService.list` before merging) and
+  the UI surfaces it explicitly next to a successful merge, so it is never a silent surprise.
+- Schema: `build_runs` gained `mergeStatus` (`NOT_MERGED|MERGING|MERGED|MERGE_CONFLICT|MERGE_FAILED`,
+  tracked independently of `status` so a merge outcome can never be confused with the build/review
+  workflow's own), `mergeTargetBranch`, `mergeCommitSha`, `mergedAt`, `mergeError`,
+  `mergeTargetCheckedOutAt`, `worktreeRemovedAfterMerge`, `branchDeletedAfterMerge`, and
+  `worktreeCleanupSkippedReason` (always populated when the worktree wasn't removed — never left for
+  a human to reconstruct from whether the worktree/branch still happens to exist). `validation_runs`
+  gained `phase` (`BUILD|POST_MERGE`) so a post-merge validation re-run is distinguishable from the
+  original pre-merge one without a second table. All additive (`ALTER TABLE ... ADD COLUMN`); `npm
+  run db:generate` confirms no destructive change.
+- `BuildReviewWorkflow.mergeBuild`/`mergePipeline`: commits outstanding worktree changes, resolves
+  the target branch (defaults to the worktree's own `baseRef`, overridable per merge), detects
+  whether it's checked out elsewhere, calls `beginMerge`, runs post-merge validation inside the temp
+  worktree on conflict-free success, and writes `mergeStatus`/cleanup outcome together in one final
+  update — deliberately combined into a single write (not two sequential ones) so a poller can never
+  observe `MERGED` with the cleanup decision still mid-flight. `cleanupAfterMerge` follows §12
+  exactly: skips (with a specific recorded reason) when the human asked to keep the worktree, when
+  post-merge validation didn't pass, or when the worktree is still in use; otherwise removes the
+  worktree (and, if requested, the now-provably-merged branch, reusing the existing
+  `ensureBranchMerged`/`deleteMergedBranch` guards from Phase 4) and deletes its database record.
+- Known limitation, deliberately scoped out rather than overlooked: `mergeBuild` does not
+  participate in the usage-safety checkpoint/resume system — it spends no provider/model usage at
+  all (only Git and the configured validation commands), so there is nothing for that system to
+  gate. A merge that fails for a non-conflict reason (e.g. the task or project row disappeared)
+  records `MERGE_FAILED` and stops; the human can retry by calling merge again once the underlying
+  problem is fixed.
+- UI (`apps/web/src/App.vue`): a "MERGE" subsection on the build detail pane showing `mergeStatus`,
+  target branch, commit SHA, timestamp, the checked-out-elsewhere note when applicable, and the
+  worktree/branch cleanup outcome; an "Approve & merge" control (optional target branch, optional
+  commit message, "Keep worktree after merge" and "Delete task branch after merge" checkboxes)
+  appears whenever the build is `COMPLETED` and not already merged/merging. Verified in the browser:
+  the section and its inputs render with no console errors. A real merge was deliberately not
+  triggered against the browser-visible registered project's task (no build existed for it, and
+  every merge action commits real changes and moves a real branch ref) — the full commit → merge →
+  post-merge-validation → cleanup cycle, including the conflict and stale-checkout-detection paths,
+  is instead proven end-to-end with fake adapters and temporary repositories in the automated test
+  suite.
+- Tests executed: full workspace `npm test` (85 tests: 62 `apps/server` + 12 `packages/agents` + 11
+  `packages/git`, up from 74), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (reports the new migration only), `npm run db:migrate` against the existing
+  local database, `git diff --check` — all clean. New `WorktreeService` coverage (4 tests):
+  `commitAll` committing everything and truthfully no-op'ing when already clean; a clean merge that
+  proves the primary checkout's working files are never touched mid-operation and the temp worktree
+  is gone afterward; a real conflicting merge that leaves the task worktree, target branch, and
+  Git's worktree list completely unchanged; and refusing to merge into a branch that doesn't exist
+  locally. New `build-runs.test.ts` coverage (7 tests): a full commit → merge → post-merge-validation
+  → cleanup success case (including the target-checked-out-elsewhere detection); `keepWorktreeAfterMerge`
+  preserving the worktree despite a successful merge; `deleteBranchAfterMerge` actually deleting the
+  branch; a real merge conflict leaving everything untouched with the conflicting file named; a
+  failing post-merge validation command keeping the worktree despite the merge landing; refusing a
+  merge on a build that isn't `COMPLETED`; and refusing a second merge once already merged. While
+  writing these, also fixed two pre-existing test-hygiene bugs unrelated to merge itself: two earlier
+  slice-2 tests that deliberately used a delayed fake builder to catch a build mid-flight never
+  waited for that background run to actually finish, so it could still be writing to the in-memory
+  database well after that test's own app had closed it — an intermittent `Unhandled Rejection`
+  that vitest treats as a hard failure (exit code 1) even though every assertion passed. Both now
+  explicitly drain the delayed run to a terminal state before returning.
 
 ## Phase 6 — Planning and ADRs
 

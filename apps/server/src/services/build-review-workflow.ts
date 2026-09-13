@@ -68,6 +68,15 @@ type BuildWorkflowOptions = {
   validationCommandIds?: string[];
 };
 
+export type MergeOptions = {
+  targetBranch?: string;
+  commitMessage?: string;
+  keepWorktreeAfterMerge: boolean;
+  deleteBranchAfterMerge: boolean;
+  validationCommandIds?: string[];
+  validationTimeoutMs?: number;
+};
+
 function replace(template: string, values: Record<string, string>) {
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (placeholder, key: string) => values[key] ?? placeholder);
 }
@@ -287,6 +296,25 @@ export class BuildReviewWorkflow {
       await this.respondPipeline(build, options);
     } catch (error) {
       this.handleWorkflowError(build.id, error);
+    }
+  }
+
+  /**
+   * A human-approved merge (PROJECT_SPEC.md §12/§21): commits whatever the builder left in its
+   * worktree, merges it into a target branch through a throwaway detached worktree (never the
+   * developer's own checkout), runs post-merge validation there, lands the result with a
+   * compare-and-swap ref update, then only removes the task worktree when every one of §12's
+   * cleanup conditions holds. Unlike respondToFindings, this never touches build.status — a merge
+   * outcome is tracked entirely through mergeStatus/mergeError so it can never be confused with the
+   * build/review workflow's own success or failure.
+   */
+  async mergeBuild(buildRunId: string, options: MergeOptions) {
+    const build = this.getBuild(buildRunId);
+    if (!build || build.status !== "COMPLETED" || build.mergeStatus === "MERGED") return;
+    try {
+      await this.mergePipeline(build, options);
+    } catch (error) {
+      this.failMerge(build.id, error instanceof Error ? error.message : "The merge failed.");
     }
   }
 
@@ -672,6 +700,109 @@ export class BuildReviewWorkflow {
       nextOrdinal += 1;
     }
     this.complete(build.id);
+  }
+
+  private async mergePipeline(initial: BuildRunRecord, options: MergeOptions) {
+    const task = this.db.select().from(tasks).where(eq(tasks.id, initial.taskId)).get();
+    if (!task) return this.failMerge(initial.id, "The task no longer exists.");
+    const project = this.db.select().from(projects).where(eq(projects.id, initial.projectId)).get();
+    if (!project) return this.failMerge(initial.id, "The registered project no longer exists.");
+    const worktree = initial.worktreeId ? this.db.select().from(worktrees).where(eq(worktrees.id, initial.worktreeId)).get() : null;
+    if (!worktree) return this.failMerge(initial.id, "The builder worktree no longer exists.");
+
+    const targetBranch = options.targetBranch?.trim() || worktree.baseRef;
+    const commitMessage = options.commitMessage?.trim()
+      || `Merge ${task.title} (${initial.builderProvider} builder, build ${initial.id})`;
+    // finalizeMerge only ever moves targetBranch's ref (never checks anything out itself), but if
+    // it's already checked out somewhere — commonly the developer's own primary checkout — that
+    // checkout's index goes stale relative to its own branch the moment the ref moves. Detect and
+    // record it now so the human is told, rather than discovering a mystery `git status` later.
+    const checkedOutAt = (await this.worktreeService.list(project.repositoryPath))
+      .find((entry) => entry.branchName === targetBranch)?.path ?? null;
+    this.db.update(buildRuns).set({
+      mergeStatus: "MERGING", mergeTargetBranch: targetBranch, mergeTargetCheckedOutAt: checkedOutAt,
+      mergeError: null, updatedAt: new Date().toISOString(),
+    }).where(eq(buildRuns.id, initial.id)).run();
+
+    // There is no other commit path in this app — a builder/response run only ever edits files —
+    // so whatever is sitting in the worktree is exactly and only what the human is approving here.
+    // A distinct author (never the committer identity, which stays whatever this repository already
+    // has configured) keeps an AI-authored change visibly attributable in `git log`/`git blame`.
+    const author = `AI Engineering Workspace (${initial.builderProvider} builder) <ai-builder+${initial.builderProvider.toLowerCase()}@local>`;
+    await this.worktreeService.commitAll(worktree.path, commitMessage, author);
+
+    const attempt = await this.worktreeService.beginMerge(
+      project.repositoryPath, project.worktreeRoot, worktree.branchName, targetBranch, commitMessage,
+    );
+    if (attempt.status === "CONFLICT") {
+      this.db.update(buildRuns).set({
+        mergeStatus: "MERGE_CONFLICT",
+        mergeError: `Merge conflict in: ${attempt.conflictingFiles.join(", ") || "(unknown files)"}. The task worktree and target branch were left untouched.`,
+        updatedAt: new Date().toISOString(),
+      }).where(eq(buildRuns.id, initial.id)).run();
+      return;
+    }
+
+    // Post-merge validation runs inside the temporary merge worktree — exactly the tree that is
+    // about to become targetBranch's new tip — never the developer's real checkout.
+    let validationPassed = true;
+    try {
+      const commands = options.validationCommandIds?.length
+        ? project.validationCommands.filter((command) => options.validationCommandIds!.includes(command.id))
+        : project.validationCommands;
+      const runner = new ValidationRunner();
+      const results = await runner.run(attempt.tempPath, null, commands, options.validationTimeoutMs ?? 600_000);
+      const now = new Date().toISOString();
+      for (const result of results) {
+        this.db.insert(validationRuns).values({ ...result, buildRunId: initial.id, phase: "POST_MERGE", createdAt: now }).run();
+        if (result.status !== "PASSED") validationPassed = false;
+      }
+    } finally {
+      // Always finalize: the merge itself already succeeded at the Git level, and leaving the temp
+      // worktree behind on a validation-side error would strand it with no way to clean up later.
+      await this.worktreeService.finalizeMerge(project.repositoryPath, targetBranch, attempt.tempPath, attempt.commitSha, attempt.previousTargetSha);
+    }
+
+    const cleanup = await this.cleanupAfterMerge(project, worktree, targetBranch, validationPassed, options);
+    // One combined, final write: mergeStatus only ever flips to MERGED together with the cleanup
+    // outcome that followed it, so a poller can never observe "MERGED" with cleanup fields still
+    // mid-flight (they would otherwise be two separate writes racing against anyone reading the row).
+    this.db.update(buildRuns).set({
+      mergeStatus: "MERGED", mergeCommitSha: attempt.commitSha, mergedAt: new Date().toISOString(), mergeError: null,
+      ...cleanup, updatedAt: new Date().toISOString(),
+    }).where(eq(buildRuns.id, initial.id)).run();
+  }
+
+  /**
+   * PROJECT_SPEC.md §12: auto-remove the task worktree only when merge + post-merge validation both
+   * succeeded, the worktree is clean and unused, and the human didn't ask to keep it — every other
+   * outcome preserves the worktree and records exactly why, never a silent guess reconstructed later
+   * from whether the worktree/branch still happens to exist.
+   */
+  private async cleanupAfterMerge(
+    project: ProjectRecord, worktree: WorktreeRecord, targetBranch: string, validationPassed: boolean, options: MergeOptions,
+  ): Promise<Pick<BuildRunRecord, "worktreeRemovedAfterMerge" | "branchDeletedAfterMerge" | "worktreeCleanupSkippedReason">> {
+    const skip = (reason: string) => ({ worktreeRemovedAfterMerge: false, branchDeletedAfterMerge: false, worktreeCleanupSkippedReason: reason });
+    if (options.keepWorktreeAfterMerge) return skip("Kept by request (\"Keep worktree after merge\" was selected).");
+    if (!validationPassed) return skip("Post-merge validation did not pass.");
+    if (this.worktreeUsageManager.isInUse(worktree.id)) return skip("An active process is using the worktree.");
+
+    try {
+      if (options.deleteBranchAfterMerge) await this.worktreeService.ensureBranchMerged(project.repositoryPath, worktree.branchName, targetBranch);
+      const result = await this.worktreeService.remove(project.repositoryPath, worktree.path, false);
+      if (options.deleteBranchAfterMerge) await this.worktreeService.deleteMergedBranch(project.repositoryPath, worktree.branchName, targetBranch);
+      this.db.delete(worktrees).where(eq(worktrees.id, worktree.id)).run();
+      return {
+        worktreeRemovedAfterMerge: true, branchDeletedAfterMerge: options.deleteBranchAfterMerge === true,
+        worktreeCleanupSkippedReason: result.forgotten ? "Git no longer registered this worktree; its database record was forgotten during cleanup." : null,
+      };
+    } catch (error) {
+      return skip(error instanceof Error ? error.message : "Automatic cleanup failed unexpectedly.");
+    }
+  }
+
+  private failMerge(buildRunId: string, message: string) {
+    this.db.update(buildRuns).set({ mergeStatus: "MERGE_FAILED", mergeError: message, updatedAt: new Date().toISOString() }).where(eq(buildRuns.id, buildRunId)).run();
   }
 
   private handleWorkflowError(buildRunId: string, error: unknown) {

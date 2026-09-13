@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -30,6 +31,11 @@ export type WorktreeInspection = GitWorktreeEntry & {
   gitStatus: "CLEAN" | "DIRTY";
   porcelain: string;
 };
+
+export type CommitAllResult = { committed: boolean; commitSha: string | null };
+export type BeginMergeResult =
+  | { status: "CONFLICT"; conflictingFiles: string[] }
+  | { status: "MERGED"; tempPath: string; commitSha: string; previousTargetSha: string };
 
 export class WorktreeSafetyError extends Error {
   constructor(message: string, readonly code: string) {
@@ -274,6 +280,71 @@ export class WorktreeService {
   async ensureBranchMerged(repositoryPath: string, branchName: string, baseRef: string) {
     const merged = await git(repositoryPath, ["merge-base", "--is-ancestor", branchName, baseRef], [0, 1]);
     if (merged.exitCode !== 0) throw new WorktreeSafetyError("The task branch is not merged into its base ref.", "BRANCH_NOT_MERGED");
+  }
+
+  /** Commits everything currently in the worktree (there is no other commit path in this app — a builder run only edits files). No-op, reported honestly, when the worktree is already clean. */
+  async commitAll(worktreePath: string, message: string, author?: string): Promise<CommitAllResult> {
+    const status = await git(worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    if (!status.stdout.trim()) return { committed: false, commitSha: null };
+    await git(worktreePath, ["add", "-A"]);
+    const args = ["commit", "-m", message];
+    if (author) args.push(`--author=${author}`);
+    await git(worktreePath, args);
+    const commitSha = (await git(worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+    return { committed: true, commitSha };
+  }
+
+  private async resolveLocalBranchSha(repositoryPath: string, branchName: string) {
+    const exists = await git(repositoryPath, ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], [0, 1]);
+    if (exists.exitCode !== 0) {
+      throw new WorktreeSafetyError(`"${branchName}" is not a local branch in this repository.`, "TARGET_BRANCH_NOT_FOUND");
+    }
+    return (await git(repositoryPath, ["rev-parse", `refs/heads/${branchName}`])).stdout.trim();
+  }
+
+  /**
+   * Merges sourceBranch into targetBranch entirely through a throwaway *detached* worktree — never
+   * the developer's active checkout, and never targetBranch itself checked out by name (detaching
+   * at its tip avoids Git's "branch already checked out" refusal if targetBranch happens to be
+   * checked out elsewhere). On success the temp worktree is left in place (its path returned) so a
+   * caller can run post-merge validation there before finalizeMerge() commits the result; on
+   * conflict the attempt is fully unwound and nothing outside this call is touched.
+   */
+  async beginMerge(
+    repositoryPath: string, worktreeRoot: string, sourceBranch: string, targetBranch: string, commitMessage: string,
+  ): Promise<BeginMergeResult> {
+    const previousTargetSha = await this.resolveLocalBranchSha(repositoryPath, targetBranch);
+    const tempPath = await this.validateTargetPath(repositoryPath, worktreeRoot, join(resolve(worktreeRoot), ".merge-tmp", randomUUID()));
+    await mkdir(dirname(tempPath), { recursive: true });
+    await git(repositoryPath, ["worktree", "add", "--detach", "--", tempPath, previousTargetSha]);
+    const merge = await git(tempPath, ["merge", "--no-ff", "--no-edit", "-m", commitMessage, "--", sourceBranch], [0, 1]);
+    if (merge.exitCode !== 0) {
+      const conflicts = await git(tempPath, ["diff", "--name-only", "--diff-filter=U"]);
+      await git(tempPath, ["merge", "--abort"], [0, 1]).catch(() => undefined);
+      await git(repositoryPath, ["worktree", "remove", "--force", "--", tempPath]).catch(() => undefined);
+      return { status: "CONFLICT", conflictingFiles: conflicts.stdout.split("\n").map((line) => line.trim()).filter(Boolean) };
+    }
+    const commitSha = (await git(tempPath, ["rev-parse", "HEAD"])).stdout.trim();
+    return { status: "MERGED", tempPath, commitSha, previousTargetSha };
+  }
+
+  /**
+   * Lands a successful beginMerge() result: moves targetBranch's ref forward with a compare-and-swap
+   * (fails loudly if the branch moved since beginMerge read its tip, rather than silently overwriting
+   * a concurrent change) and removes the temporary merge worktree. Never touches any other checkout —
+   * if targetBranch happens to be checked out elsewhere, that checkout's working tree is simply left
+   * stale until its owner refreshes it, the same way any other tool moving a checked-out branch's ref
+   * would leave it; this is deliberate, not an oversight (see AGENTS.md's never-touch-the-developer's-
+   * active-checkout rule, which this preserves by construction).
+   */
+  async finalizeMerge(repositoryPath: string, targetBranch: string, tempPath: string, commitSha: string, previousTargetSha: string) {
+    await git(repositoryPath, ["update-ref", `refs/heads/${targetBranch}`, commitSha, previousTargetSha]);
+    await git(repositoryPath, ["worktree", "remove", "--force", "--", tempPath]);
+  }
+
+  /** Cleans up a merge attempt's temp worktree without touching targetBranch — used when the caller decides not to finalize. */
+  async abandonMerge(repositoryPath: string, tempPath: string) {
+    await git(repositoryPath, ["worktree", "remove", "--force", "--", tempPath]).catch(() => undefined);
   }
 
   private async validateTargetPath(repositoryPath: string, worktreeRoot: string, targetPath: string) {

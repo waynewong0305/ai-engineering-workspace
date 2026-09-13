@@ -164,6 +164,7 @@ type ValidationRunRow = {
   stdout: string;
   stderr: string;
   status: ValidationRunStatus;
+  phase: "BUILD" | "POST_MERGE";
 };
 type ReviewFinding = {
   id: string;
@@ -187,6 +188,7 @@ type ReviewFinding = {
   builderAction: string | null;
   reviewerRecheckNote: string | null;
 };
+type BuildMergeStatus = "NOT_MERGED" | "MERGING" | "MERGED" | "MERGE_CONFLICT" | "MERGE_FAILED";
 type BuildRun = {
   id: string;
   taskId: string;
@@ -198,6 +200,15 @@ type BuildRun = {
   diffStaged: string | null;
   reviewRound: number;
   maxReviewRounds: number;
+  mergeStatus: BuildMergeStatus;
+  mergeTargetBranch: string | null;
+  mergeCommitSha: string | null;
+  mergedAt: string | null;
+  mergeError: string | null;
+  mergeTargetCheckedOutAt: string | null;
+  worktreeRemovedAfterMerge: boolean | null;
+  branchDeletedAfterMerge: boolean | null;
+  worktreeCleanupSkippedReason: string | null;
   errorMessage: string | null;
   createdAt: string;
   builderRun: AgentRun | null;
@@ -317,6 +328,11 @@ const buildError = ref("");
 const buildMessage = ref("");
 const startingBuild = ref(false);
 const respondingToFindings = ref(false);
+const merging = ref(false);
+const mergeTargetBranch = ref("");
+const mergeCommitMessage = ref("");
+const keepWorktreeAfterMerge = ref(false);
+const deleteBranchAfterMerge = ref(false);
 const selectedBuild = ref<BuildRun | null>(null);
 let buildPollTimer: number | null = null;
 
@@ -769,7 +785,11 @@ async function selectBuild(buildRunId: string) {
 
 function scheduleBuildRefresh() {
   if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
-  if (!selectedBuild.value || !["BUILDING", "VALIDATING", "REVIEWING", "RESPONDING"].includes(selectedBuild.value.status)) return;
+  const active = selectedBuild.value && (
+    ["BUILDING", "VALIDATING", "REVIEWING", "RESPONDING"].includes(selectedBuild.value.status)
+    || selectedBuild.value.mergeStatus === "MERGING"
+  );
+  if (!active) return;
   buildPollTimer = window.setTimeout(async () => {
     if (selectedBuild.value) await selectBuild(selectedBuild.value.id);
   }, 1500);
@@ -841,6 +861,37 @@ async function respondToFindings() {
     buildError.value = error instanceof Error ? error.message : "Could not start a review-response round.";
   } finally {
     respondingToFindings.value = false;
+  }
+}
+
+function canMergeBuild(build: BuildRun) {
+  return build.status === "COMPLETED" && !["MERGING", "MERGED"].includes(build.mergeStatus);
+}
+
+async function mergeBuild() {
+  if (!selectedBuild.value) return;
+  merging.value = true;
+  buildError.value = "";
+  buildMessage.value = "";
+  try {
+    const response = await fetch(`/api/builds/${selectedBuild.value.id}/merge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        targetBranch: mergeTargetBranch.value.trim() || undefined,
+        commitMessage: mergeCommitMessage.value.trim() || undefined,
+        keepWorktreeAfterMerge: keepWorktreeAfterMerge.value,
+        deleteBranchAfterMerge: deleteBranchAfterMerge.value,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not start the merge.");
+    buildMessage.value = "Merging into the target branch…";
+    await selectBuild(selectedBuild.value.id);
+  } catch (error) {
+    buildError.value = error instanceof Error ? error.message : "Could not start the merge.";
+  } finally {
+    merging.value = false;
   }
 }
 
@@ -2145,6 +2196,36 @@ onUnmounted(() => {
               v-else-if="selectedBuild.status === 'COMPLETED' && openFindingsCount(selectedBuild) > 0 && selectedBuild.reviewRound >= selectedBuild.maxReviewRounds"
               class="form-hint"
             >This build has reached its maximum of {{ selectedBuild.maxReviewRounds }} review round(s); resolve the remaining findings directly.</p>
+          </div>
+
+          <div class="worktree-usages">
+            <div class="subsection-heading"><span>MERGE</span><strong>{{ selectedBuild.mergeStatus }}</strong></div>
+            <p v-if="selectedBuild.mergeError" class="error-text" role="alert">{{ selectedBuild.mergeError }}</p>
+            <template v-if="selectedBuild.mergeStatus === 'MERGED'">
+              <p class="form-hint">Merged into <strong>{{ selectedBuild.mergeTargetBranch }}</strong> as {{ selectedBuild.mergeCommitSha?.slice(0, 12) }} at {{ new Date(selectedBuild.mergedAt!).toLocaleString() }}.</p>
+              <p v-if="selectedBuild.mergeTargetCheckedOutAt" class="form-hint">
+                Note: {{ selectedBuild.mergeTargetBranch }} was checked out at {{ selectedBuild.mergeTargetCheckedOutAt }} — that working copy is now stale and needs a refresh (e.g. <code>git status</code> then <code>git reset --hard</code>).
+              </p>
+              <p class="form-hint">
+                Worktree: {{ selectedBuild.worktreeRemovedAfterMerge ? "removed" : "kept" }}<template v-if="selectedBuild.worktreeCleanupSkippedReason"> — {{ selectedBuild.worktreeCleanupSkippedReason }}</template>.
+                Branch: {{ selectedBuild.branchDeletedAfterMerge ? "deleted" : "kept" }}.
+              </p>
+            </template>
+            <template v-if="canMergeBuild(selectedBuild)">
+              <label>
+                <span>Target branch (optional)</span>
+                <input v-model="mergeTargetBranch" type="text" placeholder="Defaults to the worktree's base branch" />
+              </label>
+              <label>
+                <span>Commit message (optional)</span>
+                <input v-model="mergeCommitMessage" type="text" placeholder="A default message is generated" />
+              </label>
+              <label class="check-row"><input v-model="keepWorktreeAfterMerge" type="checkbox" />Keep worktree after merge</label>
+              <label class="check-row"><input v-model="deleteBranchAfterMerge" type="checkbox" />Delete task branch after merge</label>
+              <button class="primary-button" type="button" :disabled="merging" @click="mergeBuild">
+                {{ merging || selectedBuild.mergeStatus === 'MERGING' ? "Merging…" : "Approve & merge" }}
+              </button>
+            </template>
           </div>
         </div>
       </section>

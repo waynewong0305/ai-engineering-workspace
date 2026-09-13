@@ -308,6 +308,8 @@ export type BuildRunStatus =
   | "CANCELLED"
   | "CHECKPOINTED";
 
+export type BuildMergeStatus = "NOT_MERGED" | "MERGING" | "MERGED" | "MERGE_CONFLICT" | "MERGE_FAILED";
+
 /**
  * One build/review attempt for a task. Deliberately its own status column rather than folded into
  * tasks.status: BrainstormWorkflow and BuildReviewWorkflow would otherwise collide on the same
@@ -334,6 +336,25 @@ export const buildRuns = sqliteTable("build_runs", {
   // §23) rather than hardcoded, so a human can raise or lower it per build without a code change.
   reviewRound: integer("review_round").notNull().default(1),
   maxReviewRounds: integer("max_review_rounds").notNull().default(3),
+  // Merge is a separate, later, explicitly human-approved action (PROJECT_SPEC.md §12/§21) — these
+  // stay NOT_MERGED/null until BuildReviewWorkflow.mergeBuild runs, regardless of review outcome.
+  mergeStatus: text("merge_status", { enum: ["NOT_MERGED", "MERGING", "MERGED", "MERGE_CONFLICT", "MERGE_FAILED"] }).notNull().default("NOT_MERGED"),
+  mergeTargetBranch: text("merge_target_branch"),
+  mergeCommitSha: text("merge_commit_sha"),
+  mergedAt: text("merged_at"),
+  mergeError: text("merge_error"),
+  // Landing a merge moves the target branch's ref with update-ref, never by checking anything out
+  // (see WorktreeService.finalizeMerge). If that branch happened to already be checked out
+  // somewhere (commonly the developer's primary checkout), that checkout's index/working tree is
+  // now stale relative to the branch it's on — not corrupted, just needing a refresh — and this
+  // records exactly where so the UI can say so instead of the human discovering a mystery `git
+  // status` output later.
+  mergeTargetCheckedOutAt: text("merge_target_checked_out_at"),
+  // Recorded even when automatic, so the detail pane can always say what happened and why — never
+  // inferred after the fact from whether the worktree/branch still happens to exist.
+  worktreeRemovedAfterMerge: integer("worktree_removed_after_merge", { mode: "boolean" }),
+  branchDeletedAfterMerge: integer("branch_deleted_after_merge", { mode: "boolean" }),
+  worktreeCleanupSkippedReason: text("worktree_cleanup_skipped_reason"),
   errorMessage: text("error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -342,11 +363,15 @@ export const buildRuns = sqliteTable("build_runs", {
 export type BuildRunRecord = typeof buildRuns.$inferSelect;
 
 export type ValidationRunStatus = "PASSED" | "FAILED" | "ERROR";
+export type ValidationRunPhase = "BUILD" | "POST_MERGE";
 
 export const validationRuns = sqliteTable("validation_runs", {
   id: text("id").primaryKey(),
   buildRunId: text("build_run_id").notNull().references(() => buildRuns.id, { onDelete: "cascade" }),
   worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
+  // BUILD: the pre-merge validation already run after every builder/response round. POST_MERGE:
+  // re-run inside the temporary merge worktree once merged, before deciding on auto-cleanup.
+  phase: text("phase", { enum: ["BUILD", "POST_MERGE"] }).notNull().default("BUILD"),
   commandId: text("command_id").notNull(),
   commandLabel: text("command_label").notNull(),
   command: text("command").notNull(),

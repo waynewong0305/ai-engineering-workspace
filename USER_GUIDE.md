@@ -26,10 +26,11 @@ The current implementation can:
 - preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout;
 - inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation; and
 - check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement; and
-- run a build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings; and
-- send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3).
+- run a build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings;
+- send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3); and
+- merge a completed build's worktree into a target branch once you explicitly approve it, re-run validation against the merged result, and automatically clean up the worktree and (optionally) its branch only when every safety condition holds.
 
-A human-approved merge and a pre-PR report are planned but not enabled yet. Brainstorming, architecture comparison, worktree isolation, and the build/review/response loop are available now.
+A pre-PR report is planned but not enabled yet. Brainstorming, architecture comparison, worktree isolation, and the full build/review/response/merge loop are available now.
 
 ## Installation
 
@@ -299,17 +300,20 @@ bug report
 → investigation
 → isolated builder worktree       )
 → implementation                  )
-→ tests                           )  available now — see "Build and review" above
-→ independent review              )
+→ tests                           )
+→ independent review              )  available now — see "Build and review" above
 → findings                        )
 → fixes or evidence-backed rejection  )
 → re-review                           )
-→ human review
+→ human-approved merge                )
+→ human review                    — pre-PR report planned
 ```
 
 You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, and confidence.
 
 Sending a finding back to the builder for an **Accepted**, **Rejected**, or **Partially accepted** response with evidence, and the reviewer rechecking fixed or disputed findings, both work today — see "Sending findings back to the builder" under "Build and review" above. The number of automatic re-review rounds is a configurable per-build setting (default 3) rather than a fixed number, so it can be tuned per build instead of hardcoded; unresolved findings stop once that limit is reached and the workflow tells you to resolve them directly. The system never loops indefinitely on its own.
+
+Once you're satisfied, merging into a target branch and the guarded worktree/branch cleanup that follows also work today — see "Merging into a target branch" under "Build and review" above. What's still planned is the pre-PR report that would summarize the whole task (implementation, findings, responses, tests, risks) for your final human review before this goes through your normal pull-request process.
 
 ## Choosing models — planned
 
@@ -399,7 +403,25 @@ Once a build with open findings is **COMPLETED**, a **Send N open finding(s) to 
 
 Each finding in the detail pane shows its round, current status (**OPEN** / **RESPONDED** / **RESOLVED**), the builder's verdict/evidence/action once it has responded, and the reviewer's recheck note once rechecked. The build heading shows **ROUND n / max**. Once a build reaches its configured maximum review rounds with findings still open, the **Send findings** button is replaced with a note telling you to resolve them directly — the workflow never keeps looping on its own.
 
-A human-approved merge with guarded automatic cleanup and a pre-PR report are not implemented yet — see "Bug fixing — planned" below.
+### Merging into a target branch
+
+There is no other commit path in this application — a builder or response run only ever edits files in its worktree, and nothing commits them for you. The **MERGE** section on a **COMPLETED** build is where you explicitly approve that:
+
+1. Optionally set a **target branch** (defaults to the branch this task's worktree was created from) and a **commit message** (a sensible default is generated for you).
+2. Optionally check **Keep worktree after merge** or **Delete task branch after merge**.
+3. Select **Approve & merge**.
+
+What happens automatically:
+
+1. Everything currently in the task's worktree is committed — this is the one and only place a commit happens in this application, and it happens because you asked for it, not silently beforehand. The commit is authored as the builder's provider (so `git log`/`git blame` can always tell an AI-authored change apart from your own), while the *committer* identity stays whatever your repository already has configured.
+2. The merge itself happens inside a throwaway, detached worktree at the target branch's current tip — never your own checked-out working copy, and never the task's worktree either. If there's a real conflict, everything is left exactly as it was and the conflicting files are named; nothing is guessed or force-resolved for you.
+3. On a clean merge, your project's configured validation commands run again — this time against the merged result — before anything is finalized.
+4. The target branch is then updated to point at the new merge commit, and the temporary worktree is discarded.
+5. The task worktree is automatically removed only if the merge and post-merge validation both succeeded, the worktree is clean and not in use, and you didn't check "Keep worktree after merge." Otherwise it's preserved, and the detail pane says exactly why. Deleting the task branch only ever happens if you explicitly checked that box, and only once Git itself confirms the branch is actually merged.
+
+**A note about your own checkout.** Landing a merge only ever moves the target branch's pointer (`git update-ref`) — it never checks anything out and never touches any working directory other than the throwaway one it created for the merge itself. If the target branch happens to already be checked out somewhere (most commonly your own primary working copy on that branch), that checkout's index will look stale relative to its own branch until you refresh it yourself (`git status`, then `git reset --hard` or similar). This is not file corruption — your working files are untouched — it's the same thing that happens with any tool that moves a ref out from under a checkout without touching it. The detail pane tells you explicitly when this applies, and names where.
+
+A pre-PR report is not implemented yet — see "Bug fixing — planned" below.
 
 ## Usage safety
 
@@ -474,6 +496,14 @@ The agent continues with local evidence when possible. If external information i
 ### Review loop reached its maximum rounds
 
 Once `reviewRound` reaches a build's configured `maxReviewRounds`, **Send findings to builder** is replaced with a note asking you to resolve the remaining findings directly — the workflow never starts another round on its own. Read the still-open findings' descriptions, evidence, and (if a round was attempted) the builder's and reviewer's own notes on them. You can accept the risk, fix it yourself, or start a fresh build with a higher `maxReviewRounds` if you want to allow more automatic back-and-forth. A pre-PR report summarizing unresolved findings for this decision is not implemented yet — see "Bug fixing — planned" above.
+
+### Merge conflict
+
+The MERGE section shows **MERGE_CONFLICT** and names the conflicting file(s). Nothing was changed: the task worktree still has its own committed change, and the target branch is exactly as it was. Resolve the conflict the way you normally would (for example, pull the target branch's latest change into your own tooling and rebase or merge manually), or ask the builder to fix it — either way, select **Approve & merge** again once you've addressed it.
+
+### Worktree not cleaned up after a successful merge
+
+The detail pane always says why: **Kept by request** if you checked "Keep worktree after merge," **Post-merge validation did not pass** (check the POST_MERGE validation results), **An active process is using the worktree**, or an unexpected cleanup error. In every case the worktree (and its branch, if you asked to delete it) is left exactly as it was — clean up manually once you're satisfied, or retry the merge action once the blocking condition is resolved.
 
 ### Application will not start
 

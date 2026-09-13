@@ -41,6 +41,15 @@ type RespondBody = {
   validationTimeoutMs?: unknown;
 };
 
+type MergeBody = {
+  targetBranch?: unknown;
+  commitMessage?: unknown;
+  keepWorktreeAfterMerge?: unknown;
+  deleteBranchAfterMerge?: unknown;
+  validationCommandIds?: unknown;
+  validationTimeoutMs?: unknown;
+};
+
 const NON_TERMINAL_BUILD_STATUSES: readonly string[] = ["BUILDING", "VALIDATING", "REVIEWING", "RESPONDING", "CHECKPOINTED"];
 const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 
@@ -161,7 +170,10 @@ export function registerBuildRoutes(
     const build: BuildRunRecord = {
       id: randomUUID(), taskId: task.id, projectId: project.id, builderProvider, reviewerProvider,
       worktreeId: worktree.id, builderRunId: null, reviewerRunId: null, status: "BUILDING",
-      diffUnstaged: null, diffStaged: null, reviewRound: 1, maxReviewRounds, errorMessage: null,
+      diffUnstaged: null, diffStaged: null, reviewRound: 1, maxReviewRounds,
+      mergeStatus: "NOT_MERGED", mergeTargetBranch: null, mergeCommitSha: null, mergedAt: null,
+      mergeError: null, mergeTargetCheckedOutAt: null, worktreeRemovedAfterMerge: null,
+      branchDeletedAfterMerge: null, worktreeCleanupSkippedReason: null, errorMessage: null,
       createdAt: now, updatedAt: now,
     };
     db.insert(buildRuns).values(build).run();
@@ -242,6 +254,41 @@ export function registerBuildRoutes(
       validationCommandIds: stringArray(request.body?.validationCommandIds),
     });
     return reply.code(202).send({ message: "Sending open findings back to the builder.", buildRunId: build.id });
+  });
+
+  app.post<{ Params: { id: string }; Body: MergeBody }>("/api/builds/:id/merge", async (request, reply) => {
+    const build = db.select().from(buildRuns).where(eq(buildRuns.id, request.params.id)).get();
+    if (!build) return reply.code(404).send({ message: "Build not found." });
+    if (build.status !== "COMPLETED") return reply.code(409).send({ message: "Only a completed build can be merged." });
+    if (build.mergeStatus === "MERGING") return reply.code(409).send({ message: "A merge is already in progress for this build." });
+    if (build.mergeStatus === "MERGED") return reply.code(409).send({ message: "This build has already been merged." });
+
+    if (request.body?.targetBranch !== undefined && typeof request.body.targetBranch !== "string") {
+      return reply.code(400).send({ message: "targetBranch must be a string." });
+    }
+    if (request.body?.commitMessage !== undefined && typeof request.body.commitMessage !== "string") {
+      return reply.code(400).send({ message: "commitMessage must be a string." });
+    }
+    if (request.body?.keepWorktreeAfterMerge !== undefined && typeof request.body.keepWorktreeAfterMerge !== "boolean") {
+      return reply.code(400).send({ message: "keepWorktreeAfterMerge must be true or false." });
+    }
+    if (request.body?.deleteBranchAfterMerge !== undefined && typeof request.body.deleteBranchAfterMerge !== "boolean") {
+      return reply.code(400).send({ message: "deleteBranchAfterMerge must be true or false." });
+    }
+    const validationTimeoutMs = typeof request.body?.validationTimeoutMs === "number" ? request.body.validationTimeoutMs : 600_000;
+    if (!Number.isFinite(validationTimeoutMs) || validationTimeoutMs < 1_000 || validationTimeoutMs > 3_600_000) {
+      return reply.code(400).send({ message: "Validation timeout must be between 1 second and 1 hour." });
+    }
+
+    void workflow.mergeBuild(build.id, {
+      targetBranch: text(request.body?.targetBranch) ?? undefined,
+      commitMessage: text(request.body?.commitMessage) ?? undefined,
+      keepWorktreeAfterMerge: request.body?.keepWorktreeAfterMerge === true,
+      deleteBranchAfterMerge: request.body?.deleteBranchAfterMerge === true,
+      validationCommandIds: stringArray(request.body?.validationCommandIds),
+      validationTimeoutMs,
+    });
+    return reply.code(202).send({ message: "Merging into the target branch.", buildRunId: build.id });
   });
 
   app.post<{ Params: { id: string } }>("/api/builds/:id/cancel", async (request, reply) => {
