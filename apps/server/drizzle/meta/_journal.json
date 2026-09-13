@@ -85,6 +85,13 @@
       "when": 1789291907882,
       "tag": "0011_vengeful_wendell_vaughn",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1789295455050,
+      "tag": "0012_steady_puppet_master",
+      "breakpoints": true
     }
   ]
 }

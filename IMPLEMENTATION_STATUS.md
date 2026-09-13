@@ -114,7 +114,8 @@ Current record:
 - Modules introduced: task/artifact/comparison/evidence schema and migration, `BrainstormWorkflow`, task APIs, versioned prompt files, and the Phase 3 task/comparison UI.
 - Tests executed: paired fake-provider parallelism barriers; full analysis → review → comparison workflow; structured/raw persistence; evidence creation/update; explicit web-decision validation; full TypeScript check; production build; migrated local API/UI inspection.
 - Acceptance state: the database-sharding task exists as a `DRAFT` for the registered Boostorder project with web disabled. Its real four provider runs were not started automatically because they spend provider usage.
-- Known limitations: active provider processes are not reconciled after a server restart; deterministic comparison depends on structured cross-review quality.
+- Known limitation: deterministic comparison depends on structured cross-review quality. Phase 7
+  later added safe startup reconciliation for provider processes interrupted by a server restart.
 - Correction (2026-09-13): this record previously said "the screen edits evidence content while type reclassification is currently API-only." That was inaccurate even at the time — `PATCH /api/tasks/:taskId/evidence/:itemId` and the evidence board's own Edit → type select → Save flow (`editingEvidenceType` in `App.vue`) both shipped in the same commit as this record and already support changing an item's type (e.g. `QUESTION` → `DECISION`). No code changed to fix this; only the stale claim did, caught while scoping Phase 6.
 
 Later addition (2026-09-13): a brainstorm plan export, modeled on the build workflow's existing pre-PR report (`apps/server/src/services/pre-pr-report.ts`). `buildBrainstormPlanReport` (`apps/server/src/services/brainstorm-report.ts`) reads a task's analyses, cross-reviews, comparison, and evidence and assembles them into a report; unlike the build report it never blocks on task status — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed, with a status-appropriate recommended next action, since a brainstorm task has no single fixed reviewer to gate on. Exposed as `GET /api/tasks/:id/report` and a **BRAINSTORM PLAN REPORT** section with a **Generate report** button on the task detail pane, next to the evidence board. Verified with a route-level test that runs the fake-adapter workflow to `READY` and checks the full report shape, a 404 test for an unknown task, `npm test`/`typecheck`/`build`/`check:agent-policy`/`db:generate` (no schema change), and manual browser verification of the button and its output on a `DRAFT` task.
@@ -650,9 +651,10 @@ Completion record:
 - [x] Process cancellation and timeouts
 - [x] CLI failure handling
 - [ ] Worktree conflict handling
-- [ ] Database backups
-- [ ] Cleanup tools
-- [ ] Audit history
+- [x] Database backups and restart-only restore
+- [x] Cleanup diagnostics and explicit stale-lease release
+- [x] Audit-history export
+- [x] Startup recovery for interrupted work
 - [ ] Supervised frontend verification runner for registered projects
 - [ ] Just-in-time approval gate before provider-based frontend UI/UX review
 
@@ -711,6 +713,36 @@ Completion record:
 - Full verification: `npm test` (139 workspace tests: 93 server + 35 agents + 11 Git, plus 9
   policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
   db:generate` (no schema changes), and `git diff --check`; all passed under Node 22.23.2.
+
+### Phase 7, slice 2 completion record — recovery and local maintenance
+
+- Date: 2026-09-13
+- Added verified SQLite backups under the database's sibling `backups/` directory. Restore is a
+  two-step, explicit-human operation: the chosen backup passes `integrity_check`, is staged without
+  replacing the live database, and is applied only at the next server start. Startup creates a
+  second pre-restore backup of the database being replaced, removes obsolete WAL/SHM companions,
+  applies migrations, and records the completed restore.
+- Startup now reconciles records abandoned in active states by a prior process: agent runs, tasks,
+  builds, merges, and experiments are moved to their corresponding failed state, active worktree
+  usage leases are released, and one append-only recovery audit row records the counts. Partial
+  output, artifacts, diffs, worktrees, branches, and source files are preserved. The operation is
+  idempotent and deliberately runs only at startup so live work owned by the current process cannot
+  be mistaken for abandoned work.
+- Added a **Maintenance** workspace panel for creating/listing backups, staging or cancelling a
+  restore, inspecting worktree-error and stale-lease warnings, explicitly releasing a stale lease,
+  showing startup-recovery state, and downloading audit metadata. Every destructive or stateful
+  recovery choice requires an explicit confirmation; none deletes worktrees or source code.
+- Added a privacy-bounded JSON audit export covering maintenance, usage-safety, task/run model and
+  permission metadata, builds, experiments, and ADRs. Provider prompts, visible output, raw events,
+  stderr, and artifact contents are deliberately excluded.
+- Focused verification: startup-recovery, database-maintenance, and maintenance-route suites passed
+  (5 tests), and server/web TypeScript checks were clean. Browser verification confirmed the panel
+  renders at desktop width, exposes plain-language accessible names/tooltips, updates the final
+  navigation item correctly at page bottom, and emits no warning/error console entries. The full
+  verification also passed under Node 22.23.2: `npm test` (144 workspace tests: 98 server + 35
+  agents + 11 Git, plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run
+  check:agent-policy`, `npm run db:generate` (18 tables, no additional schema drift after migration
+  `0012`), and `git diff --check`.
 
 ## Phase 8 — Usage, token, and cost monitoring
 

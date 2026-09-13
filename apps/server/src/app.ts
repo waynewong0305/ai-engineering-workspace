@@ -1,11 +1,12 @@
 import Fastify from "fastify";
 import { ClaudeAdapter, CodexAdapter, type AgentAdapter, type AgentProvider } from "@aiew/agents";
 import { WorktreeService } from "@aiew/git";
-import { createDatabase } from "./db/database.js";
+import { createDatabase, defaultDatabasePath } from "./db/database.js";
 import { registerAdrRoutes } from "./routes/adrs.js";
 import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerBuildRoutes } from "./routes/build-runs.js";
 import { registerExperimentRoutes } from "./routes/experiments.js";
+import { registerMaintenanceRoutes } from "./routes/maintenance.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUsageSafetyRoutes } from "./routes/usage-safety.js";
@@ -14,10 +15,13 @@ import { AgentRunManager } from "./services/agent-run-manager.js";
 import { inspectLocalTools } from "./services/tool-health.js";
 import { UsageSafetyService } from "./services/usage-safety.js";
 import { WorktreeUsageManager } from "./services/worktree-usage-manager.js";
+import { recoverInterruptedState } from "./services/startup-recovery.js";
 
 export function buildApp(options: { databasePath?: string; adapters?: AgentAdapter[] } = {}) {
   const app = Fastify({ logger: true });
-  const { db, sqlite } = createDatabase(options.databasePath);
+  const databasePath = options.databasePath ?? defaultDatabasePath;
+  const { db, sqlite, appliedRestore } = createDatabase(databasePath);
+  const startupRecovery = recoverInterruptedState(db);
 
   app.addHook("onClose", async () => sqlite.close());
 
@@ -27,6 +31,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
       status: "ok" as const,
       database: databaseCheck.ok === 1 ? ("connected" as const) : ("unavailable" as const),
       tools: await inspectLocalTools(),
+      maintenance: { appliedRestore, startupRecovery },
     };
   });
 
@@ -45,6 +50,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   registerUsageSafetyRoutes(app, usageSafety);
   registerAdrRoutes(app, db);
   registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
+  registerMaintenanceRoutes(app, db, sqlite, databasePath);
 
   return app;
 }

@@ -526,3 +526,18 @@ export const reviewFindings = sqliteTable("review_findings", {
 }, (table) => [index("review_findings_build_idx").on(table.buildRunId, table.ordinal)]);
 
 export type ReviewFindingRecord = typeof reviewFindings.$inferSelect;
+
+export type MaintenanceAuditCategory = "RECOVERY" | "BACKUP" | "RESTORE" | "CLEANUP";
+
+/** Append-only operational history for Phase 7 recovery and maintenance actions. */
+export const maintenanceAudit = sqliteTable("maintenance_audit", {
+  id: text("id").primaryKey(),
+  category: text("category", { enum: ["RECOVERY", "BACKUP", "RESTORE", "CLEANUP"] }).notNull(),
+  action: text("action").notNull(),
+  entityType: text("entity_type"),
+  entityId: text("entity_id"),
+  detail: text("detail", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("maintenance_audit_created_idx").on(table.createdAt)]);
+
+export type MaintenanceAuditRecord = typeof maintenanceAudit.$inferSelect;

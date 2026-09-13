@@ -330,6 +330,21 @@ type UsageDecision = {
   readingId: string | null;
   reason: string;
 };
+type MaintenanceBackup = { name: string; sizeBytes: number; createdAt: string };
+type MaintenanceLease = {
+  id: string;
+  worktreeId: string;
+  ownerType: string;
+  ownerId: string;
+  startedAt: string;
+};
+type MaintenanceStatus = {
+  backups: MaintenanceBackup[];
+  pendingRestore: boolean;
+  errorWorktrees: Array<{ id: string; path: string; lastError: string | null }>;
+  staleUsageLeases: MaintenanceLease[];
+  recentMaintenance: Array<{ id: string; action: string; createdAt: string }>;
+};
 
 const health = ref<HealthResponse | null>(null);
 const loading = ref(true);
@@ -454,6 +469,10 @@ const manualSnapshotForm = reactive<Record<AgentProvider, { windowId: string; wi
 const policyForm = reactive({ warningThresholdPercent: "", checkpointThresholdPercent: "" });
 const usageBlockedDecision = ref<UsageDecision | null>(null);
 const acknowledging = ref(false);
+const maintenance = ref<MaintenanceStatus | null>(null);
+const maintenanceLoading = ref(false);
+const maintenanceError = ref("");
+const maintenanceMessage = ref("");
 
 function providerLabel(provider: AgentProvider) {
   return provider === "CLAUDE" ? "Claude Code" : "Codex";
@@ -1548,7 +1567,91 @@ async function deregisterProject(project: Project) {
   }
 }
 
-const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions"];
+function formatBytes(bytes: number) {
+  if (bytes < 1_024) return `${bytes} B`;
+  if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KiB`;
+  return `${(bytes / (1_024 * 1_024)).toFixed(1)} MiB`;
+}
+
+async function loadMaintenance() {
+  maintenanceLoading.value = true;
+  maintenanceError.value = "";
+  try {
+    const response = await fetch("/api/maintenance");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not load maintenance status.");
+    maintenance.value = result;
+  } catch (error) {
+    maintenanceError.value = error instanceof Error ? error.message : "Could not load maintenance status.";
+  } finally {
+    maintenanceLoading.value = false;
+  }
+}
+
+async function createDatabaseBackup() {
+  maintenanceLoading.value = true;
+  maintenanceError.value = "";
+  maintenanceMessage.value = "";
+  try {
+    const response = await fetch("/api/maintenance/backups", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not create the backup.");
+    maintenanceMessage.value = `Backup ${result.name} created and checked for database integrity.`;
+    await loadMaintenance();
+  } catch (error) {
+    maintenanceError.value = error instanceof Error ? error.message : "Could not create the backup.";
+  } finally {
+    maintenanceLoading.value = false;
+  }
+}
+
+async function stageDatabaseRestore(backup: MaintenanceBackup) {
+  const confirmed = window.confirm(
+    `Restore ${backup.name} on the next application restart? The current database is kept as a pre-restore backup.`,
+  );
+  if (!confirmed) return;
+  maintenanceError.value = "";
+  maintenanceMessage.value = "";
+  const response = await fetch("/api/maintenance/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ backupName: backup.name, confirm: true }),
+  });
+  const result = await response.json();
+  if (!response.ok) maintenanceError.value = result.message ?? "Could not stage the restore.";
+  else {
+    maintenanceMessage.value = "Restore staged. Restart the application to apply it; the live database has not changed yet.";
+    await loadMaintenance();
+  }
+}
+
+async function cancelPendingRestore() {
+  if (!window.confirm("Cancel the staged database restore? The original backup file will be kept.")) return;
+  const response = await fetch("/api/maintenance/restore", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true }),
+  });
+  const result = await response.json();
+  if (!response.ok) maintenanceError.value = result.message ?? "Could not cancel the staged restore.";
+  else {
+    maintenanceMessage.value = "Staged restore cancelled. Backup files were kept.";
+    await loadMaintenance();
+  }
+}
+
+async function releaseMaintenanceLease(lease: MaintenanceLease) {
+  if (!window.confirm("Release this stale usage lease? Confirm the owning process is no longer running.")) return;
+  const response = await fetch(`/api/worktrees/${lease.worktreeId}/usages/${lease.id}`, { method: "DELETE" });
+  const result = await response.json();
+  if (!response.ok) maintenanceError.value = result.message ?? "Could not release the stale lease.";
+  else {
+    maintenanceMessage.value = "Stale usage lease released.";
+    await loadMaintenance();
+  }
+}
+
+const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions", "maintenance"];
 const activeSection = ref(NAV_SECTIONS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "projects");
 function updateActiveSection() {
   const hash = window.location.hash.slice(1);
@@ -1558,6 +1661,10 @@ function updateActiveSection() {
 let sectionObserver: IntersectionObserver | null = null;
 const intersectingSections = new Set<string>();
 function pickActiveSectionFromScroll() {
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+    activeSection.value = NAV_SECTIONS[NAV_SECTIONS.length - 1]!;
+    return;
+  }
   for (const id of NAV_SECTIONS) {
     if (intersectingSections.has(id)) {
       activeSection.value = id;
@@ -1584,7 +1691,7 @@ onMounted(() => {
     if (element) sectionObserver.observe(element);
   }
 
-  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage()]);
+  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage(), loadMaintenance()]);
 });
 onUnmounted(() => {
   eventSource?.close();
@@ -1617,6 +1724,7 @@ onUnmounted(() => {
         <a :class="['nav-item', { active: activeSection === 'build' }]" href="#build" title="Step 5: let one AI actually write code in its own private folder, then have the other AI review that work before anything is merged."><span>06</span>Build</a>
         <a class="nav-item disabled" href="#reviews" aria-disabled="true" title="Not built yet — this will be a dedicated place to browse past reviews. For now, reviews show up inside the Build tab."><span>07</span>Reviews</a>
         <a :class="['nav-item', { active: activeSection === 'decisions' }]" href="#decisions" title="Write down important decisions (like 'why did we choose X over Y') so you can look back and remember the reasoning later."><span>08</span>Decisions</a>
+        <a :class="['nav-item', { active: activeSection === 'maintenance' }]" href="#maintenance" title="Back up or recover this app's local database, inspect cleanup warnings, and download an audit history."><span>09</span>Maintenance</a>
       </nav>
 
       <div class="sidebar-foot" title="Everything you see runs on this computer only. Nothing is uploaded to a server or shared with anyone else.">
@@ -2752,6 +2860,58 @@ onUnmounted(() => {
               </button>
             </form>
           </div>
+        </div>
+      </section>
+
+      <section id="maintenance" class="project-panel" aria-labelledby="maintenance-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">09 — RECOVERY &amp; AUDIT</p>
+            <h2 id="maintenance-heading">Keep the local workspace recoverable.</h2>
+            <p>Create verified database backups, stage a safe restart-only restore, and inspect cleanup warnings.</p>
+          </div>
+          <span class="safety-badge" title="A restore never replaces the database while the app is running. It is checked first, applied only after restart, and the database it replaces is backed up again.">CHECKED BACKUPS · RESTART RESTORE</span>
+        </div>
+
+        <p v-if="maintenanceError" class="form-message error-text" role="alert">{{ maintenanceError }}</p>
+        <p v-if="maintenanceMessage" class="form-message success-text" role="status">{{ maintenanceMessage }}</p>
+
+        <div class="form-actions">
+          <span>{{ maintenanceLoading ? "Checking maintenance state…" : `${maintenance?.backups.length ?? 0} backup(s) available` }}</span>
+          <button class="primary-button" type="button" :disabled="maintenanceLoading" @click="createDatabaseBackup" title="Make a complete copy of this app's local SQLite database and run SQLite's integrity check on the copy.">Create verified backup</button>
+          <a class="ghost-button" href="/api/maintenance/audit/export" download title="Download a JSON history of task, run, model, permission, merge, usage-safety, ADR, experiment, backup, restore, and recovery metadata. Prompts and model output are excluded.">Download audit history</a>
+        </div>
+
+        <div v-if="maintenance?.pendingRestore" class="worktree-safety-note" role="status">
+          <div><strong>Restore staged</strong><span>The live database is unchanged. Restart the application to apply the staged backup.</span></div>
+          <button class="ghost-button" type="button" @click="cancelPendingRestore" title="Remove the staged restore request. The source backup remains available.">Cancel staged restore</button>
+        </div>
+
+        <div class="tool-grid maintenance-grid">
+          <article class="tool-card">
+            <strong>Database backups</strong>
+            <small v-if="!maintenance?.backups.length">No backups yet.</small>
+            <div v-for="backup in maintenance?.backups ?? []" :key="backup.name" class="maintenance-row">
+              <span>{{ backup.name }} · {{ formatBytes(backup.sizeBytes) }} · {{ new Date(backup.createdAt).toLocaleString() }}</span>
+              <button class="text-button" type="button" :disabled="maintenance?.pendingRestore" @click="stageDatabaseRestore(backup)" title="After confirmation, check this backup and stage it for the next application restart. The current live database is not overwritten now.">Stage restore</button>
+            </div>
+          </article>
+
+          <article class="tool-card">
+            <strong>Interrupted work</strong>
+            <small>Startup automatically marks records abandoned by the previous server process as failed, preserves their output, and releases their process leases.</small>
+            <span class="maintenance-state">Checked at this server start</span>
+          </article>
+
+          <article class="tool-card">
+            <strong>Cleanup warnings</strong>
+            <small>{{ maintenance?.errorWorktrees.length ?? 0 }} worktree error(s) · {{ maintenance?.staleUsageLeases.length ?? 0 }} stale lease(s)</small>
+            <p v-for="worktree in maintenance?.errorWorktrees ?? []" :key="worktree.id" class="error-text">{{ worktree.path }} — {{ worktree.lastError ?? "Needs inspection" }}</p>
+            <div v-for="lease in maintenance?.staleUsageLeases ?? []" :key="lease.id" class="maintenance-row">
+              <span>{{ lease.ownerType }} {{ lease.ownerId }} · since {{ new Date(lease.startedAt).toLocaleString() }}</span>
+              <button class="text-button" type="button" @click="releaseMaintenanceLease(lease)" title="Release this lease only after confirming its old process is no longer running. No worktree files are deleted.">Release stale lease</button>
+            </div>
+          </article>
         </div>
       </section>
     </main>

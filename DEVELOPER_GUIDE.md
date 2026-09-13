@@ -89,11 +89,32 @@ The SQLite schema contains registered `projects` plus Phase 2/3 workflow records
 - `git_status` (`CLEAN` or `DIRTY`); and
 - ISO timestamps.
 
-`tasks` stores brainstorm/architecture inputs, state, risk, and the resolved human web-access decision. `agent_runs` and `agent_run_events` retain provider requests and normalized streams. `task_artifacts` stores the visible raw response plus parsed analysis/review JSON, `task_comparisons` stores the deterministic comparison, and `evidence_items` provides the persistent fact/assumption/question/decision/experiment board.
+`tasks` stores brainstorm/architecture inputs, state, risk, and the resolved human web-access decision. `agent_runs` and `agent_run_events` retain provider requests and normalized streams. `task_artifacts` stores the visible raw response plus parsed analysis/review JSON, `task_comparisons` stores the deterministic comparison, and `evidence_items` provides the persistent fact/assumption/question/decision/experiment board. `maintenance_audit` is the append-only record for startup recovery, backup, restore, and cleanup actions.
 
 Drizzle schema is in `apps/server/src/db/schema.ts`; generated SQL and migration metadata are in `apps/server/drizzle/`. The runtime applies pending migrations when the server opens the database. WAL and foreign-key enforcement are enabled.
 
-Future normalized tables should add ADRs, plans, worktrees, validation runs, review findings/responses, and broader audit events with the phase that owns their behavior; do not create speculative tables early.
+Later schema additions should remain normalized and be introduced only with the phase that owns their behavior; do not create speculative tables early.
+
+## Recovery and database maintenance
+
+`createDatabase` checks for a staged restore before SQLite is opened. `apps/server/src/db/restore.ts`
+validates the staged file with SQLite `integrity_check`, copies the current database to a
+timestamped `backups/pre-restore-*.sqlite` file, removes old WAL/SHM companions, atomically renames
+the staged database into place, then lets normal migrations run. A restore never overwrites the
+database while the server is using it.
+
+`StartupRecoveryService` runs after migrations and converts records that cannot still have a live
+owner after restart from active to failed states. It releases active worktree leases, preserves all
+partial output and filesystem state, writes one `RECOVERY` audit row when anything changed, and is
+idempotent. The health response exposes the startup summary. Recovery is intentionally startup-only:
+a live manual endpoint could mistake work owned by the current process for abandoned work.
+
+`DatabaseMaintenanceService` owns backup creation, restore staging/cancellation, recovery
+diagnostics, and the privacy-bounded audit export. Routes in
+`apps/server/src/routes/maintenance.ts` expose `GET /api/maintenance`, backup creation, confirmed
+restore stage/cancel, and `GET /api/maintenance/audit/export`. Stateful
+recovery endpoints require `confirm: true`; audit export omits prompts, output, raw events, stderr,
+and artifact bodies.
 
 ## AgentAdapter
 
@@ -243,7 +264,7 @@ The Phase 2 implementation uses `spawn` without a shell. The process supervisor:
    after a bounded grace period so an uncooperative descendant cannot keep the run alive; and
 6. emits one normalized terminal result.
 
-`AgentRunManager` writes each normalized event to SQLite before broadcasting it. It separately stores visible output, structured raw events, and stderr; each channel is capped at 5 MiB. The Phase 2 routes expose run creation, detail/history, cancellation, provider health, and SSE event replay. Refresh recovery can reconstruct completed and in-progress records from SQLite, although startup reconciliation for a process interrupted by a server restart remains Phase 7 work.
+`AgentRunManager` writes each normalized event to SQLite before broadcasting it. It separately stores visible output, structured raw events, and stderr; each channel is capped at 5 MiB. The Phase 2 routes expose run creation, detail/history, cancellation, provider health, and SSE event replay. Refresh recovery reconstructs records from SQLite; server-start reconciliation now marks process-interrupted active records failed while preserving their partial output.
 
 Before persistence, terminal failures are classified provider-neutrally as authentication required,
 model unavailable, timeout, or ordinary process failure so the stored message tells the human what

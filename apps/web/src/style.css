@@ -129,6 +129,13 @@ p { color: var(--muted); font-size: 16px; line-height: 1.65; }
 .tool-card strong { font-size: 15px; }
 .tool-card p { margin: 21px 0 3px; color: #dce8f7; font: 500 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .tool-card small { color: #6f829e; font-size: 12px; }
+.maintenance-grid .tool-card { display: grid; min-width: 0; align-content: start; gap: 12px; }
+.maintenance-grid .tool-card > strong, .maintenance-grid .tool-card > small { display: block; }
+.maintenance-grid .tool-card > p { margin: 0; }
+.maintenance-row { display: grid !important; min-width: 0; gap: 8px !important; padding-top: 12px; border-top: 1px solid var(--line); }
+.maintenance-row span { overflow-wrap: anywhere; color: #9bb0ca; font-size: 12px; line-height: 1.5; }
+.maintenance-row .text-button { justify-self: start; }
+.maintenance-state { color: var(--lime); font: 600 11px/1.4 ui-monospace, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
 .status-light { width: 8px; height: 8px; border-radius: 50%; }
 .status-light.ok { background: var(--lime); box-shadow: 0 0 10px rgba(168, 255, 138, 0.45); }
 .status-light.missing { background: var(--danger); box-shadow: 0 0 10px rgba(255, 140, 140, 0.35); }

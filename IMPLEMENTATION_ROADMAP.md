@@ -194,9 +194,9 @@ Goal: make normal failure safe and understandable.
 - [x] CLI authentication-expiry handling
 - [x] Model-unavailable and substitution handling
 - [ ] Worktree conflict recovery
-- [ ] SQLite backup/restore and migration recovery
-- [ ] Audit-history export
-- [ ] Startup recovery for interrupted runs
+- [x] SQLite backup/restore and migration recovery
+- [x] Audit-history export
+- [x] Startup recovery for interrupted runs
 - [ ] Supervised frontend verification runner (browser scenarios, console/network capture,
       accessibility, responsive screenshots, and optional approved-baseline comparison)
 - [ ] Separate just-in-time human approval, with a displayed reason and persisted scope, before any

@@ -34,6 +34,9 @@ The current implementation can:
 - create, edit, and reclassify architecture decision records (ADRs) for a task, numbered sequentially per project, stored locally and never exported into your repository automatically; and
 - run an isolated proof-of-concept experiment against a stated hypothesis, with an independent reviewer returning a proven/disproven/inconclusive verdict that's automatically recorded on the task's evidence board; and
 - promote an ADR into one or more linked implementation tasks, each keeping a real link back to its ADR (and, transitively, to the originating architecture discussion and any related experiments).
+- create integrity-checked local database backups, stage a restore for the next restart, recover
+  records interrupted by a prior application process at startup, inspect cleanup warnings, and export audit
+  metadata without exporting prompts or model output.
 
 Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
@@ -122,14 +125,34 @@ Return to the terminal that is running the application and press `Ctrl+C`. The l
 When this project is later connected to a source remote, the safe update sequence will be:
 
 1. Stop the application.
-2. Back up the `data/` directory if the release notes mention database changes.
+2. In **Maintenance**, select **Create verified backup** and wait for its success message.
 3. Pull the intended version through your normal Git workflow.
 4. Run `nvm use`.
 5. Run `npm install`.
 6. Run `npm run db:migrate`.
 7. Run `npm run dev`.
 
-Do not replace the `data/` directory during an update. A formal backup and migration-recovery workflow is planned for hardening.
+Do not replace the `data/` directory during an update. The Maintenance backup is a checked SQLite
+copy and remains available beside the live database under `backups/`.
+
+### Back up, restore, and inspect recovery state
+
+Open **Maintenance** to create and list verified database backups. **Stage restore** first checks the
+chosen file and asks for confirmation. It does not modify the live database; restart the application
+to apply it. At startup, the application backs up the database being replaced before applying the
+staged copy and pending migrations. You can cancel a staged restore before restarting without
+deleting its source backup.
+
+The same panel shows worktree records that need inspection and usage leases older than six hours.
+Release a stale lease only after confirming its owning process is no longer running. At each startup,
+the server safely marks active run/workflow records abandoned by the previous process as failed and
+releases their leases. It does not delete partial output, artifacts, worktrees, branches, or
+repository files. Recovery is not offered while the server is running, because current work must
+never be mistaken for abandoned work.
+
+**Download audit history** exports local JSON metadata for tasks, provider/model/permission choices,
+builds, merges, usage-safety decisions, ADRs, experiments, backups, restores, and recovery actions.
+Prompts, model output, raw events, stderr, and artifact contents are intentionally excluded.
 
 ## First-time setup
 
@@ -270,7 +293,7 @@ The workflow is:
 7. The comparison screen groups consensus, disagreements, open questions, missing evidence, and recommended experiments.
 8. You correct facts and assumptions, add evidence or decisions, and decide which disagreement matters.
 
-The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. You can cancel while analysis or cross-review is active. A server restart during active provider processes is not yet reconciled automatically.
+The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. You can cancel while analysis or cross-review is active. If the server restarts during active provider work, startup recovery marks the abandoned records failed, releases their usage leases, and preserves completed output and artifacts for inspection.
 
 When you have several tasks going at once, each entry in the **Tasks** sidebar list shows an **N open question(s)** badge whenever its evidence board holds one or more `QUESTION` records, so you can tell at a glance which tasks still need a human to weigh in — without opening each one. A question stops counting once you reclassify it to a different record type (typically `DECISION`).
 
