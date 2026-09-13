@@ -81,17 +81,27 @@ function humanizeDuration(ms: number): string {
 }
 
 const EXHAUSTION_PATTERNS: Array<{ pattern: RegExp; windowId: string; windowLabel: string }> = [
-  { pattern: /5[- ]hour (?:usage )?limit/i, windowId: "5H", windowLabel: "5-hour usage window" },
-  { pattern: /weekly (?:usage )?limit/i, windowId: "WEEKLY", windowLabel: "weekly usage window" },
-  { pattern: /usage limit reached/i, windowId: "5H", windowLabel: "usage window" },
-  { pattern: /you.?ve hit your usage limit/i, windowId: "5H", windowLabel: "usage window" },
-  { pattern: /rate limit(?:ed)? reached/i, windowId: "RATE_LIMIT", windowLabel: "rate-limit window" },
+  { pattern: /\b5[- ]hour (?:usage )?limit\b/i, windowId: "5H", windowLabel: "5-hour usage window" },
+  { pattern: /\bweekly (?:usage )?limit\b/i, windowId: "WEEKLY", windowLabel: "weekly usage window" },
+  { pattern: /\busage limit reached\b/i, windowId: "5H", windowLabel: "usage window" },
+  { pattern: /\byou.?ve (?:hit|reached) your usage (?:limit|cap)\b/i, windowId: "5H", windowLabel: "usage window" },
+  { pattern: /\busage cap\b/i, windowId: "5H", windowLabel: "usage window" },
+  { pattern: /\b(?:quota|allowance) (?:exceeded|reached|exhausted)\b/i, windowId: "5H", windowLabel: "usage window" },
 ];
+
+/**
+ * Wording that indicates an API-level tokens-per-minute/requests-per-minute throttle, not the
+ * Claude Code / ChatGPT subscription usage window this parser is meant to detect. A message
+ * matching this must never be recorded as an exhausted usage window, even if it also happens to
+ * contain the word "limit" — conflating the two is exactly the mistake this project must avoid.
+ */
+const API_RATE_LIMIT_EXCLUSIONS = /\b(tokens?[- ]per[- ]minute|requests?[- ]per[- ]minute|\btpm\b|\brpm\b|rate[_-]?limit[_-]?error|\b429\b)/i;
 
 const RESET_PATTERNS = [
   /resets? (?:at|around)\s+([^\n]+)/i,
   /try again (?:after|at)\s+([^\n]+)/i,
   /available again (?:at|around)\s+([^\n]+)/i,
+  /\buntil\s+([^\n]+)/i,
 ];
 
 /**
@@ -118,6 +128,9 @@ function parseTrailingTimestamp(candidate: string): string | null {
  */
 export function parseRateLimitMessage(message: string): { windowId: string; windowLabel: string; resetAt: string | null } | null {
   if (!message) return null;
+  // An API-level tokens/requests-per-minute throttle is a different thing entirely from the
+  // account usage window this parser targets; never let one masquerade as the other.
+  if (API_RATE_LIMIT_EXCLUSIONS.test(message)) return null;
   const matched = EXHAUSTION_PATTERNS.find((entry) => entry.pattern.test(message));
   if (!matched) return null;
   let resetAt: string | null = null;

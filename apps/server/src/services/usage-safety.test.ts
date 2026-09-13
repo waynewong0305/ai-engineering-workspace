@@ -114,6 +114,20 @@ describe("UsageSafetyService", () => {
     expect(view.sourceConfidence).toBe("EXACT");
   });
 
+  it("never confuses an API tokens/requests-per-minute throttle with the account usage window, even when it also says \"limit\"", () => {
+    expect(parseRateLimitMessage("rate_limit_error: Number of request tokens has exceeded your per-minute rate limit.")).toBeNull();
+    expect(parseRateLimitMessage("429 Too Many Requests: requests-per-minute limit exceeded, please slow down.")).toBeNull();
+    expect(parseRateLimitMessage("Your organization has exceeded its tokens per minute (TPM) limit.")).toBeNull();
+  });
+
+  it("recognizes further plausible usage/quota/cap wording for the account allowance", () => {
+    expect(parseRateLimitMessage("You have reached your usage cap for this plan. Resets in 2 hours.")).toMatchObject({ windowId: "5H" });
+    expect(parseRateLimitMessage("Weekly limit reached. Try again after 2026-09-20T00:00:00.000Z.")).toMatchObject({ windowId: "WEEKLY" });
+    expect(parseRateLimitMessage("Quota exceeded for this account until 2026-09-14T09:00:00.000Z.")).toMatchObject({
+      windowId: "5H", resetAt: "2026-09-14T09:00:00.000Z",
+    });
+  });
+
   it("evaluate() never fabricates safety: unknown usage requires acknowledgement only for combined workflows", () => {
     const usage = service();
     const single = usage.evaluate("CLAUDE", { combined: false });
