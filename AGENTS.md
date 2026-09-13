@@ -19,10 +19,11 @@ authentication, or multi-user support. See `PROJECT_SPEC.md` for the full produc
 Do not trust a memory of "where the project is" — it changes every phase. The authoritative,
 up-to-date record is **`IMPLEMENTATION_STATUS.md`**. Read it first. As of the phase it last
 recorded: project registration, agent adapters, independent brainstorming, Git worktree isolation,
-and a cross-cutting Claude/Codex usage-safety system are implemented; build/review workflows inside
-worktrees (Phase 5) and planning/ADRs (Phase 6) are not yet implemented. Usage, token, and cost
-monitoring (Phase 8, spec in `USAGE_MONITORING_SPEC.md`) is queued behind Phases 5–7 — do not start
-it early without an explicit human instruction.
+the cross-cutting Claude/Codex usage-safety system, build/review workflows inside worktrees (Phase
+5), and planning/ADRs/experiments/plan promotion (Phase 6) are implemented. Phase 7 hardening is the
+next unimplemented phase. Usage, token, and cost monitoring (Phase 8, spec in
+`USAGE_MONITORING_SPEC.md`) is queued behind Phase 7 — do not start it early without an explicit
+human instruction.
 
 ## Source-of-truth specifications
 

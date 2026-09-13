@@ -1627,7 +1627,8 @@ audit history
 
 ## Phase 8 — Usage, token, and cost monitoring
 
-Queued behind Phases 5–7 (see `IMPLEMENTATION_ROADMAP.md`). Full spec: `USAGE_MONITORING_SPEC.md`.
+Queued behind Phase 7; Phases 5 and 6 are complete (see `IMPLEMENTATION_ROADMAP.md`). Full spec:
+`USAGE_MONITORING_SPEC.md`.
 
 Implement:
 

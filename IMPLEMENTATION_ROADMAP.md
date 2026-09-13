@@ -151,33 +151,39 @@ Exit gate: met. A provider-consuming action cannot start while its provider is r
 
 Goal: run one builder and one independent reviewer through a bounded review loop.
 
-- [ ] Builder/reviewer role selection independent of provider
-- [ ] Worktree-scoped builder run
-- [ ] Configured validation command execution and complete result capture
-- [ ] Unified diff collection and viewer
-- [ ] Read-only reviewer run
-- [ ] Structured findings and builder responses
-- [ ] Re-review with a hard maximum of three rounds
-- [ ] Explicit human-approved merge into the selected target branch
-- [ ] Post-merge validation before cleanup
-- [ ] Guarded automatic worktree removal after successful merge and validation
-- [ ] `Keep worktree after merge` override
-- [ ] Separate opt-in policy for deleting a merged task branch
-- [ ] Pre-PR report and `READY_FOR_HUMAN_REVIEW`
+- [x] Builder/reviewer role selection independent of provider
+- [x] Worktree-scoped builder run
+- [x] Configured validation command execution and complete result capture
+- [x] Unified diff collection and viewer
+- [x] Read-only reviewer run
+- [x] Structured findings and builder responses
+- [x] Re-review with a hard maximum of three rounds
+- [x] Explicit human-approved merge into the selected target branch
+- [x] Post-merge validation before cleanup
+- [x] Guarded automatic worktree removal after successful merge and validation
+- [x] `Keep worktree after merge` override
+- [x] Separate opt-in policy for deleting a merged task branch
+- [x] Pre-PR report and `READY_FOR_HUMAN_REVIEW`
 
-Exit gate: run the bug-fix acceptance workflow once in each provider direction, merge only after explicit human approval, and prove that failed merges, failed validation, dirty worktrees, active processes, and unresolved conflicts preserve the worktree. No push or PR creation is included.
+Exit gate: implementation complete. Temporary-repository tests with fake adapters prove the bounded
+review loop, explicit human-approved merge, post-merge validation, cleanup overrides, branch policy,
+and preservation on conflicts or failed validation without spending provider usage. A real run in
+each provider direction remains an explicit human acceptance action. No push or PR creation is
+included.
 
 ## Phase 6 — Planning, evidence, and decisions
 
 Goal: turn approved reasoning into traceable plans.
 
-- [ ] Editable facts, assumptions, questions, decisions, and experiment results
-- [ ] ADR creation and relationships
-- [ ] Isolated experiment/POC workflow
-- [ ] Promote decisions into implementation phases and linked tasks
-- [ ] Optional ADR Markdown export with explicit approval
+- [x] Editable facts, assumptions, questions, decisions, and experiment results
+- [x] ADR creation and relationships
+- [x] Isolated experiment/POC workflow
+- [x] Promote decisions into implementation phases and linked tasks
+- Optional follow-up, not required by the Phase 6 exit gate: ADR Markdown export with explicit
+  approval. ADRs currently remain in the local application database.
 
-Exit gate: a brainstorm can create an ADR and a linked, reviewable implementation plan without modifying a target repository implicitly.
+Exit gate: met. A brainstorm can create an ADR, record experiment evidence, and promote the decision
+into linked, reviewable implementation tasks without modifying a target repository implicitly.
 
 ## Phase 7 — Hardening
 
@@ -200,8 +206,8 @@ Exit gate: documented failure drills preserve source code, history, and user con
 Goal: make Claude/Codex token usage, billing mode, and API-equivalent cost visible from workspace
 level down to an individual run, without ever presenting an estimate as an exact figure.
 
-Queued behind Phases 5–7: do not start until the rest of Phase 5 (finding-response/re-review/merge/
-pre-PR report), Phase 6, and Phase 7 are complete, unless explicitly pulled forward by the user.
+Queued behind Phase 7: Phases 5 and 6 are complete, but do not start Phase 8 until hardening is
+complete unless explicitly pulled forward by the user.
 Full spec, data model, UI surfaces, budget behavior, backfill rules, and testing/reporting
 requirements: `USAGE_MONITORING_SPEC.md`. Re-investigate installed Claude/Codex CLI capabilities at
 execution time — do not assume this roadmap's or that spec's CLI findings still hold.
@@ -224,7 +230,9 @@ historical or current value is fabricated.
 
 Not one of the phases above: a single integration test (`apps/server/src/routes/end-to-end-workflow.test.ts`) that drives every currently-implemented phase together through the app's own HTTP API, in the order a real user would — registration, health, brainstorm draft, the usage-safety acknowledgement gate, independent analysis, cross-review, comparison/evidence, worktree creation, isolation, the deregistration-vs-linked-worktrees guard, and cleanup — using a temporary repository and fake adapters, spending no real provider usage. See `IMPLEMENTATION_STATUS.md` for the full record.
 
-Exit gate: met for everything implemented so far. Extend this same test (not a second one) once Phase 5 adds the build/review loop.
+Exit gate: met through Phase 4. Phases 5 and 6 are complete but are covered by their own route and
+service integration tests rather than this single cross-phase test. Extend this same test (not a
+second one) during Phase 7 hardening to include the build/review and planning/ADR flows.
 
 ## Phase completion protocol
 

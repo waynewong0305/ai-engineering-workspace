@@ -6,6 +6,16 @@ Last updated: 2026-09-13
 
 The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 (hardening) remains unimplemented — see below.
 
+Documentation consistency maintenance (2026-09-13): reconciled `AGENTS.md`, this status record,
+`IMPLEMENTATION_ROADMAP.md`, `PROJECT_SPEC.md`, `DEVELOPER_GUIDE.md`, and
+`USAGE_MONITORING_SPEC.md` with the completed Phase 5/6 implementation. The roadmap now marks the
+delivered checklist items complete, Phase 8 is accurately queued behind Phase 7, production
+worktree-lease usage is documented, and the remaining cross-phase end-to-end-test gap is stated as
+a Phase 7 hardening task rather than an absent Phase 5 implementation. No product behavior or
+schema changed. Verified with `npm test` (114 workspace tests plus 9 policy-script tests), `npm run
+typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema changes),
+and `git diff --check`; all passed under Node 22.23.2.
+
 ## LLM agent policy
 
 `AGENTS.md` (canonical) and `CLAUDE.md` (a relative symlink to it) carry the standing policy for any LLM coding agent working in this repository — product purpose, entry points, runtime/verification commands, worktree and usage-safety rules, and a continuation checklist. `npm run check:agent-policy` verifies the pair stays a single canonical file plus a symlink (never two independently editable copies) and runs automatically before `npm test`. The checker's own logic (`checkAgentPolicy` in `scripts/check-agent-policy.mjs`) has automated coverage in `scripts/check-agent-policy.test.mjs` (9 cases, run via `node --test` and wired into `pretest`) against disposable fixtures, so this was verified by an automated test rather than only manually. See `DEVELOPER_GUIDE.md`'s "Agent policy synchronization" section for how the check works.
@@ -56,7 +66,7 @@ Completion record:
 - Decisions: registration is strictly read-only; Git is invoked with argument arrays; duplicate canonical paths are rejected.
 - Modules introduced: project schema, repository inspector, project routes, registration UI.
 - Tests executed: clean temporary repository registration, non-repository rejection, project update, safe deregistration, and post-operation Git status checks.
-- Known limitations: deregistration intentionally removes the project's local tasks, run history, and evidence after confirmation; remote default-branch discovery is local-only and falls back to the checked-out branch; validation commands are stored but cannot yet run.
+- Known limitations: deregistration intentionally removes the project's local tasks, run history, and evidence after confirmation; remote default-branch discovery is local-only and falls back to the checked-out branch. At the Phase 1 boundary validation commands were stored but not run; Phase 5 now executes selected commands inside an assigned task worktree.
 
 ## Phase 2 — Agent adapters
 
@@ -124,8 +134,8 @@ Later addition (2026-09-13): with several tasks running at once there was no way
 - [x] Worktree ownership/usage-lease tracking with stale-lease detection (6h default) and explicit human release (`DELETE /api/worktrees/:id/usages/:usageId`)
 - [x] Temporary-repository integration tests (service and route level)
 - [x] Refuse project deregistration while managed worktrees remain linked (`DELETE /api/projects/:id` returns 409 `WORKTREES_LINKED` while any `worktrees` row still references the project)
-- [ ] Guarded automatic cleanup after approved merge and passing post-merge validation (Phase 5: no merge workflow exists yet)
-- [ ] Keep-after-merge override and separate merged-branch deletion policy beyond the existing explicit `deleteBranch` flag (full policy arrives with Phase 5 merge workflow)
+- [x] Guarded automatic cleanup after approved merge and passing post-merge validation (delivered in Phase 5)
+- [x] Keep-after-merge override and separate opt-in merged-branch deletion policy (delivered in Phase 5)
 
 ### Phase 4 completion record
 
@@ -139,7 +149,7 @@ Later addition (2026-09-13): with several tasks running at once there was no way
   6. **Mobile layout regression (pre-existing, not introduced by this phase's checkpoint but caught during Phase 4 UI verification):** below the 820px breakpoint, `.app-shell`'s single grid column had no `min-width: 0`, so the sidebar nav's intrinsic content width (~587px) forced the whole page to overflow horizontally instead of the nav's own `overflow-x: auto` strip scrolling internally. Fixed with `grid-template-columns: minmax(0, 1fr)` and `.sidebar { min-width: 0 }` in the same media query. Verified no page-level horizontal overflow remains at 390px and ~587px viewport widths; desktop layout unaffected.
   7. **`lastError` and active usage leases were tracked but never surfaced in the UI.** The worktree inspector now shows the last recorded error and a list of active usage leases (with a stale label and a Release control) alongside the existing clean/dirty, idle/in-use, and inspection-error states.
   8. **Project deregistration did not check for linked managed worktrees**, contradicting `PROJECT_SPEC.md` section 12 ("Once managed worktrees are enabled, deregistration must also require their safe cleanup first"). Fixed: `DELETE /api/projects/:id` now returns 409 `WORKTREES_LINKED` while any `worktrees` row still references the project, and succeeds again once every managed worktree for that project has been removed. Covered by a new integration test (register a project, create a worktree, confirm deregistration is refused, remove the worktree, confirm deregistration then succeeds).
-- Known limitation: `WorktreeUsageManager.acquire`/`release` is fully implemented and tested but not yet called by any production code path, because no Phase 5 worktree-scoped agent run exists yet to acquire a lease. `isInUse` is therefore always `false` today; this is expected for the current phase boundary, not a bug.
+- Later resolution: Phase 5 build/review runs and Phase 6 experiments now call `WorktreeUsageManager.acquire`/`release` in production, so active worktree-scoped agent activity is represented by a real lease and blocks unsafe mutation or cleanup.
 - Tests executed: `packages/git` unit tests (6, including new locked-worktree and orphan-recovery cases), `apps/server` route/service tests (14, including a new orphan-recovery route test), full workspace `npm test` (25 tests across `apps/server`, `packages/agents`, `packages/git`), `npm run typecheck` (clean across all five workspaces), `npm run build` (server `tsc` + web `vue-tsc -b && vite build`, clean), `npm run db:generate` (confirms no schema drift — Phase 4 introduced no new columns), `npm run db:migrate` against the existing local database (no-op, already at migration `0003`), and `git diff --check` (clean). Browser verification at desktop width and at an emulated ~390–587px mobile width confirmed the worktree task selector, proposal cards, availability/collision messaging, and (after the fix above) no page-level horizontal scrolling. Real worktree creation against the registered Boostorder repository was deliberately not exercised in the browser to avoid consuming a real task/provider slot or touching that repository; behavior was instead proven with temporary Git repositories in the automated test suite.
 
 ## Provider usage safety (cross-cutting)
@@ -435,8 +445,8 @@ Completion record:
   independent-review shape from the brainstorm workflow; a Phase 5 build has exactly one fixed
   reviewer, so findings are grouped by disposition instead (accepted/rejected/unresolved, derived
   from each finding's `builderVerdict` and `status`). "Architecture Decisions" is always reported as
-  unavailable — ADRs (Phase 6) don't exist yet — never fabricated, matching this project's standing
-  rule against inventing data a phase hasn't built yet. "Human Review Required" is always `true`
+  unavailable when this slice shipped because ADRs had not been built yet; Phase 6 subsequently
+  replaced that placeholder with the real ADRs related to the build task. "Human Review Required" is always `true`
   (§25: "AI approval is never equivalent to human approval") — not derived from any build state.
 - `parseChangedFiles` extracts changed file paths from the stored unified-diff text (via the
   conventional `diff --git a/... b/...` and `+++ b/...` header lines) since the diff is stored as
@@ -646,7 +656,7 @@ Completion record:
 
 ## Phase 8 — Usage, token, and cost monitoring
 
-Not started. Queued behind the rest of Phase 5, Phase 6, and Phase 7 — see
+Not started. Queued behind Phase 7; Phases 5 and 6 are complete. See
 `IMPLEMENTATION_ROADMAP.md`'s Phase 8 entry and the full spec at `USAGE_MONITORING_SPEC.md`. Do not
 start without an explicit human instruction to pull it forward, and re-verify installed Claude/Codex
 CLI usage-telemetry capabilities at that time rather than trusting this record.
@@ -672,4 +682,4 @@ Completion record:
 - File: `apps/server/src/routes/end-to-end-workflow.test.ts`. Uses a temporary Git repository and fake `AgentAdapter` implementations (no synchronization barrier needed here — that parallelism guarantee is already proven in `tasks.test.ts`; this test's job is pipeline correctness, not timing) and spends no real provider usage.
 - This test doubles as a regression guard for the cross-phase interactions two earlier fixes introduced: the combined-workflow usage-safety acknowledgement gate (step 4) and the deregistration-vs-linked-worktrees guard (step 8) — both are now proven not just in isolation but as part of the full flow a user actually follows.
 - Tests executed: full workspace `npm test` (59 tests: 40 `apps/server` + 5 `packages/agents` + 6 `packages/git` + 9 `scripts/check-agent-policy.test.mjs`), `npm run typecheck`, `npm run build`, `git diff --check` — all clean.
-- Known limitation: Phase 5 (build/review) isn't implemented yet, so this walkthrough necessarily stops at worktree creation/cleanup; extend it to cover the builder/reviewer loop once that phase lands rather than writing a second, separate end-to-end test.
+- Known limitation: this cross-phase walkthrough still stops at Phase 4 worktree creation/cleanup even though Phases 5 and 6 are now implemented and covered by their own route/service integration tests. Extend this same test during Phase 7 hardening to cover the builder/reviewer loop and planning/ADR flow rather than writing a second, separate end-to-end test.

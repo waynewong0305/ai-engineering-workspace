@@ -1,12 +1,11 @@
 # Usage, Token, and Cost Monitoring — Phase 8 Spec
 
 Status: **QUEUED**. This phase is scoped and ready to hand to an agent, but must not be started
-until Phase 5 (the remaining finding-response/re-review/merge/pre-PR-report items), Phase 6
-(planning/ADRs), and Phase 7 (hardening) in `IMPLEMENTATION_ROADMAP.md` are complete — i.e. after
-"the entire application" as currently roadmapped is built. Do not begin implementation early
-without an explicit human instruction to pull it forward. This document is the authoritative,
-self-contained spec for that later work; `IMPLEMENTATION_ROADMAP.md` and `IMPLEMENTATION_STATUS.md`
-only link here rather than duplicating it (per this repo's own documentation policy).
+until Phase 7 (hardening) in `IMPLEMENTATION_ROADMAP.md` is complete; Phases 5 and 6 are already
+complete. Do not begin implementation early without an explicit human instruction to pull it
+forward. This document is the authoritative, self-contained spec for that later work;
+`IMPLEMENTATION_ROADMAP.md` and `IMPLEMENTATION_STATUS.md` only link here rather than duplicating it
+(per this repo's own documentation policy).
 
 This spec is written to be actionable by either a Claude Code agent or a Codex agent — it does not
 assume which one executes it. All existing `AGENTS.md`/`CLAUDE.md` policy (provider-neutral
