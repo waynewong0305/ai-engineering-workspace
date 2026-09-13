@@ -23,9 +23,10 @@ the cross-cutting Claude/Codex usage-safety system, build/review workflows insid
 5), and planning/ADRs/experiments/plan promotion (Phase 6) are implemented. Phase 7 hardening is in
 progress; process/environment, CLI-failure hardening, cross-phase verification, the sensitive-path
 deny list, worktree-conflict handling, the just-in-time frontend-review approval gate (server-side
-only; no UI yet), and an accessibility/responsive audit of this workspace are complete, while the
+only; no UI yet), and an accessibility/responsive audit of this workspace are complete. The
 supervised frontend verification runner itself (the browser-automation piece the approval gate
-protects, and the UI it will drive) remains. Recovery,
+protects, and the UI it will drive) was evaluated in detail and deliberately deferred, not left
+unstarted by oversight — see `IMPLEMENTATION_STATUS.md`'s record before reconsidering it. Recovery,
 database backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost
 monitoring (Phase 8, spec in
 `USAGE_MONITORING_SPEC.md`) is queued behind Phase 7 — do not start it early without an explicit

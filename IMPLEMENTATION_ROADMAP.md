@@ -199,14 +199,21 @@ Goal: make normal failure safe and understandable.
 - [x] Audit-history export
 - [x] Startup recovery for interrupted runs
 - [ ] Supervised frontend verification runner (browser scenarios, console/network capture,
-      accessibility, responsive screenshots, and optional approved-baseline comparison)
+      accessibility, responsive screenshots, and optional approved-baseline comparison) —
+      evaluated in detail 2026-09-13 (design, dependencies, and a scoped first slice all worked
+      out against the user's real registered project) and deliberately deferred: it would only
+      ever be manually triggered against an already-running instance the human looks at directly,
+      so it wouldn't save meaningful effort over testing by eye today. Revisit if Claude/Codex
+      builders start running with less direct human oversight. See `IMPLEMENTATION_STATUS.md`'s
+      matching record for the full reasoning.
 - [x] Separate just-in-time human approval, with a displayed reason and persisted scope, before any
       current or future model-backed agent reviews frontend UI/UX or receives browser evidence —
       `FrontendReviewApprovalService` and its routes (server-side only; the runner this gate
       protects, and the UI that will drive it, are not yet built, so nothing calls it yet)
 - [ ] Token-efficient evidence selection: exception-only provider review, one-provider default,
       affected-region/failure-excerpt inputs, exact-revision artifact reuse, and separate approval
-      before second-provider escalation or material scope expansion
+      before second-provider escalation or material scope expansion — governs the runner above and
+      is deferred along with it
 - [x] Accessibility and responsive UI audit of this workspace itself
 
 Exit gate: documented failure drills preserve source code, history, and user control.

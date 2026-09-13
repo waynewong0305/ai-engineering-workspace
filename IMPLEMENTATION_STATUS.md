@@ -655,7 +655,8 @@ Completion record:
 - [x] Cleanup diagnostics and explicit stale-lease release
 - [x] Audit-history export
 - [x] Startup recovery for interrupted work
-- [ ] Supervised frontend verification runner for registered projects
+- [ ] Supervised frontend verification runner for registered projects — deliberately deferred, not
+  merely unstarted; see the record below
 - [x] Just-in-time approval gate before provider-based frontend UI/UX review
 - [x] Accessibility and responsive UI audit of this workspace itself
 
@@ -882,6 +883,44 @@ Completion record:
   across its two files, plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run
   check:agent-policy`, `npm run db:generate` (no schema changes — this unit added no columns), and
   `git diff --check`; all passed under Node 22.23.2.
+
+### Supervised frontend verification runner — evaluated, deliberately deferred
+
+- Date: 2026-09-13
+- Designed this item in real detail before writing any code, against the user's actual registered
+  project (Boostorder Cloud) rather than in the abstract, and settled two open design questions:
+  (1) the runner cannot auto-launch a registered project's frontend — Boostorder is a Laravel app
+  behind Herd/Apache/PHP, not a `npm run dev` server, and starting one is genuinely
+  project-specific; it would have to work against an already-running URL the human supplies. (2)
+  Login must be a session-reuse capture flow, never credential handling — confirmed live that the
+  workspace's automated browser session does not inherit the user's own browser's login, and this
+  project's own policy already forbids handling passwords, so the only safe pattern is: the human
+  logs in once inside the same automated browser context, that session (cookies/storage, not a
+  password) is saved to a local file, and later runs reuse it.
+- A concrete first slice was scoped on this basis (project-level base URL + session capture,
+  scenario pages, console/network/accessibility capture via Playwright + axe-core, deliberately
+  decoupled from the worktree-scoped build pipeline since a browser check needs a live server the
+  human manages, not something tied to an isolated build worktree) — see the git history around
+  2026-09-13 for the full design (base URL/session/scenario schema, the two-step headed-then-saved
+  login flow, and the token-refresh caveat below) if this is picked back up later.
+- Before implementing, the human asked the direct question this design work should have surfaced
+  earlier: given they can just test the frontend themselves, what does automating this actually
+  save? Since this runner would only ever be manually triggered against an instance the human
+  already looks at directly (not wired into any autonomous pipeline), the honest answer was: not
+  enough to justify a new dependency (Playwright + axe-core, plus a one-time ~150-300MB browser
+  binary download), three new tables, and a session-management/expiry-detection flow (sessions
+  need periodic re-capture — Boostorder's own login token auto-refreshes client-side, which stops
+  the moment the capture browser closes) right now.
+- **Decision: not built.** This is a considered, evaluated deferral, not an unstarted or overlooked
+  item. Revisit it if the actual situation changes — specifically, if Claude/Codex builders start
+  running with less direct human oversight (the scenario this spec item was originally written
+  for), where automated frontend evidence would start pulling real weight instead of mostly
+  duplicating a five-second manual look.
+- No schema, dependency, service, route, or UI changes were made. Re-ran the full verification list
+  anyway to confirm this documentation-only change disturbed nothing else: `npm test` (166
+  workspace tests: 100 server + 35 agents + 31 `packages/git`, plus 9 policy-script tests), `npm run
+  typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema
+  changes), and `git diff --check` — all unchanged and passing under Node 22.23.2.
 
 ## Phase 8 — Usage, token, and cost monitoring
 
