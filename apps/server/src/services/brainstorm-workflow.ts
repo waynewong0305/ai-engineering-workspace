@@ -22,6 +22,9 @@ import { AgentRunManager } from "./agent-run-manager.js";
 
 const ANALYSIS_VERSION = "brainstorm-analysis:v1";
 const REVIEW_VERSION = "cross-review:v1";
+const MAX_STRUCTURED_RESPONSE_CHARS = 160_000;
+const MAX_LIST_ITEMS = 100;
+const MAX_ITEM_CHARS = 5_000;
 const promptRoot = fileURLToPath(new URL("../../../../prompts/", import.meta.url));
 const analysisTemplate = readFileSync(`${promptRoot}brainstorm-analysis.md`, "utf8");
 const reviewTemplate = readFileSync(`${promptRoot}cross-review.md`, "utf8");
@@ -33,7 +36,7 @@ type WorkflowOptions = {
 };
 
 function replace(template: string, values: Record<string, string>) {
-  return Object.entries(values).reduce((result, [key, value]) => result.replaceAll(`{{${key}}}`, value), template);
+  return template.replace(/\{\{([A-Z_]+)\}\}/g, (placeholder, key: string) => values[key] ?? placeholder);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -41,11 +44,18 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 function strings(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return null;
+  if (
+    !Array.isArray(value)
+    || value.length > MAX_LIST_ITEMS
+    || value.some((item) => typeof item !== "string" || item.length > MAX_ITEM_CHARS)
+  ) return null;
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
 function extractJson(text: string): unknown {
+  if (text.length > MAX_STRUCTURED_RESPONSE_CHARS) {
+    throw new Error(`The structured response exceeds ${MAX_STRUCTURED_RESPONSE_CHARS.toLocaleString()} characters.`);
+  }
   const candidates = [text.trim()];
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
   if (fenced) candidates.push(fenced);
@@ -83,7 +93,10 @@ function parseAnalysis(text: string): BrainstormAnalysis {
   const assumptions = strings(value?.assumptions);
   const unknowns = strings(value?.unknowns);
   const experiments = strings(value?.recommendedExperiments);
-  if (!value || !summary || !facts || !assumptions || !unknowns || !experiments || !Array.isArray(value.options)) {
+  if (
+    !value || !summary || summary.length > MAX_ITEM_CHARS || !facts || !assumptions || !unknowns || !experiments
+    || !Array.isArray(value.options) || value.options.length > 25
+  ) {
     throw new Error("The analysis JSON does not match brainstorm-analysis:v1.");
   }
   const options = value.options.map((candidate) => {
@@ -91,12 +104,16 @@ function parseAnalysis(text: string): BrainstormAnalysis {
     const advantages = strings(item?.advantages);
     const disadvantages = strings(item?.disadvantages);
     const risks = strings(item?.risks);
-    if (!item || typeof item.name !== "string" || typeof item.description !== "string" || !advantages || !disadvantages || !risks) {
+    if (
+      !item || typeof item.name !== "string" || !item.name.trim() || item.name.length > 500
+      || typeof item.description !== "string" || !item.description.trim() || item.description.length > MAX_ITEM_CHARS
+      || !advantages || !disadvantages || !risks
+    ) {
       throw new Error("The analysis contains an invalid option.");
     }
     return { name: item.name.trim(), description: item.description.trim(), advantages, disadvantages, risks };
   });
-  if (value.recommendation !== null && typeof value.recommendation !== "string") {
+  if (value.recommendation !== null && (typeof value.recommendation !== "string" || value.recommendation.length > MAX_ITEM_CHARS)) {
     throw new Error("The analysis recommendation must be a string or null.");
   }
   return { summary, facts, assumptions, unknowns, options, recommendedExperiments: experiments, recommendation: value.recommendation?.trim() || null };
@@ -109,7 +126,7 @@ function parseReview(text: string): CrossReview {
     "agreements", "disagreements", "factualErrors", "unsupportedAssumptions", "missingFailureCases",
     "hiddenOperationalCosts", "migrationRisks", "openQuestions", "missingEvidence", "recommendedExperiments",
   ] as const;
-  if (!value || !summary) throw new Error("The review JSON does not match cross-review:v1.");
+  if (!value || !summary || summary.length > MAX_ITEM_CHARS) throw new Error("The review JSON does not match cross-review:v1.");
   const parsed = Object.fromEntries(fields.map((field) => [field, strings(value[field])])) as Record<typeof fields[number], string[] | null>;
   if (fields.some((field) => !parsed[field])) throw new Error("The review JSON is missing one or more required lists.");
   return { summary, ...parsed } as CrossReview;

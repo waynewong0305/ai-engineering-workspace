@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentAdapter, AgentEvent, AgentHealth, AgentProvider, AgentRunInput } from "@aiew/agents";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app.js";
 
 const execFileAsync = promisify(execFile);
@@ -12,6 +12,11 @@ const apps: ReturnType<typeof buildApp>[] = [];
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+});
+
+beforeEach(() => {
+  starts.clear();
+  waiters.clear();
 });
 
 const starts = new Map<string, Set<AgentProvider>>();
@@ -62,11 +67,11 @@ function review(provider: AgentProvider) {
 }
 
 class FakeBrainstormAdapter implements AgentAdapter {
-  constructor(readonly name: AgentProvider) {}
+  constructor(readonly name: AgentProvider, private readonly ready = true) {}
 
   async healthCheck(): Promise<AgentHealth> {
     return {
-      provider: this.name, available: true, authenticated: true, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+      provider: this.name, available: this.ready, authenticated: this.ready, cliVersion: this.ready ? `fake-${this.name.toLowerCase()} 1.0` : null,
       capabilities: { structuredOutput: true, sessionResume: false, dynamicModelDiscovery: false, availableModels: null, availableEffortLevels: null },
     };
   }
@@ -107,8 +112,6 @@ async function createTestRepository() {
 
 describe("brainstorm task routes", () => {
   it("runs independent analyses and reciprocal reviews, then persists comparison and evidence", async () => {
-    starts.clear();
-    waiters.clear();
     const app = buildApp({
       databasePath: ":memory:",
       adapters: [new FakeBrainstormAdapter("CLAUDE"), new FakeBrainstormAdapter("CODEX")],
@@ -176,5 +179,63 @@ describe("brainstorm task routes", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().message).toContain("web-access decision");
+  });
+
+  it("keeps the task in draft when either provider is not ready", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBrainstormAdapter("CLAUDE"), new FakeBrainstormAdapter("CODEX", false)],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Safe start", problemStatement: "Do not partially start.",
+        type: "BRAINSTORM", riskLevel: "LOW", webAccessPermitted: false,
+      },
+    })).json();
+
+    const startResponse = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} });
+    expect(startResponse.statusCode).toBe(503);
+    expect(startResponse.json().message).toContain("CODEX");
+    const detail = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+    expect(detail.status).toBe("DRAFT");
+    expect(detail.runs).toEqual([]);
+  });
+
+  it("claims a draft once when start requests race", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBrainstormAdapter("CLAUDE"), new FakeBrainstormAdapter("CODEX")],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Single start", problemStatement: "Run exactly once.",
+        type: "BRAINSTORM", riskLevel: "LOW", webAccessPermitted: false,
+      },
+    })).json();
+
+    const responses = await Promise.all([
+      app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} }),
+      app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} }),
+    ]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([202, 409]);
+
+    let detail;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      detail = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+      if (["READY", "FAILED"].includes(detail.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(detail.status).toBe("READY");
+    expect(detail.runs).toHaveLength(4);
   });
 });

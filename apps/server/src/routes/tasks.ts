@@ -109,6 +109,20 @@ export function registerTaskRoutes(
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {
       return reply.code(400).send({ message: "Timeout must be between 1 second and 1 hour per run." });
     }
+    const providers = ["CLAUDE", "CODEX"] as const;
+    const readiness = await Promise.all(providers.map(async (provider) => {
+      const adapter = adapters.get(provider);
+      return [provider, adapter ? await adapter.healthCheck() : null] as const;
+    }));
+    const unavailable = readiness.filter(([, health]) => !health?.available || !health.authenticated);
+    if (unavailable.length) {
+      return reply.code(503).send({
+        message: `Both providers must be ready before any usage is spent. Not ready: ${unavailable.map(([provider]) => provider).join(", ")}.`,
+      });
+    }
+    if (db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, task.id)).get()?.status !== "DRAFT") {
+      return reply.code(409).send({ message: "The task was already started while provider readiness was checked." });
+    }
     void workflow.start(task.id, {
       models: { CLAUDE: text(request.body?.claudeModel) ?? undefined, CODEX: text(request.body?.codexModel) ?? undefined },
       claudeEffort: text(request.body?.claudeEffort) ?? undefined,
