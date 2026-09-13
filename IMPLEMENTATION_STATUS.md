@@ -100,10 +100,13 @@ Current record:
 ## Phase 4 — Git worktrees
 
 - [ ] Worktree service
-- [ ] Task-specific branches
+- [ ] Meaningfully named task-specific branches and worktree paths
+- [ ] Editable generated names and collision validation
+- [ ] Safe worktree rename with branch/path independence
 - [ ] Claude/Codex isolation
 - [ ] Status and diff
-- [ ] Safe cleanup
+- [ ] Guarded automatic cleanup after approved merge and passing post-merge validation
+- [ ] Keep-after-merge override and separate merged-branch deletion policy
 - [ ] Dirty-worktree protection
 
 ## Phase 5 — Build and review

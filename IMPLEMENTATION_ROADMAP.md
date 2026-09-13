@@ -119,14 +119,17 @@ Exit gate: the database-sharding acceptance draft is created with web disabled. 
 
 Goal: permit scoped modifications without touching the developer's active checkout.
 
-- [ ] Worktree path and branch-name validation
+- [ ] Meaningful worktree paths and branch names generated from task ID, task-title slug, and agent role
+- [ ] Editable generated names before creation, with path/ref validation and collision handling
+- [ ] Safe existing-worktree rename using Git worktree move, with persisted-path updates only after success
+- [ ] Keep worktree directory names and branch names independently manageable
 - [ ] Create, inspect, diff, and list worktrees
 - [ ] Worktree ownership and process-use tracking
 - [ ] Dirty-worktree protection before removal
 - [ ] Recoverable cleanup workflow with explicit human confirmation
 - [ ] Temporary-repository integration tests
 
-Exit gate: task-specific Claude and Codex worktrees can coexist and cleanup refuses to discard uncommitted work.
+Exit gate: task-specific Claude and Codex worktrees can coexist, generated names are editable and renameable without silently renaming branches, and cleanup refuses to discard uncommitted or in-use work.
 
 ## Phase 5 — Build, validate, and review
 
@@ -139,9 +142,14 @@ Goal: run one builder and one independent reviewer through a bounded review loop
 - [ ] Read-only reviewer run
 - [ ] Structured findings and builder responses
 - [ ] Re-review with a hard maximum of three rounds
+- [ ] Explicit human-approved merge into the selected target branch
+- [ ] Post-merge validation before cleanup
+- [ ] Guarded automatic worktree removal after successful merge and validation
+- [ ] `Keep worktree after merge` override
+- [ ] Separate opt-in policy for deleting a merged task branch
 - [ ] Pre-PR report and `READY_FOR_HUMAN_REVIEW`
 
-Exit gate: run the bug-fix acceptance workflow once in each provider direction. No push or PR creation is included.
+Exit gate: run the bug-fix acceptance workflow once in each provider direction, merge only after explicit human approval, and prove that failed merges, failed validation, dirty worktrees, active processes, and unresolved conflicts preserve the worktree. No push or PR creation is included.
 
 ## Phase 6 — Planning, evidence, and decisions
 

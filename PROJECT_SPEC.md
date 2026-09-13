@@ -533,9 +533,31 @@ Example:
 Suggested branches:
 
 ```text
-ai/TASK-123/claude
-ai/TASK-123/codex
+ai/TASK-123/design-db-sharding/claude
+ai/TASK-123/design-db-sharding/codex
 ```
+
+Worktree directory and branch names should be generated from:
+
+```text
+task ID
+sanitized task-title slug
+agent/provider role
+```
+
+Example:
+
+```text
+.ai-worktrees/boostorder-web/TASK-204-add-promotion-versioning/codex
+ai/TASK-204/add-promotion-versioning/codex
+```
+
+The creation screen must show both generated values before making changes. Users
+must be able to edit them, subject to Git/path validation and collision checks.
+An existing linked worktree may be renamed through a safe worktree-move operation;
+the application must update its persisted path only after Git reports success.
+The worktree directory name and branch name are independent and must not be
+silently renamed together.
 
 Worktree management must support:
 
@@ -550,6 +572,23 @@ cleanup
 Before deleting a worktree, verify that no uncommitted work will be lost.
 
 Never silently delete work.
+
+After an explicitly approved merge, the application may automatically remove the
+task worktree only when all of the following are true:
+
+```text
+merge completed successfully
+post-merge validation completed successfully
+worktree contains no uncommitted or untracked work
+no agent process is using the worktree
+the task has no unresolved merge conflict
+```
+
+The user can enable `Keep worktree after merge` before merging. A failed merge,
+failed validation, dirty worktree, active process, or unresolved conflict must
+preserve the worktree and explain why cleanup was skipped. Deleting the merged
+task branch is a separate, configurable option and must never be implied by
+removing the worktree.
 
 ---
 
@@ -1501,6 +1540,10 @@ and successfully obtain independent Claude and Codex analyses.
 
 Implement safe worktree management.
 
+Include meaningful generated worktree/branch names, editable names before
+creation, collision validation, and safe renaming of an existing linked
+worktree. Track the worktree path and branch independently.
+
 Acceptance:
 
 A task can create:
@@ -1511,6 +1554,9 @@ TASK-X/codex
 ```
 
 without modifying the developer's active working tree.
+
+Renaming a clean, inactive task worktree succeeds without renaming its branch,
+and removal is refused when the worktree is dirty or in use.
 
 ---
 
