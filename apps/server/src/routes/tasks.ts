@@ -15,6 +15,7 @@ import {
   type TaskType,
 } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
+import { buildBrainstormPlanReport } from "../services/brainstorm-report.js";
 import { BrainstormWorkflow } from "../services/brainstorm-workflow.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
 
@@ -151,6 +152,12 @@ export function registerTaskRoutes(
     }
     void workflow.resume(task.id);
     return reply.code(202).send({ message: "Resuming the checkpointed workflow.", taskId: task.id });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/tasks/:id/report", async (request, reply) => {
+    const report = buildBrainstormPlanReport(db, request.params.id);
+    if (!report) return reply.code(404).send({ message: "Task not found." });
+    return report;
   });
 
   app.post<{ Params: { id: string } }>("/api/tasks/:id/cancel", async (request, reply) => {

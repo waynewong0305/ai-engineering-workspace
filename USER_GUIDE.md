@@ -23,6 +23,7 @@ The current implementation can:
 - run Claude and Codex analyses independently, then cross-review in both directions;
 - retain structured and raw responses and compare consensus, disagreements, questions, missing evidence, and experiments; and
 - add or correct facts, assumptions, questions, decisions, and experiment results on a persistent evidence board;
+- generate a brainstorm plan report for a task on demand, summarizing the problem, both providers' analyses and cross-reviews, the comparison, and the evidence board, always marking a human decision as required;
 - preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout;
 - inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation; and
 - check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement; and
@@ -279,6 +280,20 @@ Items show whether they came from you, Claude, or Codex. You can edit or reclass
 ### Consensus and disagreement
 
 Consensus is useful evidence that two analyses overlap; it is not proof. A disagreement is preserved with each side's reasoning, supporting evidence, and missing information. If evidence is insufficient, the correct result may be an experiment or a human decision—not a forced winner.
+
+### Brainstorm plan report
+
+The **BRAINSTORM PLAN REPORT** section on a task's detail pane generates a summary on demand (select **Generate report**), the same on-demand pattern as the build workflow's pre-PR report. It includes:
+
+- the task's type, risk level, and current status;
+- the problem statement;
+- each provider's independent analysis (summary and recommendation), or its parse error if the structured output couldn't be read;
+- each provider's cross-review of the other, or its parse error;
+- the comparison (consensus, disagreements, open questions, missing evidence, recommended experiments) once one has been generated;
+- the evidence board's record count; and
+- a recommended next action based on the task's current status (for example, resuming a checkpointed task, or reviewing consensus before starting a build).
+
+You can generate this report at any point in the workflow, not only once the task reaches READY — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed so far, never fabricating what hasn't happened yet. The report always states **Human decision required: YES**: it's a plan to review, not an approved decision — see "Reviews and human responsibility" below.
 
 ## Feature planning — planned
 

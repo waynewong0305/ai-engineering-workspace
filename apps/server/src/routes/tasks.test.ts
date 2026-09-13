@@ -255,4 +255,54 @@ describe("brainstorm task routes", () => {
     expect(detail.status).toBe("READY");
     expect(detail.runs).toHaveLength(4);
   });
+
+  it("exports a brainstorm plan report once the workflow reaches READY", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBrainstormAdapter("CLAUDE"), new FakeBrainstormAdapter("CODEX")],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Database sharding", type: "ARCHITECTURE", riskLevel: "HIGH",
+        problemStatement: "How should this system support database sharding?", webAccessPermitted: false,
+      },
+    })).json();
+
+    await acknowledgeUnknownUsage(app);
+    await app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} });
+    let detail;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      detail = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+      if (["READY", "FAILED"].includes(detail.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(detail.status).toBe("READY");
+
+    const response = await app.inject({ method: "GET", url: `/api/tasks/${task.id}/report` });
+    expect(response.statusCode).toBe(200);
+    const report = response.json();
+    expect(report.taskId).toBe(task.id);
+    expect(report.taskTitle).toBe("Database sharding");
+    expect(report.status).toBe("READY");
+    expect(report.analyses).toHaveLength(2);
+    expect(report.analyses.map((entry: { provider: string }) => entry.provider).sort()).toEqual(["CLAUDE", "CODEX"]);
+    expect(report.analyses.every((entry: { data: unknown }) => entry.data !== null)).toBe(true);
+    expect(report.crossReviews).toHaveLength(2);
+    expect(report.comparison).toMatchObject({ consensus: ["Measure workload before selecting a shard key."] });
+    expect(report.humanDecisionRequired).toBe(true);
+    expect(typeof report.recommendedNextAction).toBe("string");
+    expect(report.recommendedNextAction.length).toBeGreaterThan(0);
+  });
+
+  it("returns 404 for a report on an unknown task", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/api/tasks/does-not-exist/report" });
+    expect(response.statusCode).toBe(404);
+  });
 });

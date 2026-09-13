@@ -238,6 +238,22 @@ type PrePrReport = {
   recommendedNextAction: string;
 };
 
+type BrainstormPlanReport = {
+  generatedAt: string;
+  taskId: string;
+  taskTitle: string;
+  taskType: "BRAINSTORM" | "ARCHITECTURE";
+  problemStatement: string;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  status: TaskStatus;
+  analyses: { provider: AgentProvider; data: BrainstormAnalysis | null; rawOutput: string; parseError: string | null }[];
+  crossReviews: { provider: AgentProvider; targetProvider: AgentProvider | null; data: CrossReview | null; rawOutput: string; parseError: string | null }[];
+  comparison: BrainstormTask["comparison"];
+  evidence: EvidenceItem[];
+  humanDecisionRequired: true;
+  recommendedNextAction: string;
+};
+
 type UsageStatus = "SAFE" | "WARNING" | "CHECKPOINT_REQUIRED" | "EXHAUSTED" | "UNAVAILABLE" | "STALE";
 type UsageWindowView = {
   provider: AgentProvider;
@@ -307,6 +323,9 @@ const evidenceContent = ref("");
 const editingEvidenceId = ref("");
 const editingEvidenceContent = ref("");
 const editingEvidenceType = ref<EvidenceItem["type"]>("FACT");
+const brainstormReport = ref<BrainstormPlanReport | null>(null);
+const loadingBrainstormReport = ref(false);
+const brainstormReportError = ref("");
 const taskForm = reactive({
   projectId: "",
   title: "Database horizontal scaling",
@@ -946,7 +965,25 @@ async function selectTask(taskId: string) {
   selectedTask.value = await response.json();
   const index = tasks.value.findIndex((task) => task.id === taskId);
   if (index >= 0) tasks.value[index] = selectedTask.value!;
+  brainstormReport.value = null;
+  brainstormReportError.value = "";
   scheduleTaskRefresh();
+}
+
+async function loadBrainstormReport() {
+  if (!selectedTask.value) return;
+  loadingBrainstormReport.value = true;
+  brainstormReportError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/report`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not generate the report.");
+    brainstormReport.value = result;
+  } catch (error) {
+    brainstormReportError.value = error instanceof Error ? error.message : "Could not generate the report.";
+  } finally {
+    loadingBrainstormReport.value = false;
+  }
 }
 
 function scheduleTaskRefresh() {
@@ -1878,6 +1915,44 @@ onUnmounted(() => {
                     <button class="text-button" type="button" @click="editEvidence(item)">Edit</button>
                   </template>
                 </article>
+              </div>
+            </div>
+
+            <div class="worktree-usages">
+              <div class="subsection-heading"><span>BRAINSTORM PLAN REPORT</span></div>
+              <p v-if="brainstormReportError" class="error-text" role="alert">{{ brainstormReportError }}</p>
+              <button class="ghost-button" type="button" :disabled="loadingBrainstormReport" @click="loadBrainstormReport">
+                {{ loadingBrainstormReport ? "Generating…" : "Generate report" }}
+              </button>
+              <div v-if="brainstormReport" class="pre-pr-report">
+                <p class="form-hint">Generated {{ new Date(brainstormReport.generatedAt).toLocaleString() }} · {{ brainstormReport.taskType }} · risk {{ brainstormReport.riskLevel }} · status {{ brainstormReport.status }}</p>
+                <p><strong>Problem</strong><br />{{ brainstormReport.problemStatement }}</p>
+                <template v-for="entry in brainstormReport.analyses" :key="'analysis-' + entry.provider">
+                  <p><strong>{{ providerLabel(entry.provider) }} analysis</strong><br />
+                    <template v-if="entry.data">
+                      {{ entry.data.summary }}<br />
+                      Recommendation: {{ entry.data.recommendation ?? "None given." }}
+                    </template>
+                    <template v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</template>
+                  </p>
+                </template>
+                <template v-for="entry in brainstormReport.crossReviews" :key="'review-' + entry.provider">
+                  <p><strong>{{ providerLabel(entry.provider) }} review of {{ entry.targetProvider ? providerLabel(entry.targetProvider) : "unknown" }}</strong><br />
+                    <template v-if="entry.data">{{ entry.data.summary }}</template>
+                    <template v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</template>
+                  </p>
+                </template>
+                <template v-if="brainstormReport.comparison">
+                  <p v-for="(items, label) in brainstormReport.comparison" :key="String(label)">
+                    <strong>{{ String(label).replace(/([A-Z])/g, ' $1') }}</strong><br />
+                    <template v-if="items.length">{{ items.join("; ") }}</template>
+                    <template v-else>None asserted.</template>
+                  </p>
+                </template>
+                <p v-else><strong>Comparison</strong><br />Not available yet.</p>
+                <p><strong>Evidence board</strong><br />{{ brainstormReport.evidence.length }} record(s).</p>
+                <p><strong>Human decision required</strong><br />YES — this is a plan to review, not an approved decision.</p>
+                <p><strong>Recommended next action</strong><br />{{ brainstormReport.recommendedNextAction }}</p>
               </div>
             </div>
           </div>
