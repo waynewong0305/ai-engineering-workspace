@@ -1555,8 +1555,35 @@ function updateActiveSection() {
   if (NAV_SECTIONS.includes(hash)) activeSection.value = hash;
 }
 
+let sectionObserver: IntersectionObserver | null = null;
+const intersectingSections = new Set<string>();
+function pickActiveSectionFromScroll() {
+  for (const id of NAV_SECTIONS) {
+    if (intersectingSections.has(id)) {
+      activeSection.value = id;
+      return;
+    }
+  }
+}
+
 onMounted(() => {
   window.addEventListener("hashchange", updateActiveSection);
+
+  sectionObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) intersectingSections.add(entry.target.id);
+        else intersectingSections.delete(entry.target.id);
+      }
+      pickActiveSectionFromScroll();
+    },
+    { rootMargin: "-96px 0px -70% 0px", threshold: 0 },
+  );
+  for (const id of NAV_SECTIONS) {
+    const element = document.getElementById(id);
+    if (element) sectionObserver.observe(element);
+  }
+
   return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage()]);
 });
 onUnmounted(() => {
@@ -1565,6 +1592,7 @@ onUnmounted(() => {
   if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
   if (experimentPollTimer !== null) window.clearTimeout(experimentPollTimer);
   window.removeEventListener("hashchange", updateActiveSection);
+  sectionObserver?.disconnect();
 });
 </script>
 
@@ -1581,17 +1609,17 @@ onUnmounted(() => {
 
       <nav aria-label="Main navigation">
         <p class="nav-label">Workspace</p>
-        <a :class="['nav-item', { active: activeSection === 'projects' }]" href="#projects"><span>01</span>Projects</a>
-        <a :class="['nav-item', { active: activeSection === 'agent-runs' }]" href="#agent-runs"><span>02</span>Agent runs</a>
-        <a :class="['nav-item', { active: activeSection === 'brainstorm' }]" href="#brainstorm"><span>03</span>Brainstorm</a>
-        <a :class="['nav-item', { active: activeSection === 'worktrees' }]" href="#worktrees"><span>04</span>Worktrees</a>
-        <a :class="['nav-item', { active: activeSection === 'usage-safety' }]" href="#usage-safety"><span>05</span>Usage safety</a>
-        <a :class="['nav-item', { active: activeSection === 'build' }]" href="#build"><span>06</span>Build</a>
-        <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>07</span>Reviews</a>
-        <a :class="['nav-item', { active: activeSection === 'decisions' }]" href="#decisions"><span>08</span>Decisions</a>
+        <a :class="['nav-item', { active: activeSection === 'projects' }]" href="#projects" title="Step 1: tell the app which folder on your computer holds your code. It just looks, it doesn't change anything."><span>01</span>Projects</a>
+        <a :class="['nav-item', { active: activeSection === 'agent-runs' }]" href="#agent-runs" title="Step 2: ask one AI (Claude or Codex) a single question about your project, just to try it out. It can only read and explain — it cannot change files."><span>02</span>Agent runs</a>
+        <a :class="['nav-item', { active: activeSection === 'brainstorm' }]" href="#brainstorm" title="Step 3: give both Claude and Codex the same problem. Each thinks about it on its own, then they check each other's ideas, so you get two independent opinions instead of one."><span>03</span>Brainstorm</a>
+        <a :class="['nav-item', { active: activeSection === 'worktrees' }]" href="#worktrees" title="Step 4: give each AI its own private copy of your code folder to work in, so they never bump into each other or mess up your main copy."><span>04</span>Worktrees</a>
+        <a :class="['nav-item', { active: activeSection === 'usage-safety' }]" href="#usage-safety" title="Keeps track of how much of your Claude/Codex plan you've used, so a long task can't quietly burn through your whole monthly allowance without warning you."><span>05</span>Usage safety</a>
+        <a :class="['nav-item', { active: activeSection === 'build' }]" href="#build" title="Step 5: let one AI actually write code in its own private folder, then have the other AI review that work before anything is merged."><span>06</span>Build</a>
+        <a class="nav-item disabled" href="#reviews" aria-disabled="true" title="Not built yet — this will be a dedicated place to browse past reviews. For now, reviews show up inside the Build tab."><span>07</span>Reviews</a>
+        <a :class="['nav-item', { active: activeSection === 'decisions' }]" href="#decisions" title="Write down important decisions (like 'why did we choose X over Y') so you can look back and remember the reasoning later."><span>08</span>Decisions</a>
       </nav>
 
-      <div class="sidebar-foot">
+      <div class="sidebar-foot" title="Everything you see runs on this computer only. Nothing is uploaded to a server or shared with anyone else.">
         <span class="local-dot" aria-hidden="true"></span>
         Local only
         <small>Nothing is deployed</small>
@@ -1604,7 +1632,7 @@ onUnmounted(() => {
           <p class="eyebrow">SYSTEM / PROJECTS</p>
           <h1>Engineering control room</h1>
         </div>
-        <button class="ghost-button" type="button" @click="recheckTools">Recheck tools</button>
+        <button class="ghost-button" type="button" @click="recheckTools" title="Ask the computer again whether Git, Claude, and Codex are installed and ready to use. Nothing is changed — this just refreshes the status lights below.">Recheck tools</button>
       </header>
 
       <section class="intro-grid" aria-labelledby="workspace-heading">
@@ -1616,7 +1644,7 @@ onUnmounted(() => {
             evidence, and future worktrees isolated and auditable.
           </p>
         </div>
-        <div class="readiness-card">
+        <div class="readiness-card" title="A quick summary of whether Git, Claude, and Codex are all installed and working on this computer.">
           <span>Local readiness</span>
           <strong>{{ loading ? "Checking…" : `${connectedCount}/3 tools found` }}</strong>
           <p v-if="healthError" class="error-text">{{ healthError }}</p>
@@ -1625,9 +1653,9 @@ onUnmounted(() => {
       </section>
 
       <section class="tool-grid" aria-label="Local tool status">
-        <article v-for="(tool, name) in health?.tools" :key="name" class="tool-card">
+        <article v-for="(tool, name) in health?.tools" :key="name" class="tool-card" :title="tool.available ? 'This tool is installed and the app can use it.' : 'This tool was not found on your computer, so features that need it will be disabled.'">
           <div>
-            <span :class="['status-light', tool.available ? 'ok' : 'missing']"></span>
+            <span :class="['status-light', tool.available ? 'ok' : 'missing']" :title="tool.available ? 'Green = found and working' : 'Red = not found'"></span>
             <strong>{{ name === "claude" ? "Claude Code" : name === "codex" ? "Codex" : "Git" }}</strong>
           </div>
           <p>{{ tool.available ? tool.version : "Not available" }}</p>
@@ -1645,39 +1673,39 @@ onUnmounted(() => {
             <h2>Register a project</h2>
             <p>The repository is inspected read-only. No branch, worktree, or command is created or run.</p>
           </div>
-          <span class="safety-badge">READ ONLY</span>
+          <span class="safety-badge" title="This step only looks at your files to gather information. It cannot edit, delete, or run anything in your project.">READ ONLY</span>
         </div>
 
         <form class="project-form" @submit.prevent="registerProject">
-          <label>
+          <label title="The full folder path on your computer where your project's code already lives, e.g. /Users/you/Projects/example. This must be a folder that is already a Git repository.">
             <span>Repository path <strong>Required</strong></span>
             <input v-model="form.repositoryPath" required placeholder="/Users/you/Projects/example" autocomplete="off" />
           </label>
-          <label>
+          <label title="A friendly name to show in this app's list of projects. If you leave it blank, the app just uses the folder's own name.">
             <span>Project name <small>Uses folder name when blank</small></span>
             <input v-model="form.name" placeholder="Example Web" autocomplete="off" />
           </label>
           <div class="field-row">
-            <label>
+            <label title="The main branch of your project, like 'main' or 'master' — the branch everything else is usually compared against. Leave blank and the app will figure it out for you.">
               <span>Default branch <small>Auto-detect</small></span>
               <input v-model="form.defaultBranch" placeholder="main" autocomplete="off" />
             </label>
-            <label>
+            <label title="A separate folder where the AI's private working copies (worktrees) will be created later, so they never touch your real project folder. Leave blank and the app will suggest one next to your project.">
               <span>Worktree root <small>Suggested when blank</small></span>
               <input v-model="form.worktreeRoot" placeholder="/Users/you/Projects/.ai-worktrees/example" autocomplete="off" />
             </label>
           </div>
-          <label>
+          <label title="Optional notes to help the AI understand your project better next time — things like how it's structured, rules to follow, or areas it should be careful around.">
             <span>Project context <small>Optional guidance for future agent runs</small></span>
             <textarea v-model="form.projectContext" rows="3" placeholder="Architecture notes, conventions, important boundaries…"></textarea>
           </label>
 
-          <fieldset>
+          <fieldset title="Commands you normally run to check your code, like running tests or building the project. The app just remembers them here for later — it does not run them now.">
             <legend>Validation commands <small>Stored only; not run during registration</small></legend>
             <div class="command-grid">
-              <label><span>Tests</span><input v-model="form.tests" placeholder="npm test" autocomplete="off" /></label>
-              <label><span>Lint</span><input v-model="form.lint" placeholder="npm run lint" autocomplete="off" /></label>
-              <label><span>Build</span><input v-model="form.build" placeholder="npm run build" autocomplete="off" /></label>
+              <label title="The command that runs your test suite, e.g. npm test."><span>Tests</span><input v-model="form.tests" placeholder="npm test" autocomplete="off" /></label>
+              <label title="The command that checks your code style, e.g. npm run lint."><span>Lint</span><input v-model="form.lint" placeholder="npm run lint" autocomplete="off" /></label>
+              <label title="The command that builds your project, e.g. npm run build."><span>Build</span><input v-model="form.build" placeholder="npm run build" autocomplete="off" /></label>
             </div>
           </fieldset>
 
@@ -1685,7 +1713,7 @@ onUnmounted(() => {
           <p v-if="successMessage" class="form-message success-text" role="status">{{ successMessage }}</p>
           <div class="form-actions">
             <span>Web access defaults to <b>Ask before use</b> for future tasks.</span>
-            <button class="primary-button" type="submit" :disabled="submitting">
+            <button class="primary-button" type="submit" :disabled="submitting" title="Look at the folder you entered, check it's a valid Git project, and add it to your list below. This does not change any of your files.">
               {{ submitting ? "Inspecting…" : "Inspect & register" }}
             </button>
           </div>
@@ -1714,20 +1742,20 @@ onUnmounted(() => {
             <div class="project-main">
               <div class="project-title-line">
                 <strong>{{ project.name }}</strong>
-                <span :class="['repo-state', project.gitStatus.toLowerCase()]">{{ project.gitStatus }}</span>
+                <span :class="['repo-state', project.gitStatus.toLowerCase()]" :title="project.gitStatus === 'CLEAN' ? 'CLEAN means there are no unsaved (uncommitted) changes in this project right now.' : 'DIRTY just means this project has some unsaved changes sitting in it — nothing is wrong, it is just a heads-up.'">{{ project.gitStatus }}</span>
               </div>
               <code>{{ project.repositoryPath }}</code>
               <p v-if="project.projectContext">{{ project.projectContext }}</p>
             </div>
             <dl>
-              <div><dt>Current branch</dt><dd>{{ project.currentBranch }}</dd></div>
-              <div><dt>Default branch</dt><dd>{{ project.defaultBranch }}</dd></div>
-              <div><dt>Checks saved</dt><dd>{{ project.validationCommands.length }}</dd></div>
+              <div><dt title="The branch this project is sitting on right now.">Current branch</dt><dd>{{ project.currentBranch }}</dd></div>
+              <div><dt title="The main branch other work is usually compared or merged against.">Default branch</dt><dd>{{ project.defaultBranch }}</dd></div>
+              <div><dt title="How many test/lint/build commands you've saved for this project.">Checks saved</dt><dd>{{ project.validationCommands.length }}</dd></div>
             </dl>
             <div class="project-actions">
-              <button class="ghost-button" type="button" @click="recheckProject(project)">Recheck Git</button>
-              <button class="ghost-button" type="button" @click="editProject(project)">{{ editingProjectId === project.id ? "Editing" : "Edit" }}</button>
-              <button class="text-button danger-button" type="button" :disabled="deletingProjectId === project.id" @click="deregisterProject(project)">
+              <button class="ghost-button" type="button" @click="recheckProject(project)" title="Look at this project's Git status again and refresh the CLEAN/DIRTY label above.">Recheck Git</button>
+              <button class="ghost-button" type="button" @click="editProject(project)" title="Change this project's saved details, like its name, branch, or test commands.">{{ editingProjectId === project.id ? "Editing" : "Edit" }}</button>
+              <button class="text-button danger-button" type="button" :disabled="deletingProjectId === project.id" @click="deregisterProject(project)" title="Remove this project from the app's list. Your actual code folder on disk is not touched or deleted.">
                 {{ deletingProjectId === project.id ? "Removing…" : "Deregister" }}
               </button>
             </div>
@@ -1775,19 +1803,19 @@ onUnmounted(() => {
             <h2 id="agent-heading">Ask an agent to explain a repository.</h2>
             <p>The run cannot edit files and web access is disabled. Starting it may use provider credits.</p>
           </div>
-          <span class="safety-badge">READ ONLY · NO WEB</span>
+          <span class="safety-badge" title="This run can only read your files and explain them back to you. It cannot edit code, and it is not allowed to browse the internet.">READ ONLY · NO WEB</span>
         </div>
 
         <form class="project-form" @submit.prevent="startAgentRun">
           <div class="field-row">
-            <label>
+            <label title="Pick which of your registered projects you want the AI to look at.">
               <span>Registered project</span>
               <select v-model="selectedProjectId" required>
                 <option disabled value="">Select a project</option>
                 <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
               </select>
             </label>
-            <label>
+            <label title="Choose which AI assistant answers this one: Codex (from OpenAI) or Claude Code (from Anthropic).">
               <span>Provider</span>
               <select v-model="selectedProvider">
                 <option value="CODEX">Codex</option>
@@ -1795,22 +1823,22 @@ onUnmounted(() => {
               </select>
             </label>
           </div>
-          <div class="provider-readiness">
+          <div class="provider-readiness" title="Shows whether this AI is installed and logged in on your computer. If it says not ready, you'll need to install or sign in to it first.">
             <span :class="['status-light', agentHealth[selectedProvider]?.authenticated ? 'ok' : 'missing']"></span>
             <strong>{{ selectedProvider === "CODEX" ? "Codex" : "Claude Code" }}</strong>
             <span v-if="agentHealth[selectedProvider]?.authenticated">Ready · {{ agentHealth[selectedProvider]?.cliVersion }}</span>
             <span v-else>{{ agentHealth[selectedProvider]?.message ?? "Provider is not ready." }}</span>
           </div>
-          <label>
+          <label title="Type the question or task you want the AI to do. For example: 'Explain how login works in this app.'">
             <span>Prompt</span>
             <textarea v-model="agentPrompt" rows="4" required maxlength="20000"></textarea>
           </label>
           <div class="field-row">
-            <label>
+            <label title="Which exact AI model to use, e.g. a specific Claude or GPT version. Most people should leave this blank — the AI tool's own default is used, and this app never forces a particular model.">
               <span>Model <small>Blank uses provider default</small></span>
               <input v-model="agentModel" placeholder="Provider default" autocomplete="off" />
             </label>
-            <label>
+            <label title="How hard the AI should 'think' before answering — higher effort can give better answers but takes longer and may cost more usage. Only shown when the selected provider's CLI supports it.">
               <span>Effort <small>Optional</small></span>
               <select v-model="agentEffort">
                 <option value="">Provider default</option>
@@ -1821,7 +1849,7 @@ onUnmounted(() => {
           <p v-if="runError" class="form-message error-text" role="alert">{{ runError }}</p>
           <div class="form-actions">
             <span>Nothing runs until you select this button. Output and run metadata are stored locally.</span>
-            <button class="primary-button" type="submit" :disabled="startingRun || !selectedProjectId || !agentHealth[selectedProvider]?.authenticated">
+            <button class="primary-button" type="submit" :disabled="startingRun || !selectedProjectId || !agentHealth[selectedProvider]?.authenticated" title="Send your prompt to the AI now. This uses a small amount of your Claude/Codex usage allowance.">
               {{ startingRun ? "Starting…" : "Run explanation" }}
             </button>
           </div>
@@ -1829,8 +1857,8 @@ onUnmounted(() => {
 
         <article v-if="currentRun" class="run-console" aria-live="polite">
           <div class="run-console-heading">
-            <div><span>RUN STATUS</span><strong>{{ currentRun.status }}</strong></div>
-            <button v-if="['QUEUED', 'RUNNING'].includes(currentRun.status)" class="ghost-button" type="button" @click="cancelAgentRun">Cancel</button>
+            <div><span title="QUEUED = waiting to start. RUNNING = the AI is working on it. COMPLETED = it finished. FAILED = something went wrong. CANCELLED = you stopped it.">RUN STATUS</span><strong>{{ currentRun.status }}</strong></div>
+            <button v-if="['QUEUED', 'RUNNING'].includes(currentRun.status)" class="ghost-button" type="button" @click="cancelAgentRun" title="Stop this run early. Whatever the AI has already written stays as it is.">Cancel</button>
           </div>
           <pre v-if="currentRun.output">{{ currentRun.output }}</pre>
           <p v-else-if="['QUEUED', 'RUNNING'].includes(currentRun.status)">Waiting for agent output…</p>
@@ -1847,7 +1875,7 @@ onUnmounted(() => {
                 ? `This failure's wording suggests ${providerLabel(currentRun.provider)} may have hit its usage limit — the workspace could not confirm that automatically.`
                 : `Did this fail because ${providerLabel(currentRun.provider)} hit its usage limit? The workspace could not tell automatically.` }}
             </p>
-            <button class="ghost-button" type="button" @click="markProviderExhausted(currentRun.provider)">Mark as exhausted</button>
+            <button class="ghost-button" type="button" @click="markProviderExhausted(currentRun.provider)" title="Tell the app 'yes, this AI really is out of usage for now.' This helps the Usage safety page warn you correctly, since the app can't always detect this on its own.">Mark as exhausted</button>
           </div>
         </article>
       </section>
@@ -1859,32 +1887,32 @@ onUnmounted(() => {
             <h2 id="brainstorm-heading">Turn disagreement into an engineering artifact.</h2>
             <p>Claude and Codex analyze independently, review each other only afterward, and remain read-only throughout.</p>
           </div>
-          <span class="safety-badge">4 RUNS · READ ONLY</span>
+          <span class="safety-badge" title="Starting this uses 4 separate AI runs (2 analyses + 2 reviews), and every one of them can only read your code, never edit it.">4 RUNS · READ ONLY</span>
         </div>
 
         <form class="project-form" @submit.prevent="createTask">
           <div class="field-row task-first-row">
-            <label>
+            <label title="Which project this question or problem belongs to.">
               <span>Registered project</span>
               <select v-model="taskForm.projectId" required>
                 <option disabled value="">Select a project</option>
                 <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
               </select>
             </label>
-            <label>
+            <label title="A short name for this brainstorming task, so you can find it again in the list on the left.">
               <span>Task title</span>
               <input v-model="taskForm.title" maxlength="160" required autocomplete="off" />
             </label>
           </div>
           <div class="field-row">
-            <label>
+            <label title="Brainstorm = a general 'what should we do?' discussion. Architecture = a bigger structural/design decision, like changing how the database works.">
               <span>Task type</span>
               <select v-model="taskForm.type">
                 <option value="BRAINSTORM">Brainstorm</option>
                 <option value="ARCHITECTURE">Architecture</option>
               </select>
             </label>
-            <label>
+            <label title="How big a deal is this if it goes wrong? Low = minor, Critical = could seriously break things. This is just a label for you — it doesn't change what the AI does.">
               <span>Risk level</span>
               <select v-model="taskForm.riskLevel">
                 <option value="LOW">Low</option>
@@ -1894,19 +1922,19 @@ onUnmounted(() => {
               </select>
             </label>
           </div>
-          <label>
+          <label title="Describe, in your own words, the question or problem you want Claude and Codex to think about.">
             <span>Problem statement</span>
             <textarea v-model="taskForm.problemStatement" rows="5" maxlength="20000" required></textarea>
           </label>
 
-          <fieldset class="web-decision">
+          <fieldset class="web-decision" title="Decide once, before you start, whether the AIs are allowed to search the internet for this task. You must pick one — it can't be changed after you start.">
             <legend>Web access <small>Required decision · recorded with this task</small></legend>
             <div class="choice-grid">
-              <label :class="['choice-card', { selected: !taskForm.webAccessPermitted }]">
+              <label :class="['choice-card', { selected: !taskForm.webAccessPermitted }]" title="The AIs will only use your project's own code and whatever you typed above — no internet searches.">
                 <input v-model="taskForm.webAccessPermitted" class="radio-input" type="radio" :value="false" />
                 <span><strong>No web access</strong><small>Use only the registered repository and supplied context.</small></span>
               </label>
-              <label :class="['choice-card', { selected: taskForm.webAccessPermitted }]">
+              <label :class="['choice-card', { selected: taskForm.webAccessPermitted }]" title="The AIs are allowed to search the web for this task only — for example, to look up documentation or best practices.">
                 <input v-model="taskForm.webAccessPermitted" class="radio-input" type="radio" :value="true" />
                 <span><strong>Allow for this task</strong><small>Both agents may use their built-in web tools for this task only.</small></span>
               </label>
@@ -1917,7 +1945,7 @@ onUnmounted(() => {
           <p v-if="taskMessage" class="form-message success-text" role="status">{{ taskMessage }}</p>
           <div class="form-actions">
             <span>Creating a draft is free. Provider usage begins only when you start the analysis.</span>
-            <button class="primary-button" type="submit" :disabled="creatingTask || !taskForm.projectId">
+            <button class="primary-button" type="submit" :disabled="creatingTask || !taskForm.projectId" title="Save this task as a Draft. This is free and doesn't use any AI usage yet — the AI only starts working once you press 'Start independent analyses' later.">
               {{ creatingTask ? "Creating…" : "Create draft" }}
             </button>
           </div>
@@ -1938,8 +1966,8 @@ onUnmounted(() => {
             >
               <span>{{ task.type }}</span>
               <strong>{{ task.title }}</strong>
-              <small>{{ task.status }}</small>
-              <small v-if="task.openQuestionCount" class="open-question-badge">
+              <small title="Where this task currently is: DRAFT (not started), ANALYZING (AIs are thinking), CROSS_REVIEW (AIs are checking each other), READY (done), CHECKPOINTED (paused, waiting on you), FAILED/CANCELLED.">{{ task.status }}</small>
+              <small v-if="task.openQuestionCount" class="open-question-badge" title="Questions the AIs raised that nobody has answered yet — worth a look before you make a final decision.">
                 {{ task.openQuestionCount }} open question{{ task.openQuestionCount === 1 ? "" : "s" }}
               </small>
             </button>
@@ -1952,17 +1980,17 @@ onUnmounted(() => {
                 <h3>{{ selectedTask.title }}</h3>
                 <p>{{ selectedTask.problemStatement }}</p>
               </div>
-              <span :class="['task-status', selectedTask.status.toLowerCase()]">{{ selectedTask.status }}</span>
+              <span :class="['task-status', selectedTask.status.toLowerCase()]" title="Where this task currently is in its workflow — see the four steps below for what each stage means.">{{ selectedTask.status }}</span>
             </div>
 
             <div class="stage-track" aria-label="Workflow stages">
-              <div :class="{ current: selectedTask.status === 'DRAFT', complete: selectedTask.status !== 'DRAFT' }"><span>01</span><strong>Draft</strong></div>
-              <div :class="{ current: selectedTask.status === 'ANALYZING', complete: ['CROSS_REVIEW', 'READY'].includes(selectedTask.status) }"><span>02</span><strong>Independent</strong></div>
-              <div :class="{ current: selectedTask.status === 'CROSS_REVIEW', complete: selectedTask.status === 'READY' }"><span>03</span><strong>Cross-review</strong></div>
-              <div :class="{ current: selectedTask.status === 'READY', complete: selectedTask.status === 'READY' }"><span>04</span><strong>Compare</strong></div>
+              <div :class="{ current: selectedTask.status === 'DRAFT', complete: selectedTask.status !== 'DRAFT' }" title="You've written the problem down, but the AIs haven't started thinking about it yet."><span>01</span><strong>Draft</strong></div>
+              <div :class="{ current: selectedTask.status === 'ANALYZING', complete: ['CROSS_REVIEW', 'READY'].includes(selectedTask.status) }" title="Claude and Codex are each thinking about the problem separately, without seeing each other's answers yet."><span>02</span><strong>Independent</strong></div>
+              <div :class="{ current: selectedTask.status === 'CROSS_REVIEW', complete: selectedTask.status === 'READY' }" title="Now each AI reads the other's answer and points out anything it disagrees with or thinks is missing."><span>03</span><strong>Cross-review</strong></div>
+              <div :class="{ current: selectedTask.status === 'READY', complete: selectedTask.status === 'READY' }" title="Everything is done. You can see both answers side by side and decide for yourself — the app never picks a winner for you."><span>04</span><strong>Compare</strong></div>
             </div>
 
-            <div v-if="usageBlockedDecision" class="usage-checkpoint-block" role="alert">
+            <div v-if="usageBlockedDecision" class="usage-checkpoint-block" role="alert" title="The app paused here to make sure you don't accidentally run out of your Claude/Codex plan without knowing.">
               <span>USAGE SAFETY CHECKPOINT</span>
               <strong>{{ usageBlockedDecision.provider === 'CLAUDE' ? 'Claude Code' : 'Codex' }} · {{ usageStatusLabel(usageBlockedDecision.status) }}</strong>
               <p>{{ usageBlockedDecision.reason }}</p>
@@ -1971,11 +1999,12 @@ onUnmounted(() => {
                 class="danger-outline-button" type="button"
                 :disabled="acknowledging"
                 @click="acknowledgeUsageAndRetryStart"
+                title="Confirm 'yes, I understand the usage situation, please continue anyway.' This is a human decision the app will never make for you automatically."
               >{{ acknowledging ? "Acknowledging…" : "Acknowledge and continue" }}</button>
               <p v-else class="form-hint">A reliably exhausted provider cannot be overridden. Wait for reset, or record a fresh reading once capacity is confirmed.</p>
             </div>
 
-            <div class="web-audit">
+            <div class="web-audit" title="A permanent record of the web-access choice you made when you created this task. It cannot be changed afterward, so you always know whether the AI was allowed online.">
               <span>WEB DECISION</span>
               <strong>{{ selectedTask.webAccessPermitted ? "Allowed for this task" : "Disabled" }}</strong>
               <small>Recorded {{ new Date(selectedTask.webAccessDecidedAt).toLocaleString() }}</small>
@@ -1983,21 +2012,21 @@ onUnmounted(() => {
 
             <div v-if="selectedTask.status === 'DRAFT'" class="launch-box">
               <div class="field-row">
-                <label><span>Claude model <small>Blank uses default</small></span><input v-model="taskForm.claudeModel" placeholder="Provider default" /></label>
-                <label><span>Codex model <small>Blank uses default</small></span><input v-model="taskForm.codexModel" placeholder="Provider default" /></label>
+                <label title="Leave blank to use the Claude Code CLI's own default model — this app never hardcodes a specific model string."><span>Claude model <small>Blank uses default</small></span><input v-model="taskForm.claudeModel" placeholder="Provider default" /></label>
+                <label title="Leave blank to use the Codex CLI's own default model — this app never hardcodes a specific model string."><span>Codex model <small>Blank uses default</small></span><input v-model="taskForm.codexModel" placeholder="Provider default" /></label>
               </div>
-              <label>
+              <label title="Reasoning effort level, passed to the Claude Code CLI's --effort flag. Codex has no equivalent option in its CLI, so there is no effort control for it.">
                 <span>Claude effort <small>Optional</small></span>
                 <select v-model="taskForm.claudeEffort">
                   <option value="">Provider default</option>
                   <option v-for="effort in agentHealth.CLAUDE?.capabilities.availableEffortLevels ?? []" :key="effort" :value="effort">{{ effort }}</option>
                 </select>
               </label>
-              <div class="provider-pair">
+              <div class="provider-pair" title="Both Claude and Codex must be installed and signed in before you can start — this row shows whether each one is ready.">
                 <span><i :class="['status-light', agentHealth.CLAUDE?.authenticated ? 'ok' : 'missing']"></i>Claude {{ agentHealth.CLAUDE?.authenticated ? "ready" : "not ready" }}</span>
                 <span><i :class="['status-light', agentHealth.CODEX?.authenticated ? 'ok' : 'missing']"></i>Codex {{ agentHealth.CODEX?.authenticated ? "ready" : "not ready" }}</span>
               </div>
-              <p class="usage-preflight-note">
+              <p class="usage-preflight-note" title="A last check of how much of your Claude/Codex allowance is left, shown before you commit to spending any of it.">
                 <strong>Before you spend usage:</strong>
                 Claude is <em>{{ usageStatusLabel(worstUsageStatus('CLAUDE')) }}</em>,
                 Codex is <em>{{ usageStatusLabel(worstUsageStatus('CODEX')) }}</em>.
@@ -2008,35 +2037,37 @@ onUnmounted(() => {
                 type="button"
                 :disabled="startingTask || !agentHealth.CLAUDE?.authenticated || !agentHealth.CODEX?.authenticated"
                 @click="startBrainstorm"
+                title="Kick off the whole brainstorm: both AIs think independently, then review each other. This will use real Claude/Codex usage — up to 4 separate runs."
               >{{ startingTask ? "Starting…" : "Start independent analyses" }}</button>
               <small>This deliberately starts up to four paid/provider runs: two analyses followed by two reviews.</small>
             </div>
 
             <div v-if="['ANALYZING', 'CROSS_REVIEW'].includes(selectedTask.status)" class="live-stages">
-              <div><span>Claude analysis</span><strong>{{ runStatus('CLAUDE', 'INDEPENDENT_ANALYSIS') }}</strong></div>
-              <div><span>Codex analysis</span><strong>{{ runStatus('CODEX', 'INDEPENDENT_ANALYSIS') }}</strong></div>
-              <div><span>Claude review</span><strong>{{ runStatus('CLAUDE', 'CROSS_REVIEW') }}</strong></div>
-              <div><span>Codex review</span><strong>{{ runStatus('CODEX', 'CROSS_REVIEW') }}</strong></div>
-              <button class="ghost-button" type="button" @click="cancelBrainstorm">Cancel workflow</button>
+              <div title="Claude is writing its own independent answer to the problem."><span>Claude analysis</span><strong>{{ runStatus('CLAUDE', 'INDEPENDENT_ANALYSIS') }}</strong></div>
+              <div title="Codex is writing its own independent answer to the problem."><span>Codex analysis</span><strong>{{ runStatus('CODEX', 'INDEPENDENT_ANALYSIS') }}</strong></div>
+              <div title="Claude is reading Codex's answer and pointing out anything it disagrees with or thinks is missing."><span>Claude review</span><strong>{{ runStatus('CLAUDE', 'CROSS_REVIEW') }}</strong></div>
+              <div title="Codex is reading Claude's answer and pointing out anything it disagrees with or thinks is missing."><span>Codex review</span><strong>{{ runStatus('CODEX', 'CROSS_REVIEW') }}</strong></div>
+              <button class="ghost-button" type="button" @click="cancelBrainstorm" title="Stop this brainstorm now. Any analysis already finished is kept; anything still running is stopped.">Cancel workflow</button>
             </div>
 
-            <div v-if="selectedTask.status === 'CHECKPOINTED'" class="live-stages checkpointed">
+            <div v-if="selectedTask.status === 'CHECKPOINTED'" class="live-stages checkpointed" title="The workflow paused itself so it wouldn't spend more usage without your say-so. Nothing already finished is lost.">
               <p>
                 This workflow paused at a usage-safety checkpoint rather than continuing blind. Everything completed so
                 far is saved. Resolve the checkpoint above (acknowledge, wait for reset, or record a fresh reading), then
                 resume — nothing already completed is re-run.
               </p>
               <div class="provider-pair">
-                <button class="primary-button" type="button" :disabled="startingTask" @click="resumeBrainstorm">
+                <button class="primary-button" type="button" :disabled="startingTask" @click="resumeBrainstorm" title="Pick up right where the brainstorm paused — steps already completed are not repeated.">
                   {{ startingTask ? "Resuming…" : "Resume workflow" }}
                 </button>
-                <button class="ghost-button" type="button" @click="cancelBrainstorm">Cancel workflow</button>
+                <button class="ghost-button" type="button" @click="cancelBrainstorm" title="Give up on this brainstorm instead of resuming it.">Cancel workflow</button>
               </div>
             </div>
             <p v-if="selectedTask.errorMessage" class="form-message error-text">{{ selectedTask.errorMessage }}</p>
             <div
               v-for="entry in failedProviders(selectedTask)" :key="entry.provider"
               :class="['exhausted-hint', { likely: entry.hint }]"
+              title="The app noticed one of the AI runs failed, and it's guessing (from the error wording) whether that's because the provider ran out of usage."
             >
               <span v-if="entry.hint" class="hint-badge">LOOKS LIKE A USAGE LIMIT</span>
               <p>
@@ -2044,11 +2075,11 @@ onUnmounted(() => {
                   ? `This failure's wording suggests ${providerLabel(entry.provider)} may have hit its usage limit — the workspace could not confirm that automatically.`
                   : `Did ${providerLabel(entry.provider)} fail because it hit its usage limit? The workspace could not tell automatically.` }}
               </p>
-              <button class="ghost-button" type="button" @click="markProviderExhausted(entry.provider)">Mark as exhausted</button>
+              <button class="ghost-button" type="button" @click="markProviderExhausted(entry.provider)" title="Confirm that yes, this really was a usage limit, so the Usage safety page reflects it correctly.">Mark as exhausted</button>
             </div>
 
             <div v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section">
-              <div class="subsection-heading"><span>INDEPENDENT OUTPUTS</span><strong>Kept separate until both completed</strong></div>
+              <div class="subsection-heading" title="Each AI's own answer, written without seeing what the other one said — so you get two truly independent opinions."><span>INDEPENDENT OUTPUTS</span><strong>Kept separate until both completed</strong></div>
               <div class="analysis-grid">
                 <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="analysis-card">
                   <header><span>{{ provider === 'CLAUDE' ? 'Claude' : 'Codex' }}</span><small>{{ runStatus(provider, 'INDEPENDENT_ANALYSIS') }}</small></header>
@@ -2070,7 +2101,7 @@ onUnmounted(() => {
             </div>
 
             <div v-if="reviewFor('CLAUDE') || reviewFor('CODEX')" class="review-section">
-              <div class="subsection-heading"><span>RECIPROCAL REVIEWS</span><strong>Each reviews the other</strong></div>
+              <div class="subsection-heading" title="Each AI double-checks the other's answer — pointing out mistakes, missing evidence, or things it disagrees with."><span>RECIPROCAL REVIEWS</span><strong>Each reviews the other</strong></div>
               <div class="analysis-grid">
                 <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="review-card">
                   <header><span>{{ provider === 'CLAUDE' ? 'Claude critiques Codex' : 'Codex critiques Claude' }}</span></header>
@@ -2084,7 +2115,7 @@ onUnmounted(() => {
             </div>
 
             <div v-if="selectedTask.comparison" class="comparison-section">
-              <div class="subsection-heading"><span>TRANSPARENT COMPARISON</span><strong>No automatic winner</strong></div>
+              <div class="subsection-heading" title="A plain side-by-side summary of where the two AIs agreed, disagreed, and what's still unclear. The app deliberately does not pick a 'winner' for you."><span>TRANSPARENT COMPARISON</span><strong>No automatic winner</strong></div>
               <div class="comparison-grid">
                 <article v-for="(items, label) in selectedTask.comparison" :key="label">
                   <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
@@ -2095,15 +2126,15 @@ onUnmounted(() => {
             </div>
 
             <div class="evidence-board">
-              <div class="subsection-heading"><span>ASSUMPTION / EVIDENCE BOARD</span><strong>{{ selectedTask.evidence?.length ?? 0 }} records</strong></div>
+              <div class="subsection-heading" title="A running list of facts, guesses, open questions, and decisions about this task — written by you or pulled from what the AIs found."><span>ASSUMPTION / EVIDENCE BOARD</span><strong>{{ selectedTask.evidence?.length ?? 0 }} records</strong></div>
               <form class="evidence-form" @submit.prevent="addEvidence">
-                <select v-model="evidenceType">
+                <select v-model="evidenceType" title="What kind of note this is: a known Fact, a Guess/Assumption you're making, an open Question, a Decision you've made, or a result from an Experiment.">
                   <option value="FACT">Fact</option><option value="ASSUMPTION">Assumption</option>
                   <option value="QUESTION">Question</option><option value="DECISION">Decision</option>
                   <option value="EXPERIMENT_RESULT">Experiment result</option>
                 </select>
                 <input v-model="evidenceContent" maxlength="5000" placeholder="Add a human correction, fact, question, decision, or experiment result…" />
-                <button class="ghost-button" type="submit">Add record</button>
+                <button class="ghost-button" type="submit" title="Save this note to the board so it's kept alongside the task for later.">Add record</button>
               </form>
               <div class="evidence-list">
                 <article v-for="item in selectedTask.evidence" :key="item.id" class="evidence-item">
@@ -2117,21 +2148,21 @@ onUnmounted(() => {
                       </select>
                       <input v-model="editingEvidenceContent" />
                     </div>
-                    <button class="ghost-button" type="button" @click="saveEvidence(item)">Save</button>
+                    <button class="ghost-button" type="button" @click="saveEvidence(item)" title="Save your changes to this note.">Save</button>
                   </template>
                   <template v-else>
                     <p>{{ item.content }}</p>
-                    <small>{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
-                    <button class="text-button" type="button" @click="editEvidence(item)">Edit</button>
+                    <small :title="item.sourceProvider ? 'This note came from one of the AI runs, not typed by a person.' : 'This note was typed in by a human, not the AI.'">{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
+                    <button class="text-button" type="button" @click="editEvidence(item)" title="Change the wording or type of this note.">Edit</button>
                   </template>
                 </article>
               </div>
             </div>
 
             <div class="worktree-usages">
-              <div class="subsection-heading"><span>BRAINSTORM PLAN REPORT</span></div>
+              <div class="subsection-heading" title="A single readable document that pulls together the problem, both analyses, both reviews, and the comparison — handy to save or share before you decide anything."><span>BRAINSTORM PLAN REPORT</span></div>
               <p v-if="brainstormReportError" class="error-text" role="alert">{{ brainstormReportError }}</p>
-              <button class="ghost-button" type="button" :disabled="loadingBrainstormReport" @click="loadBrainstormReport">
+              <button class="ghost-button" type="button" :disabled="loadingBrainstormReport" @click="loadBrainstormReport" title="Build the report now from everything gathered so far for this task.">
                 {{ loadingBrainstormReport ? "Generating…" : "Generate report" }}
               </button>
               <div v-if="brainstormReport" class="pre-pr-report">
@@ -2167,32 +2198,32 @@ onUnmounted(() => {
             </div>
 
             <div class="worktree-usages">
-              <div class="subsection-heading"><span>EXPERIMENTS / PROOFS OF CONCEPT</span><strong>{{ experimentsForTask.length }} run(s)</strong></div>
+              <div class="subsection-heading" title="A small, quick 'let's just try it and see' test — one AI builds a tiny proof of concept and the other checks whether it actually worked, before you commit to the real thing."><span>EXPERIMENTS / PROOFS OF CONCEPT</span><strong>{{ experimentsForTask.length }} run(s)</strong></div>
               <p v-if="experimentError" class="error-text" role="alert">{{ experimentError }}</p>
               <form class="evidence-form adr-form" @submit.prevent="startExperiment">
-                <label><span>Hypothesis</span><textarea v-model="experimentHypothesis" maxlength="5000" placeholder="e.g. Explicit tenant-to-shard routing can be implemented with a simple modulo router." required></textarea></label>
-                <label>
+                <label title="Write the guess you want to test — a specific claim that can turn out true or false, e.g. 'a simple modulo router can handle tenant routing.'"><span>Hypothesis</span><textarea v-model="experimentHypothesis" maxlength="5000" placeholder="e.g. Explicit tenant-to-shard routing can be implemented with a simple modulo router." required></textarea></label>
+                <label title="Which AI writes the small test/prototype to try out the hypothesis.">
                   <span>Builder</span>
                   <select v-model="experimentBuilderProvider">
                     <option value="CLAUDE" :disabled="experimentReviewerProvider === 'CLAUDE'">Claude Code</option>
                     <option value="CODEX" :disabled="experimentReviewerProvider === 'CODEX'">Codex</option>
                   </select>
                 </label>
-                <label>
+                <label title="Which AI checks the builder's work and judges whether the hypothesis was proven or disproven. Must be the other AI, so no one grades its own homework.">
                   <span>Reviewer</span>
                   <select v-model="experimentReviewerProvider">
                     <option value="CLAUDE" :disabled="experimentBuilderProvider === 'CLAUDE'">Claude Code</option>
                     <option value="CODEX" :disabled="experimentBuilderProvider === 'CODEX'">Codex</option>
                   </select>
                 </label>
-                <button class="ghost-button" type="submit" :disabled="startingExperiment">{{ startingExperiment ? "Starting…" : "Start experiment" }}</button>
+                <button class="ghost-button" type="submit" :disabled="startingExperiment" title="Start this small test now. It uses a bit of AI usage, but far less than a full build.">{{ startingExperiment ? "Starting…" : "Start experiment" }}</button>
               </form>
 
               <p v-if="!experimentsForTask.length" class="form-hint">No experiments yet for this task.</p>
               <div v-for="experiment in experimentsForTask" :key="experiment.id" class="evidence-item adr-item">
                 <header>
                   <strong>{{ experiment.hypothesis }}</strong>
-                  <span>{{ experiment.status }}<template v-if="experiment.verdict"> · {{ experiment.verdict }}</template></span>
+                  <span title="PROVEN = the test supported the hypothesis. DISPROVEN = it didn't hold up. INCONCLUSIVE = the test couldn't tell for sure.">{{ experiment.status }}<template v-if="experiment.verdict"> · {{ experiment.verdict }}</template></span>
                 </header>
                 <p v-if="experiment.errorMessage" class="error-text" role="alert">{{ experiment.errorMessage }}</p>
                 <p><strong>Builder / Reviewer</strong> {{ providerLabel(experiment.builderProvider) }} builds, {{ providerLabel(experiment.reviewerProvider) }} reviews</p>
@@ -2201,6 +2232,7 @@ onUnmounted(() => {
                 <button
                   v-if="['RUNNING', 'REVIEWING', 'CHECKPOINTED'].includes(experiment.status)"
                   class="danger-outline-button" type="button" @click="cancelExperiment(experiment)"
+                  title="Stop this experiment before it finishes."
                 >Cancel</button>
               </div>
             </div>
@@ -2216,18 +2248,18 @@ onUnmounted(() => {
             <h2 id="worktree-heading">Give each agent its own checkout.</h2>
             <p>Preview and edit both names first. Creation never switches or modifies the active project checkout.</p>
           </div>
-          <span class="safety-badge">EXPLICIT CREATE · SAFE CLEANUP</span>
+          <span class="safety-badge" title="A worktree is only created when you press a Create button below — nothing happens automatically. And removing one later is checked carefully so you can't accidentally delete unsaved work.">EXPLICIT CREATE · SAFE CLEANUP</span>
         </div>
 
         <div class="worktree-task-picker">
-          <label>
+          <label title="Pick which brainstorm/architecture task these private working copies (worktrees) are for.">
             <span>Task</span>
             <select v-model="selectedWorktreeTaskId" :disabled="worktreeLoading" @change="loadWorktreesForTask">
               <option disabled value="">Select a task</option>
               <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.title }}</option>
             </select>
           </label>
-          <div class="worktree-safety-note">
+          <div class="worktree-safety-note" title="A worktree is like giving each AI its own separate copy of your project folder to work in, so they can't accidentally overwrite your main copy or each other's changes.">
             <strong>Preview only until Create</strong>
             <span>Paths and branches are validated for collisions before Git is changed.</span>
           </div>
@@ -2244,20 +2276,20 @@ onUnmounted(() => {
                 <span>{{ provider === 'CLAUDE' ? 'CLAUDE CODE' : 'CODEX' }}</span>
                 <strong>{{ managedFor(provider) ? 'Managed worktree' : 'Proposed worktree' }}</strong>
               </div>
-              <span :class="['worktree-state', managedFor(provider)?.status.toLowerCase() ?? (proposalFor(provider)?.available ? 'available' : 'blocked')]">
+              <span :class="['worktree-state', managedFor(provider)?.status.toLowerCase() ?? (proposalFor(provider)?.available ? 'available' : 'blocked')]" title="CREATING = being set up. ACTIVE = ready to use. ERROR = something went wrong. AVAILABLE = ready to be created. BLOCKED = can't be created yet (see the message below).">
                 {{ managedFor(provider)?.status ?? (proposalFor(provider)?.available ? 'AVAILABLE' : 'BLOCKED') }}
               </span>
             </header>
 
-            <label>
+            <label title="Where on your computer this AI's private copy of the project will live. You can change it before creating, but not afterward.">
               <span>Directory path <small>Editable before creation</small></span>
               <input v-model="worktreeDrafts[provider].path" :readonly="Boolean(managedFor(provider))" autocomplete="off" />
             </label>
-            <label>
+            <label title="The Git branch this worktree will use. Moving the folder later never renames this branch, and renaming the branch never moves the folder — they're tracked separately.">
               <span>Branch name <small>Independent from the path</small></span>
               <input v-model="worktreeDrafts[provider].branchName" :readonly="Boolean(managedFor(provider))" autocomplete="off" />
             </label>
-            <label>
+            <label title="The existing branch this new one will start from — usually your project's main/default branch.">
               <span>Base ref</span>
               <input v-model="worktreeDrafts[provider].baseRef" :readonly="Boolean(managedFor(provider))" autocomplete="off" />
             </label>
@@ -2269,8 +2301,9 @@ onUnmounted(() => {
               type="button"
               :disabled="creatingWorktree !== null || !proposalFor(provider)?.available"
               @click="createWorktree(provider)"
+              title="Actually create this private folder and branch now. Your main project folder is never touched."
             >{{ creatingWorktree === provider ? 'Creating…' : `Create ${provider === 'CLAUDE' ? 'Claude' : 'Codex'} worktree` }}</button>
-            <button v-else class="ghost-button" type="button" @click="selectManagedWorktree(managedFor(provider)!)">Inspect and manage</button>
+            <button v-else class="ghost-button" type="button" @click="selectManagedWorktree(managedFor(provider)!)" title="Open this worktree below to see its file changes, move/rename it, or clean it up.">Inspect and manage</button>
           </article>
         </div>
 
@@ -2282,10 +2315,10 @@ onUnmounted(() => {
               <code>{{ selectedWorktree.path }}</code>
             </div>
             <div class="inspection-flags">
-              <span :class="selectedWorktree.inspection?.gitStatus === 'CLEAN' ? 'clean' : 'dirty'">
+              <span :class="selectedWorktree.inspection?.gitStatus === 'CLEAN' ? 'clean' : 'dirty'" title="CLEAN = no unsaved changes in this worktree. DIRTY = there are unsaved changes sitting in it.">
                 {{ selectedWorktree.inspection?.gitStatus ?? selectedWorktree.status }}
               </span>
-              <span :class="selectedWorktree.inUse ? 'busy' : 'idle'">{{ selectedWorktree.inUse ? 'IN USE' : 'IDLE' }}</span>
+              <span :class="selectedWorktree.inUse ? 'busy' : 'idle'" title="IN USE means something (a running task or check) currently has this worktree locked, so moving/renaming/removing it is blocked until it's free. IDLE means it's free to manage.">{{ selectedWorktree.inUse ? 'IN USE' : 'IDLE' }}</span>
             </div>
           </div>
           <p v-if="selectedWorktree.inspectionError" class="error-text" role="alert">{{ selectedWorktree.inspectionError }}</p>
@@ -2295,31 +2328,33 @@ onUnmounted(() => {
           </p>
 
           <div v-if="selectedWorktree.activeUsages.length" class="worktree-usages">
-            <div class="subsection-heading"><span>ACTIVE USAGE LEASES</span></div>
+            <div class="subsection-heading" title="A list of who or what is currently 'holding' this worktree (a running task, a validation check, etc.), so you know why it might be locked."><span>ACTIVE USAGE LEASES</span></div>
             <ul>
               <li v-for="lease in selectedWorktree.activeUsages" :key="lease.id" :class="{ stale: lease.stale }">
                 <span>{{ lease.ownerType }} · {{ lease.ownerId }} · started {{ new Date(lease.startedAt).toLocaleString() }}</span>
-                <span v-if="lease.stale" class="usage-stale-label">STALE — no update in over 6 hours</span>
-                <button class="text-button" type="button" @click="releaseUsage(lease.id)">Release lease</button>
+                <span v-if="lease.stale" class="usage-stale-label" title="This lease hasn't been updated in over 6 hours, so it's probably left over from something that crashed or stalled rather than a real, still-running process.">STALE — no update in over 6 hours</span>
+                <button class="text-button" type="button" @click="releaseUsage(lease.id)" title="Manually let go of this lease. Only do this if you're sure whatever was using the worktree is no longer actually running.">Release lease</button>
               </li>
             </ul>
           </div>
 
           <div class="worktree-management-grid">
             <form @submit.prevent="renameWorktreePath">
-              <label><span>Move directory <small>Branch stays unchanged</small></span><input v-model="renamePath" required /></label>
+              <label title="Type a new folder location to move this worktree to. Its Git branch name stays exactly the same."><span>Move directory <small>Branch stays unchanged</small></span><input v-model="renamePath" required /></label>
               <button
                 class="ghost-button" type="submit"
                 :disabled="selectedWorktree.inUse || !selectedWorktree.inspection || selectedWorktree.inspection.gitStatus === 'DIRTY'"
+                title="Move this worktree's folder to the new path above. Disabled while it's in use or has unsaved changes, to avoid losing anything."
               >Move directory</button>
               <p v-if="selectedWorktree.inUse" class="form-hint">Disabled: an active process is using this worktree.</p>
               <p v-else-if="selectedWorktree.inspection?.gitStatus === 'DIRTY'" class="form-hint">Disabled: the worktree has uncommitted changes.</p>
             </form>
             <form @submit.prevent="renameWorktreeBranch">
-              <label><span>Rename branch <small>Directory stays unchanged</small></span><input v-model="renameBranch" required /></label>
+              <label title="Type a new name for this worktree's Git branch. Its folder location on disk stays exactly the same."><span>Rename branch <small>Directory stays unchanged</small></span><input v-model="renameBranch" required /></label>
               <button
                 class="ghost-button" type="submit"
                 :disabled="selectedWorktree.inUse || !selectedWorktree.inspection || selectedWorktree.inspection.gitStatus === 'DIRTY'"
+                title="Rename this worktree's branch to the new name above. Disabled while it's in use or has unsaved changes, to avoid losing anything."
               >Rename branch</button>
               <p v-if="selectedWorktree.inUse" class="form-hint">Disabled: an active process is using this worktree.</p>
               <p v-else-if="selectedWorktree.inspection?.gitStatus === 'DIRTY'" class="form-hint">Disabled: the worktree has uncommitted changes.</p>
@@ -2327,7 +2362,7 @@ onUnmounted(() => {
           </div>
 
           <div class="worktree-diff">
-            <div class="subsection-heading"><span>LOCAL DIFF</span><button class="text-button" type="button" @click="loadWorktreeDiff(selectedWorktree.id)">Refresh</button></div>
+            <div class="subsection-heading" title="Shows exactly which lines of code have changed in this worktree but haven't been merged anywhere yet."><span>LOCAL DIFF</span><button class="text-button" type="button" @click="loadWorktreeDiff(selectedWorktree.id)" title="Fetch the latest changes again — useful if the AI has made more edits since you last looked.">Refresh</button></div>
             <div class="diff-grid">
               <article><strong>Unstaged</strong><pre>{{ worktreeDiff?.unstaged || 'No unstaged changes.' }}</pre></article>
               <article><strong>Staged</strong><pre>{{ worktreeDiff?.staged || 'No staged changes.' }}</pre></article>
@@ -2340,13 +2375,13 @@ onUnmounted(() => {
               <strong>Clean and idle worktrees only</strong>
               <p>The branch is retained unless you separately request deletion and Git confirms it is merged.</p>
             </div>
-            <button v-if="removalArmedId !== selectedWorktree.id" class="danger-outline-button" type="button" @click="armWorktreeRemoval(selectedWorktree)">Prepare removal</button>
+            <button v-if="removalArmedId !== selectedWorktree.id" class="danger-outline-button" type="button" @click="armWorktreeRemoval(selectedWorktree)" title="Start the removal process for this worktree. Nothing is deleted yet — you'll be asked to confirm next.">Prepare removal</button>
             <div v-else class="cleanup-confirmation">
-              <label class="check-row"><input v-model="removalConfirmed" type="checkbox" />I confirm this worktree should be removed.</label>
-              <label class="check-row"><input v-model="deleteMergedBranch" type="checkbox" />Also delete the branch, but only if Git reports it merged.</label>
+              <label class="check-row" title="You must tick this box yourself before anything is deleted — the app never removes a worktree without you explicitly confirming."><input v-model="removalConfirmed" type="checkbox" />I confirm this worktree should be removed.</label>
+              <label class="check-row" title="If checked, the branch is only deleted when Git can prove it's already been fully merged elsewhere — an unmerged branch is never deleted, even with this box checked."><input v-model="deleteMergedBranch" type="checkbox" />Also delete the branch, but only if Git reports it merged.</label>
               <div>
-                <button class="text-button" type="button" @click="removalArmedId = ''">Cancel</button>
-                <button class="danger-outline-button" type="button" :disabled="!removalConfirmed" @click="removeWorktree">Remove clean worktree</button>
+                <button class="text-button" type="button" @click="removalArmedId = ''" title="Back out — don't remove this worktree after all.">Cancel</button>
+                <button class="danger-outline-button" type="button" :disabled="!removalConfirmed" @click="removeWorktree" title="Actually delete this worktree's folder now. Blocked if it's dirty, locked, or in use, so you can't accidentally lose unsaved work.">Remove clean worktree</button>
               </div>
             </div>
           </div>
@@ -2365,7 +2400,7 @@ onUnmounted(() => {
               honestly reports unavailable; use a manual snapshot to record what the provider's own interface shows you.
             </p>
           </div>
-          <span class="safety-badge">CHECK BEFORE EVERY CALL</span>
+          <span class="safety-badge" title="Before the app spends any of your Claude/Codex usage, it checks how much is left — every single time, not just once.">CHECK BEFORE EVERY CALL</span>
         </div>
 
         <p v-if="usageError" class="form-message error-text" role="alert">{{ usageError }}</p>
@@ -2376,7 +2411,7 @@ onUnmounted(() => {
           <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="usage-card">
             <header>
               <strong>{{ providerLabel(provider) }}</strong>
-              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)">
+              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" title="Try again to automatically read this provider's usage. Note: there's currently no reliable way to read exact numbers automatically, so this will often still come back Unavailable — a manual snapshot below is the trustworthy option.">
                 {{ refreshingProvider === provider ? "Refreshing…" : "Refresh" }}
               </button>
             </header>
@@ -2384,44 +2419,45 @@ onUnmounted(() => {
             <div v-for="window in usage[provider]" :key="window.windowId" class="usage-window">
               <div class="usage-window-heading">
                 <span>{{ window.windowLabel }}</span>
-                <span :class="['usage-state', window.status.toLowerCase()]">{{ usageStatusLabel(window.status) }}</span>
+                <span :class="['usage-state', window.status.toLowerCase()]" title="SAFE = plenty left. WARNING = getting low, worth watching. CHECKPOINT REQUIRED = the app will pause and ask you before continuing. EXHAUSTED = none left, blocked until reset. UNAVAILABLE/STALE = no recent trustworthy reading — treated as not-safe rather than guessed.">{{ usageStatusLabel(window.status) }}</span>
               </div>
               <div class="usage-bar" role="progressbar" :aria-valuenow="window.usedPercent ?? 0" aria-valuemin="0" aria-valuemax="100"
-                :aria-valuetext="window.usedPercent === null ? 'No data' : `${window.usedPercent}% used`">
+                :aria-valuetext="window.usedPercent === null ? 'No data' : `${window.usedPercent}% used`"
+                title="A simple bar showing how much of this usage window has been used up so far.">
                 <div class="usage-bar-fill" :class="window.status.toLowerCase()" :style="{ width: `${window.usedPercent ?? 0}%` }"></div>
               </div>
               <dl class="usage-detail-grid">
-                <div><dt>Used</dt><dd>{{ window.usedPercent === null ? "Unknown" : `${window.usedPercent}%` }}</dd></div>
-                <div><dt>Remaining</dt><dd>{{ window.remainingPercent === null ? "Unknown" : `${window.remainingPercent}%` }}</dd></div>
-                <div><dt>Resets</dt><dd>{{ window.timeUntilReset ? `in ${window.timeUntilReset}` : "Unknown" }}</dd></div>
-                <div><dt>Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
-                <div><dt>Last updated</dt><dd>{{ window.lastRefreshedAt ? new Date(window.lastRefreshedAt).toLocaleString() : "Never" }}</dd></div>
-                <div><dt>Freshness</dt><dd>{{ window.freshness }}</dd></div>
+                <div><dt title="How much of this time window's allowance has been spent.">Used</dt><dd>{{ window.usedPercent === null ? "Unknown" : `${window.usedPercent}%` }}</dd></div>
+                <div><dt title="How much of this time window's allowance is still left to spend.">Remaining</dt><dd>{{ window.remainingPercent === null ? "Unknown" : `${window.remainingPercent}%` }}</dd></div>
+                <div><dt title="How long until this usage window refills back to 100%.">Resets</dt><dd>{{ window.timeUntilReset ? `in ${window.timeUntilReset}` : "Unknown" }}</dd></div>
+                <div><dt title="Where this reading came from: a manual entry you typed in, or text picked up from a rate-limit error message.">Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
+                <div><dt title="When this reading was last refreshed.">Last updated</dt><dd>{{ window.lastRefreshedAt ? new Date(window.lastRefreshedAt).toLocaleString() : "Never" }}</dd></div>
+                <div><dt title="Whether this reading is recent enough to trust (FRESH) or too old to rely on (STALE).">Freshness</dt><dd>{{ window.freshness }}</dd></div>
               </dl>
             </div>
 
             <form class="usage-manual-form" @submit.prevent="submitManualSnapshot(provider)">
               <div class="field-row">
-                <label><span>Window</span><input v-model="manualSnapshotForm[provider].windowId" placeholder="5H" maxlength="40" required /></label>
-                <label><span>Label</span><input v-model="manualSnapshotForm[provider].windowLabel" placeholder="5-hour window" maxlength="120" required /></label>
+                <label title="A short code for this time window, e.g. '5H' for a 5-hour window — matches how the provider's own dashboard labels it."><span>Window</span><input v-model="manualSnapshotForm[provider].windowId" placeholder="5H" maxlength="40" required /></label>
+                <label title="A human-friendly name for this window, e.g. '5-hour window'."><span>Label</span><input v-model="manualSnapshotForm[provider].windowLabel" placeholder="5-hour window" maxlength="120" required /></label>
               </div>
               <div class="field-row">
-                <label><span>Used % <small>From the provider's own display</small></span><input v-model="manualSnapshotForm[provider].usedPercent" type="number" min="0" max="100" step="1" required /></label>
-                <label><span>Resets at <small>Optional</small></span><input v-model="manualSnapshotForm[provider].resetAt" type="datetime-local" /></label>
+                <label title="Type in the used-percentage number you see on the provider's own website or app right now — this app can't read it automatically."><span>Used % <small>From the provider's own display</small></span><input v-model="manualSnapshotForm[provider].usedPercent" type="number" min="0" max="100" step="1" required /></label>
+                <label title="When this usage window refreshes back to 100%, if the provider tells you."><span>Resets at <small>Optional</small></span><input v-model="manualSnapshotForm[provider].resetAt" type="datetime-local" /></label>
               </div>
-              <button class="ghost-button" type="submit">Submit manual snapshot</button>
+              <button class="ghost-button" type="submit" title="Save this hand-typed reading so the app can use it to decide whether it's safe to keep spending usage.">Submit manual snapshot</button>
               <p class="form-hint">Manual readings are estimates you enter yourself; they are labeled MANUAL and never confused with an automatic reading.</p>
             </form>
           </article>
         </div>
 
         <form class="usage-policy-form" @submit.prevent="updateUsagePolicy">
-          <div class="subsection-heading"><span>SAFETY THRESHOLDS</span><strong>Applies to both providers</strong></div>
+          <div class="subsection-heading" title="Set the percentages that decide when you get a gentle warning versus when the app stops and makes you confirm before continuing."><span>SAFETY THRESHOLDS</span><strong>Applies to both providers</strong></div>
           <div class="field-row">
-            <label><span>Warning threshold %</span><input v-model="policyForm.warningThresholdPercent" type="number" min="0" max="100" required /></label>
-            <label><span>Checkpoint threshold %</span><input v-model="policyForm.checkpointThresholdPercent" type="number" min="0" max="100" required /></label>
+            <label title="Once usage crosses this percentage, the app shows a warning but still lets you continue."><span>Warning threshold %</span><input v-model="policyForm.warningThresholdPercent" type="number" min="0" max="100" required /></label>
+            <label title="Once usage crosses this percentage, the app pauses and requires you to explicitly confirm before it will spend any more."><span>Checkpoint threshold %</span><input v-model="policyForm.checkpointThresholdPercent" type="number" min="0" max="100" required /></label>
           </div>
-          <button class="ghost-button" type="submit">Update thresholds</button>
+          <button class="ghost-button" type="submit" title="Save these two percentages as the new thresholds.">Update thresholds</button>
         </form>
       </section>
 
@@ -2432,18 +2468,18 @@ onUnmounted(() => {
             <h2 id="build-heading">Let Claude build, and Codex review, without editing each other's work.</h2>
             <p>Choose independent builder and reviewer roles. The reviewer never touches the builder's worktree.</p>
           </div>
-          <span class="safety-badge">WORKTREE-SCOPED WRITE · CONFIGURABLE REVIEW ROUNDS</span>
+          <span class="safety-badge" title="The builder AI can only edit files inside its own private worktree copy — never your real project folder — and you decide up front how many rounds of review-and-fix can happen.">WORKTREE-SCOPED WRITE · CONFIGURABLE REVIEW ROUNDS</span>
         </div>
 
         <div class="worktree-task-picker">
-          <label>
+          <label title="Which brainstorm/architecture task this build is implementing.">
             <span>Task</span>
             <select v-model="selectedBuildTaskId" :disabled="buildsLoading" @change="loadBuildsForTask">
               <option disabled value="">Select a task</option>
               <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.title }}</option>
             </select>
           </label>
-          <div class="worktree-safety-note">
+          <div class="worktree-safety-note" title="One AI (the builder) writes the code in its own private copy of the project. The other AI (the reviewer) only reads and critiques — it never edits the builder's files.">
             <strong>Builder edits, reviewer only reads</strong>
             <span>Validation commands run inside the builder's own worktree, never the registered repository.</span>
           </div>
@@ -2457,32 +2493,32 @@ onUnmounted(() => {
             <header>
               <div><span>ROLES</span><strong>Independent by provider</strong></div>
             </header>
-            <label>
+            <label title="Which AI actually writes the code for this build.">
               <span>Builder</span>
               <select v-model="buildBuilderProvider" :disabled="buildHasNonTerminalRun">
                 <option value="CLAUDE" :disabled="buildReviewerProvider === 'CLAUDE'">Claude Code</option>
                 <option value="CODEX" :disabled="buildReviewerProvider === 'CODEX'">Codex</option>
               </select>
             </label>
-            <label>
+            <label title="Which AI checks the builder's code and raises findings. Must be the other AI — the builder can never review its own work.">
               <span>Reviewer</span>
               <select v-model="buildReviewerProvider" :disabled="buildHasNonTerminalRun">
                 <option value="CLAUDE" :disabled="buildBuilderProvider === 'CLAUDE'">Claude Code</option>
                 <option value="CODEX" :disabled="buildBuilderProvider === 'CODEX'">Codex</option>
               </select>
             </label>
-            <label>
+            <label title="How many times the reviewer and builder can go back and forth (review, fix, review again) before the build stops asking for more rounds.">
               <span>Maximum review rounds</span>
               <input v-model.number="buildMaxReviewRounds" type="number" min="1" max="10" :disabled="buildHasNonTerminalRun" />
             </label>
-            <div v-if="(projectForTask(selectedBuildTaskId)?.validationCommands.length ?? 0) > 0" class="check-row-group">
+            <div v-if="(projectForTask(selectedBuildTaskId)?.validationCommands.length ?? 0) > 0" class="check-row-group" title="Tick which of your saved test/lint/build commands should be run automatically against the builder's changes.">
               <span>Validation commands</span>
               <label v-for="command in projectForTask(selectedBuildTaskId)?.validationCommands" :key="command.id" class="check-row">
                 <input v-model="buildValidationSelection[command.id]" type="checkbox" />{{ command.label }}
               </label>
             </div>
             <p v-else class="form-hint">This project has no saved validation commands; the build will skip straight to review.</p>
-            <button class="primary-button" type="button" :disabled="startingBuild || buildHasNonTerminalRun" @click="startBuild">
+            <button class="primary-button" type="button" :disabled="startingBuild || buildHasNonTerminalRun" @click="startBuild" title="Start the builder AI writing code now, inside its own private worktree. This uses real AI usage.">
               {{ startingBuild ? "Starting…" : buildHasNonTerminalRun ? "A build is already running" : "Start build" }}
             </button>
           </article>
@@ -2491,7 +2527,7 @@ onUnmounted(() => {
         <p v-if="buildsLoading" class="worktree-loading">Loading builds…</p>
 
         <div v-if="builds.length" class="worktree-task-picker">
-          <label>
+          <label title="Pick a past or current build to look at its details below.">
             <span>Build run</span>
             <select :value="selectedBuild?.id" @change="selectBuild(($event.target as HTMLSelectElement).value)">
               <option v-for="build in builds" :key="build.id" :value="build.id">
@@ -2504,18 +2540,19 @@ onUnmounted(() => {
         <div v-if="selectedBuild" class="worktree-inspector">
           <div class="worktree-inspector-heading">
             <div>
-              <span>{{ selectedBuild.builderProvider }} BUILDS · {{ selectedBuild.reviewerProvider }} REVIEWS · ROUND {{ selectedBuild.reviewRound }} / {{ selectedBuild.maxReviewRounds }}</span>
-              <h3>{{ selectedBuild.status }}</h3>
+              <span title="Which AI is writing the code, which AI is reviewing it, and which round of review this is out of the maximum you set.">{{ selectedBuild.builderProvider }} BUILDS · {{ selectedBuild.reviewerProvider }} REVIEWS · ROUND {{ selectedBuild.reviewRound }} / {{ selectedBuild.maxReviewRounds }}</span>
+              <h3 title="BUILDING = writing code. VALIDATING = running your test/lint/build commands. REVIEWING = the reviewer AI is checking the work. RESPONDING = the builder is fixing flagged issues. COMPLETED = done. CHECKPOINTED = paused for a usage-safety check.">{{ selectedBuild.status }}</h3>
             </div>
             <button
               v-if="['BUILDING', 'VALIDATING', 'REVIEWING', 'RESPONDING', 'CHECKPOINTED'].includes(selectedBuild.status)"
               class="danger-outline-button" type="button" @click="cancelBuild"
+              title="Stop this build now. Code already written in the worktree is kept as-is."
             >Cancel</button>
           </div>
           <p v-if="selectedBuild.errorMessage" class="error-text" role="alert">{{ selectedBuild.errorMessage }}</p>
 
           <div class="worktree-usages">
-            <div class="subsection-heading"><span>VALIDATION RESULTS</span></div>
+            <div class="subsection-heading" title="The results of running your saved test/lint/build commands against the builder's changes."><span>VALIDATION RESULTS</span></div>
             <p v-if="!selectedBuild.validationRuns.length" class="form-hint">No validation commands ran for this build.</p>
             <ul v-else>
               <li v-for="run in selectedBuild.validationRuns" :key="run.id">
@@ -2525,7 +2562,7 @@ onUnmounted(() => {
           </div>
 
           <div class="worktree-diff">
-            <div class="subsection-heading"><span>DIFF REVIEWED</span></div>
+            <div class="subsection-heading" title="The exact code changes the reviewer AI looked at when it checked this build."><span>DIFF REVIEWED</span></div>
             <div class="diff-grid">
               <article><strong>Unstaged</strong><pre>{{ selectedBuild.diffUnstaged || 'None.' }}</pre></article>
               <article><strong>Staged</strong><pre>{{ selectedBuild.diffStaged || 'None.' }}</pre></article>
@@ -2533,7 +2570,7 @@ onUnmounted(() => {
           </div>
 
           <div class="worktree-usages">
-            <div class="subsection-heading">
+            <div class="subsection-heading" title="Specific issues the reviewer AI flagged in the builder's code, sorted by how serious they are.">
               <span>STRUCTURED FINDINGS</span>
               <strong>
                 <template v-for="(count, severity) in findingSeverityCounts(selectedBuild)" :key="severity">
@@ -2548,10 +2585,10 @@ onUnmounted(() => {
             <ul v-else class="finding-list">
               <li v-for="finding in selectedBuild.findings" :key="finding.id" :class="['finding-item', finding.severity.toLowerCase()]">
                 <header>
-                  <span>{{ finding.severity }} · {{ finding.category }} · round {{ finding.round }}</span>
+                  <span title="CRITICAL/HIGH = serious, fix before merging. MEDIUM/LOW = worth a look. INFO = just a note. The category says what kind of issue it is (correctness, security, performance, etc.), and the round is which review pass found it.">{{ finding.severity }} · {{ finding.category }} · round {{ finding.round }}</span>
                   <strong>{{ finding.title }}</strong>
                   <span v-if="finding.file">{{ finding.file }}<template v-if="finding.startLine">:{{ finding.startLine }}</template></span>
-                  <span :class="['finding-status', finding.status.toLowerCase()]">{{ finding.status }}</span>
+                  <span :class="['finding-status', finding.status.toLowerCase()]" title="OPEN = not addressed yet. RESPONDED = the builder has replied or made a fix. RESOLVED = considered handled.">{{ finding.status }}</span>
                 </header>
                 <p>{{ finding.description }}</p>
                 <p class="form-hint">Evidence: {{ finding.evidence }}</p>
@@ -2567,6 +2604,7 @@ onUnmounted(() => {
             <button
               v-if="canRespondToFindings(selectedBuild)"
               class="primary-button" type="button" :disabled="respondingToFindings" @click="respondToFindings"
+              title="Send the still-open findings back to the builder AI so it can accept them, fix the code, or explain why it disagrees."
             >{{ respondingToFindings ? "Sending…" : `Send ${openFindingsCount(selectedBuild)} open finding(s) to builder` }}</button>
             <p
               v-else-if="selectedBuild.status === 'COMPLETED' && openFindingsCount(selectedBuild) > 0 && selectedBuild.reviewRound >= selectedBuild.maxReviewRounds"
@@ -2575,7 +2613,7 @@ onUnmounted(() => {
           </div>
 
           <div class="worktree-usages">
-            <div class="subsection-heading"><span>MERGE</span><strong>{{ selectedBuild.mergeStatus }}</strong></div>
+            <div class="subsection-heading" title="Whether this build's code has been combined (merged) into a real branch yet."><span>MERGE</span><strong>{{ selectedBuild.mergeStatus }}</strong></div>
             <p v-if="selectedBuild.mergeError" class="error-text" role="alert">{{ selectedBuild.mergeError }}</p>
             <template v-if="selectedBuild.mergeStatus === 'MERGED'">
               <p class="form-hint">Merged into <strong>{{ selectedBuild.mergeTargetBranch }}</strong> as {{ selectedBuild.mergeCommitSha?.slice(0, 12) }} at {{ new Date(selectedBuild.mergedAt!).toLocaleString() }}.</p>
@@ -2588,26 +2626,26 @@ onUnmounted(() => {
               </p>
             </template>
             <template v-if="canMergeBuild(selectedBuild)">
-              <label>
+              <label title="Which branch to merge this build's code into. Leave blank to use the worktree's own base branch.">
                 <span>Target branch (optional)</span>
                 <input v-model="mergeTargetBranch" type="text" placeholder="Defaults to the worktree's base branch" />
               </label>
-              <label>
+              <label title="The Git commit message for this merge. Leave blank and a sensible default is written for you.">
                 <span>Commit message (optional)</span>
                 <input v-model="mergeCommitMessage" type="text" placeholder="A default message is generated" />
               </label>
-              <label class="check-row"><input v-model="keepWorktreeAfterMerge" type="checkbox" />Keep worktree after merge</label>
-              <label class="check-row"><input v-model="deleteBranchAfterMerge" type="checkbox" />Delete task branch after merge</label>
-              <button class="primary-button" type="button" :disabled="merging" @click="mergeBuild">
+              <label class="check-row" title="If checked, the builder's private worktree folder is kept around after merging instead of being cleaned up automatically."><input v-model="keepWorktreeAfterMerge" type="checkbox" />Keep worktree after merge</label>
+              <label class="check-row" title="If checked, this task's branch is deleted after a successful merge (only once Git confirms it's safely merged in)."><input v-model="deleteBranchAfterMerge" type="checkbox" />Delete task branch after merge</label>
+              <button class="primary-button" type="button" :disabled="merging" @click="mergeBuild" title="This is the final, real step: it actually merges the builder's code into your chosen branch. Nothing before this button touches your real project.">
                 {{ merging || selectedBuild.mergeStatus === 'MERGING' ? "Merging…" : "Approve & merge" }}
               </button>
             </template>
           </div>
 
           <div class="worktree-usages">
-            <div class="subsection-heading"><span>PRE-PR REPORT</span></div>
+            <div class="subsection-heading" title="A single readable summary of this build — what changed, what was tested, what was found, and whether it merged — meant to help a human review it before opening a real pull request."><span>PRE-PR REPORT</span></div>
             <p v-if="reportError" class="error-text" role="alert">{{ reportError }}</p>
-            <button class="ghost-button" type="button" :disabled="loadingReport" @click="loadPrePrReport">
+            <button class="ghost-button" type="button" :disabled="loadingReport" @click="loadPrePrReport" title="Build this summary report now from everything gathered so far for this build.">
               {{ loadingReport ? "Generating…" : "Generate report" }}
             </button>
             <div v-if="prePrReport" class="pre-pr-report">
@@ -2643,11 +2681,11 @@ onUnmounted(() => {
             <h2 id="decisions-heading">Turn a discussion into a record you can point back to.</h2>
             <p>Create and edit ADRs for a task. Stored locally; never exported into the repository automatically.</p>
           </div>
-          <span class="safety-badge">SQLITE ONLY · NO AUTO-EXPORT</span>
+          <span class="safety-badge" title="ADRs (Architecture Decision Records) are saved only in this app's local database — they are never automatically written into your project's files or repository.">SQLITE ONLY · NO AUTO-EXPORT</span>
         </div>
 
         <div class="worktree-task-picker">
-          <label>
+          <label title="Which task this decision record is associated with.">
             <span>Task</span>
             <select v-model="selectedAdrTaskId" @change="loadAdrsForTask">
               <option disabled value="">Select a task</option>
@@ -2659,23 +2697,23 @@ onUnmounted(() => {
         <p v-if="adrError" class="form-message error-text" role="alert">{{ adrError }}</p>
 
         <form v-if="selectedAdrTaskId" class="evidence-form adr-form" @submit.prevent="createAdr">
-          <label><span>Title</span><input v-model="adrForm.title" maxlength="300" required /></label>
-          <label><span>Context</span><textarea v-model="adrForm.context" maxlength="10000" required></textarea></label>
-          <label><span>Options considered</span><textarea v-model="adrForm.optionsConsidered" maxlength="10000" required></textarea></label>
-          <label><span>Decision</span><textarea v-model="adrForm.decision" maxlength="10000" required></textarea></label>
-          <label><span>Reasons</span><textarea v-model="adrForm.reasons" maxlength="10000" required></textarea></label>
-          <label><span>Consequences</span><textarea v-model="adrForm.consequences" maxlength="10000" required></textarea></label>
-          <label><span>Risks (optional)</span><textarea v-model="adrForm.risks" maxlength="10000"></textarea></label>
-          <label><span>Rejected alternatives (optional)</span><textarea v-model="adrForm.rejectedAlternatives" maxlength="10000"></textarea></label>
-          <label><span>Required follow-up (optional)</span><textarea v-model="adrForm.requiredFollowUp" maxlength="10000"></textarea></label>
-          <button class="ghost-button" type="submit" :disabled="creatingAdr">{{ creatingAdr ? "Creating…" : "Create ADR" }}</button>
+          <label title="A short name for the decision being made, e.g. 'Use modulo-based shard routing.'"><span>Title</span><input v-model="adrForm.title" maxlength="300" required /></label>
+          <label title="The background: what situation or problem led to needing this decision at all."><span>Context</span><textarea v-model="adrForm.context" maxlength="10000" required></textarea></label>
+          <label title="The different choices that were on the table before this one was picked."><span>Options considered</span><textarea v-model="adrForm.optionsConsidered" maxlength="10000" required></textarea></label>
+          <label title="The choice that was actually made, stated plainly."><span>Decision</span><textarea v-model="adrForm.decision" maxlength="10000" required></textarea></label>
+          <label title="Why this option was chosen over the others."><span>Reasons</span><textarea v-model="adrForm.reasons" maxlength="10000" required></textarea></label>
+          <label title="What this decision means going forward — the effects, trade-offs, or things that now need to happen because of it."><span>Consequences</span><textarea v-model="adrForm.consequences" maxlength="10000" required></textarea></label>
+          <label title="Anything that could go wrong because of this decision, if you want to note it."><span>Risks (optional)</span><textarea v-model="adrForm.risks" maxlength="10000"></textarea></label>
+          <label title="Options that were considered but turned down, and why, if worth recording."><span>Rejected alternatives (optional)</span><textarea v-model="adrForm.rejectedAlternatives" maxlength="10000"></textarea></label>
+          <label title="Anything that still needs to be done later because of this decision, if there is any."><span>Required follow-up (optional)</span><textarea v-model="adrForm.requiredFollowUp" maxlength="10000"></textarea></label>
+          <button class="ghost-button" type="submit" :disabled="creatingAdr" title="Save this decision record permanently so you can look back on why this choice was made.">{{ creatingAdr ? "Creating…" : "Create ADR" }}</button>
         </form>
 
         <p v-if="selectedAdrTaskId && !adrsForTask.length" class="form-hint">No ADRs yet for this task.</p>
         <div v-for="adr in adrsForTask" :key="adr.id" class="evidence-item adr-item">
           <header>
             <strong>ADR-{{ String(adr.number).padStart(4, '0') }} {{ adr.title }}</strong>
-            <select :value="adr.status" @change="updateAdrStatus(adr, ($event.target as HTMLSelectElement).value as AdrStatus)">
+            <select :value="adr.status" @change="updateAdrStatus(adr, ($event.target as HTMLSelectElement).value as AdrStatus)" title="PROPOSED = suggested but not yet decided. ACCEPTED = this is the decision we're going with. REJECTED = considered and turned down. SUPERSEDED = replaced by a newer decision.">
               <option value="PROPOSED">Proposed</option>
               <option value="ACCEPTED">Accepted</option>
               <option value="REJECTED">Rejected</option>
@@ -2699,17 +2737,17 @@ onUnmounted(() => {
                 {{ promoted.title }} — {{ promoted.status }}<template v-if="promoted.planPhase"> ({{ promoted.planPhase }})</template>
               </li>
             </ul>
-            <form v-if="promoteForms[adr.id]" class="promote-form" @submit.prevent="promoteAdr(adr)">
+            <form v-if="promoteForms[adr.id]" class="promote-form" @submit.prevent="promoteAdr(adr)" title="Turn this decision into a real, actionable task in your task list — so deciding on something and actually doing it stay clearly separate steps.">
               <input v-model="promoteForms[adr.id]!.title" placeholder="New task title (e.g. Create shard registry schema)" maxlength="300" required />
               <input v-model="promoteForms[adr.id]!.problemStatement" placeholder="Problem statement for the new task" required />
               <input v-model="promoteForms[adr.id]!.planPhase" placeholder="Plan phase (optional, e.g. Phase 1 — Shard Registry)" maxlength="300" />
-              <select v-model="promoteForms[adr.id]!.riskLevel">
+              <select v-model="promoteForms[adr.id]!.riskLevel" title="How big a deal this new task is if it goes wrong.">
                 <option value="LOW">Low</option>
                 <option value="MEDIUM">Medium</option>
                 <option value="HIGH">High</option>
                 <option value="CRITICAL">Critical</option>
               </select>
-              <button class="text-button" type="submit" :disabled="promotingAdrId === adr.id">
+              <button class="text-button" type="submit" :disabled="promotingAdrId === adr.id" title="Create a brand-new task from this decision, so it shows up in your task list ready to be worked on.">
                 {{ promotingAdrId === adr.id ? "Promoting…" : "+ Promote to implementation task" }}
               </button>
             </form>

@@ -213,6 +213,12 @@ do not fold in unrelated cleanup.
   `WorktreeService.ts`).
 - Keep `packages/agents` provider-neutral: workflow code must never branch on
   `provider === "CLAUDE"` outside an adapter; add capability through the `AgentAdapter` interface.
+- Every new interactive element in `apps/web/src/App.vue` (a form field, button, status badge, or
+  jargon-y label) must ship with a plain-language `title` attribute tooltip, written so a non-technical
+  reader understands it — this project's users are not assumed to know Git, AI usage limits, or
+  worktrees going in. Follow the existing tone throughout the file (e.g. the nav items, safety
+  badges, and usage-status labels) rather than inventing a new phrasing style or a separate tooltip
+  component. This is not optional polish — a UI change without one is incomplete.
 
 ## Required verification before committing
 
