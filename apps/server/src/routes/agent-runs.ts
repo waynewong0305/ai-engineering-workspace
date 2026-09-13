@@ -63,7 +63,7 @@ export function registerAgentRunRoutes(
     }
     const now = new Date().toISOString();
     const run = {
-      id: randomUUID(), projectId, taskId: null, provider,
+      id: randomUUID(), projectId, taskId: null, worktreeId: null, provider,
       role: "REPOSITORY_EXPLANATION" as const, targetProvider: null, prompt,
       promptVersion: "repository-explanation-v1",
       requestedModel: stringValue(request.body.model) ?? "(provider default)",

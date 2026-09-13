@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@aiew/agents": "*",
+    "@aiew/git": "*",
     "@aiew/shared": "*",
     "better-sqlite3": "^11.7.0",
     "drizzle-orm": "^0.38.3",

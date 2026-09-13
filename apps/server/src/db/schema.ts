@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export type ValidationCommand = {
   id: string;
@@ -47,10 +47,41 @@ export const tasks = sqliteTable("tasks", {
 
 export type TaskRecord = typeof tasks.$inferSelect;
 
+export const worktrees = sqliteTable("worktrees", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  path: text("path").notNull().unique(),
+  branchName: text("branch_name").notNull(),
+  baseRef: text("base_ref").notNull(),
+  status: text("status", { enum: ["CREATING", "ACTIVE", "ERROR"] }).notNull(),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("worktrees_task_provider_idx").on(table.taskId, table.provider),
+  uniqueIndex("worktrees_project_branch_idx").on(table.projectId, table.branchName),
+]);
+
+export type WorktreeRecord = typeof worktrees.$inferSelect;
+
+export const worktreeUsages = sqliteTable("worktree_usages", {
+  id: text("id").primaryKey(),
+  worktreeId: text("worktree_id").notNull().references(() => worktrees.id, { onDelete: "cascade" }),
+  ownerType: text("owner_type", { enum: ["AGENT_RUN", "VALIDATION", "SYSTEM"] }).notNull(),
+  ownerId: text("owner_id").notNull(),
+  startedAt: text("started_at").notNull(),
+  endedAt: text("ended_at"),
+}, (table) => [index("worktree_usages_active_idx").on(table.worktreeId, table.endedAt)]);
+
+export type WorktreeUsageRecord = typeof worktreeUsages.$inferSelect;
+
 export const agentRuns = sqliteTable("agent_runs", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
+  worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW"] }).notNull().default("REPOSITORY_EXPLANATION"),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),

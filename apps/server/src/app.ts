@@ -4,6 +4,7 @@ import { createDatabase } from "./db/database.js";
 import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { AgentRunManager } from "./services/agent-run-manager.js";
 import { inspectLocalTools } from "./services/tool-health.js";
 
@@ -29,6 +30,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   const runManager = new AgentRunManager(db);
   registerAgentRunRoutes(app, db, adapters, runManager);
   registerTaskRoutes(app, db, adapters, runManager);
+  registerWorktreeRoutes(app, db);
 
   return app;
 }

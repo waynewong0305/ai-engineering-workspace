@@ -252,7 +252,7 @@ export class BrainstormWorkflow {
     const now = new Date().toISOString();
     const requestedModel = options.models?.[provider]?.trim() || "(provider default)";
     const run: AgentRunRecord = {
-      id: randomUUID(), projectId: task.projectId, taskId: task.id, provider, role, targetProvider,
+      id: randomUUID(), projectId: task.projectId, taskId: task.id, worktreeId: null, provider, role, targetProvider,
       prompt, promptVersion, requestedModel, actualModel: null,
       effort: provider === "CLAUDE" ? options.claudeEffort?.trim() || null : null,
       permissionProfile: "READ_ONLY", webAccessPolicy: task.webAccessPolicy,

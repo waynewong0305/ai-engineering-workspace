@@ -115,6 +115,35 @@ type BrainstormTask = {
     recommendedExperiments: string[];
   } | null;
 };
+type WorktreeProposal = {
+  provider: AgentProvider;
+  path: string;
+  branchName: string;
+  baseRef: string;
+  available: boolean;
+  message: string | null;
+};
+type ManagedWorktree = {
+  id: string;
+  taskId: string;
+  projectId: string;
+  provider: AgentProvider;
+  path: string;
+  branchName: string;
+  baseRef: string;
+  status: "CREATING" | "ACTIVE" | "ERROR";
+  lastError: string | null;
+  inUse: boolean;
+  inspection: {
+    head: string | null;
+    branchName: string | null;
+    gitStatus: "CLEAN" | "DIRTY";
+    porcelain: string;
+    locked: boolean;
+    prunable: boolean;
+  } | null;
+  inspectionError: string | null;
+};
 
 const health = ref<HealthResponse | null>(null);
 const loading = ref(true);
@@ -162,6 +191,24 @@ const taskForm = reactive({
   claudeModel: "",
   codexModel: "",
   claudeEffort: "",
+});
+const selectedWorktreeTaskId = ref("");
+const worktreePreview = ref<WorktreeProposal[]>([]);
+const managedWorktrees = ref<ManagedWorktree[]>([]);
+const worktreeLoading = ref(false);
+const worktreeError = ref("");
+const worktreeMessage = ref("");
+const creatingWorktree = ref<AgentProvider | null>(null);
+const selectedWorktree = ref<ManagedWorktree | null>(null);
+const worktreeDiff = ref<{ unstaged: string; staged: string } | null>(null);
+const renamePath = ref("");
+const renameBranch = ref("");
+const removalArmedId = ref("");
+const removalConfirmed = ref(false);
+const deleteMergedBranch = ref(false);
+const worktreeDrafts = reactive<Record<AgentProvider, { path: string; branchName: string; baseRef: string }>>({
+  CLAUDE: { path: "", branchName: "", baseRef: "" },
+  CODEX: { path: "", branchName: "", baseRef: "" },
 });
 const form = reactive({
   name: "",
@@ -221,10 +268,155 @@ async function loadTasks() {
     if (!response.ok) throw new Error("Could not load brainstorming tasks.");
     tasks.value = await response.json();
     if (!selectedTask.value && tasks.value[0]) await selectTask(tasks.value[0].id);
+    if (!selectedWorktreeTaskId.value && tasks.value[0]) {
+      selectedWorktreeTaskId.value = tasks.value[0].id;
+      await loadWorktreesForTask();
+    }
   } catch (error) {
     taskError.value = error instanceof Error ? error.message : "Could not load brainstorming tasks.";
   } finally {
     tasksLoading.value = false;
+  }
+}
+
+async function loadWorktreesForTask() {
+  if (!selectedWorktreeTaskId.value) {
+    worktreePreview.value = [];
+    managedWorktrees.value = [];
+    return;
+  }
+  worktreeLoading.value = true;
+  worktreeError.value = "";
+  try {
+    const [previewResponse, listResponse] = await Promise.all([
+      fetch(`/api/tasks/${selectedWorktreeTaskId.value}/worktrees/preview`),
+      fetch(`/api/tasks/${selectedWorktreeTaskId.value}/worktrees`),
+    ]);
+    const preview = await previewResponse.json();
+    const list = await listResponse.json();
+    if (!previewResponse.ok) throw new Error(preview.message ?? "Could not generate worktree proposals.");
+    if (!listResponse.ok) throw new Error(list.message ?? "Could not load managed worktrees.");
+    worktreePreview.value = preview.proposals;
+    managedWorktrees.value = list;
+    for (const proposal of worktreePreview.value) {
+      const managed = managedWorktrees.value.find((record) => record.provider === proposal.provider);
+      worktreeDrafts[proposal.provider] = managed
+        ? { path: managed.path, branchName: managed.branchName, baseRef: managed.baseRef }
+        : { path: proposal.path, branchName: proposal.branchName, baseRef: proposal.baseRef };
+    }
+    if (selectedWorktree.value) {
+      selectedWorktree.value = managedWorktrees.value.find((record) => record.id === selectedWorktree.value?.id) ?? null;
+    }
+    if (!selectedWorktree.value && managedWorktrees.value[0]) selectManagedWorktree(managedWorktrees.value[0]);
+  } catch (error) {
+    worktreeError.value = error instanceof Error ? error.message : "Could not load worktrees.";
+  } finally {
+    worktreeLoading.value = false;
+  }
+}
+
+function proposalFor(provider: AgentProvider) {
+  return worktreePreview.value.find((proposal) => proposal.provider === provider);
+}
+
+function managedFor(provider: AgentProvider) {
+  return managedWorktrees.value.find((record) => record.provider === provider);
+}
+
+async function createWorktree(provider: AgentProvider) {
+  creatingWorktree.value = provider;
+  worktreeError.value = "";
+  worktreeMessage.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedWorktreeTaskId.value}/worktrees`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, ...worktreeDrafts[provider] }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not create the worktree.");
+    worktreeMessage.value = `${provider === "CLAUDE" ? "Claude" : "Codex"} worktree created without changing the active checkout.`;
+    await loadWorktreesForTask();
+    const created = managedWorktrees.value.find((record) => record.id === result.id);
+    if (created) selectManagedWorktree(created);
+  } catch (error) {
+    worktreeError.value = error instanceof Error ? error.message : "Could not create the worktree.";
+  } finally {
+    creatingWorktree.value = null;
+  }
+}
+
+function selectManagedWorktree(record: ManagedWorktree) {
+  selectedWorktree.value = record;
+  renamePath.value = record.path;
+  renameBranch.value = record.branchName;
+  removalArmedId.value = "";
+  removalConfirmed.value = false;
+  deleteMergedBranch.value = false;
+  void loadWorktreeDiff(record.id);
+}
+
+async function loadWorktreeDiff(worktreeId: string) {
+  const response = await fetch(`/api/worktrees/${worktreeId}/diff`);
+  const result = await response.json();
+  if (response.ok) worktreeDiff.value = result;
+  else {
+    worktreeDiff.value = null;
+    worktreeError.value = result.message ?? "Could not read the worktree diff.";
+  }
+}
+
+async function renameWorktreePath() {
+  if (!selectedWorktree.value) return;
+  worktreeError.value = "";
+  const response = await fetch(`/api/worktrees/${selectedWorktree.value.id}/path`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: renamePath.value }),
+  });
+  const result = await response.json();
+  if (!response.ok) worktreeError.value = result.message ?? "Could not move the worktree.";
+  else {
+    worktreeMessage.value = "Worktree directory moved. Its branch name was not changed.";
+    await loadWorktreesForTask();
+  }
+}
+
+async function renameWorktreeBranch() {
+  if (!selectedWorktree.value) return;
+  worktreeError.value = "";
+  const response = await fetch(`/api/worktrees/${selectedWorktree.value.id}/branch`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branchName: renameBranch.value }),
+  });
+  const result = await response.json();
+  if (!response.ok) worktreeError.value = result.message ?? "Could not rename the branch.";
+  else {
+    worktreeMessage.value = "Branch renamed. Its worktree directory was not changed.";
+    await loadWorktreesForTask();
+  }
+}
+
+function armWorktreeRemoval(record: ManagedWorktree) {
+  removalArmedId.value = record.id;
+  removalConfirmed.value = false;
+  deleteMergedBranch.value = false;
+}
+
+async function removeWorktree() {
+  if (!selectedWorktree.value || !removalConfirmed.value) return;
+  worktreeError.value = "";
+  const response = await fetch(`/api/worktrees/${selectedWorktree.value.id}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: true, deleteBranch: deleteMergedBranch.value }),
+  });
+  const result = await response.json();
+  if (!response.ok) worktreeError.value = result.message ?? "Could not remove the worktree.";
+  else {
+    worktreeMessage.value = result.deletedBranch
+      ? "Clean worktree and merged branch removed."
+      : `Clean worktree removed; branch ${result.retainedBranch} was retained.`;
+    selectedWorktree.value = null;
+    worktreeDiff.value = null;
+    await loadWorktreesForTask();
   }
 }
 
@@ -594,7 +786,7 @@ onUnmounted(() => {
         <a class="nav-item active" href="#projects"><span>01</span>Projects</a>
         <a class="nav-item" href="#agent-runs"><span>02</span>Agent runs</a>
         <a class="nav-item" href="#brainstorm"><span>03</span>Brainstorm</a>
-        <a class="nav-item" href="#brainstorm"><span>04</span>Architecture</a>
+        <a class="nav-item" href="#worktrees"><span>04</span>Worktrees</a>
         <a class="nav-item disabled" href="#build" aria-disabled="true"><span>05</span>Build</a>
         <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>06</span>Reviews</a>
         <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>07</span>Decisions</a>
@@ -1078,6 +1270,125 @@ onUnmounted(() => {
             </div>
           </div>
           <div v-else class="task-detail empty-task">Create or select a task to inspect its workflow.</div>
+        </div>
+      </section>
+
+      <section id="worktrees" class="project-panel worktree-panel" aria-labelledby="worktree-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">04 — ISOLATED GIT WORKTREES</p>
+            <h2 id="worktree-heading">Give each agent its own checkout.</h2>
+            <p>Preview and edit both names first. Creation never switches or modifies the active project checkout.</p>
+          </div>
+          <span class="safety-badge">EXPLICIT CREATE · SAFE CLEANUP</span>
+        </div>
+
+        <div class="worktree-task-picker">
+          <label>
+            <span>Task</span>
+            <select v-model="selectedWorktreeTaskId" :disabled="worktreeLoading" @change="loadWorktreesForTask">
+              <option disabled value="">Select a task</option>
+              <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.title }}</option>
+            </select>
+          </label>
+          <div class="worktree-safety-note">
+            <strong>Preview only until Create</strong>
+            <span>Paths and branches are validated for collisions before Git is changed.</span>
+          </div>
+        </div>
+
+        <p v-if="worktreeError" class="form-message error-text" role="alert">{{ worktreeError }}</p>
+        <p v-if="worktreeMessage" class="form-message success-text" role="status">{{ worktreeMessage }}</p>
+        <p v-if="worktreeLoading" class="worktree-loading">Inspecting repository worktrees…</p>
+
+        <div v-else-if="selectedWorktreeTaskId" class="worktree-proposals">
+          <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="worktree-proposal-card">
+            <header>
+              <div>
+                <span>{{ provider === 'CLAUDE' ? 'CLAUDE CODE' : 'CODEX' }}</span>
+                <strong>{{ managedFor(provider) ? 'Managed worktree' : 'Proposed worktree' }}</strong>
+              </div>
+              <span :class="['worktree-state', managedFor(provider)?.status.toLowerCase() ?? (proposalFor(provider)?.available ? 'available' : 'blocked')]">
+                {{ managedFor(provider)?.status ?? (proposalFor(provider)?.available ? 'AVAILABLE' : 'BLOCKED') }}
+              </span>
+            </header>
+
+            <label>
+              <span>Directory path <small>Editable before creation</small></span>
+              <input v-model="worktreeDrafts[provider].path" :readonly="Boolean(managedFor(provider))" autocomplete="off" />
+            </label>
+            <label>
+              <span>Branch name <small>Independent from the path</small></span>
+              <input v-model="worktreeDrafts[provider].branchName" :readonly="Boolean(managedFor(provider))" autocomplete="off" />
+            </label>
+            <label>
+              <span>Base ref</span>
+              <input v-model="worktreeDrafts[provider].baseRef" :readonly="Boolean(managedFor(provider))" autocomplete="off" />
+            </label>
+
+            <p v-if="proposalFor(provider)?.message" class="proposal-message">{{ proposalFor(provider)?.message }}</p>
+            <button
+              v-if="!managedFor(provider)"
+              class="primary-button"
+              type="button"
+              :disabled="creatingWorktree !== null || !proposalFor(provider)?.available"
+              @click="createWorktree(provider)"
+            >{{ creatingWorktree === provider ? 'Creating…' : `Create ${provider === 'CLAUDE' ? 'Claude' : 'Codex'} worktree` }}</button>
+            <button v-else class="ghost-button" type="button" @click="selectManagedWorktree(managedFor(provider)!)">Inspect and manage</button>
+          </article>
+        </div>
+
+        <div v-if="selectedWorktree" class="worktree-inspector">
+          <div class="worktree-inspector-heading">
+            <div>
+              <span>{{ selectedWorktree.provider }} WORKTREE</span>
+              <h3>{{ selectedWorktree.branchName }}</h3>
+              <code>{{ selectedWorktree.path }}</code>
+            </div>
+            <div class="inspection-flags">
+              <span :class="selectedWorktree.inspection?.gitStatus === 'CLEAN' ? 'clean' : 'dirty'">
+                {{ selectedWorktree.inspection?.gitStatus ?? selectedWorktree.status }}
+              </span>
+              <span :class="selectedWorktree.inUse ? 'busy' : 'idle'">{{ selectedWorktree.inUse ? 'IN USE' : 'IDLE' }}</span>
+            </div>
+          </div>
+          <p v-if="selectedWorktree.inspectionError" class="error-text">{{ selectedWorktree.inspectionError }}</p>
+
+          <div class="worktree-management-grid">
+            <form @submit.prevent="renameWorktreePath">
+              <label><span>Move directory <small>Branch stays unchanged</small></span><input v-model="renamePath" required /></label>
+              <button class="ghost-button" type="submit" :disabled="selectedWorktree.inUse || selectedWorktree.inspection?.gitStatus === 'DIRTY'">Move directory</button>
+            </form>
+            <form @submit.prevent="renameWorktreeBranch">
+              <label><span>Rename branch <small>Directory stays unchanged</small></span><input v-model="renameBranch" required /></label>
+              <button class="ghost-button" type="submit" :disabled="selectedWorktree.inUse || selectedWorktree.inspection?.gitStatus === 'DIRTY'">Rename branch</button>
+            </form>
+          </div>
+
+          <div class="worktree-diff">
+            <div class="subsection-heading"><span>LOCAL DIFF</span><button class="text-button" type="button" @click="loadWorktreeDiff(selectedWorktree.id)">Refresh</button></div>
+            <div class="diff-grid">
+              <article><strong>Unstaged</strong><pre>{{ worktreeDiff?.unstaged || 'No unstaged changes.' }}</pre></article>
+              <article><strong>Staged</strong><pre>{{ worktreeDiff?.staged || 'No staged changes.' }}</pre></article>
+            </div>
+          </div>
+
+          <div class="worktree-cleanup">
+            <div>
+              <span>RECOVERABLE CLEANUP</span>
+              <strong>Clean and idle worktrees only</strong>
+              <p>The branch is retained unless you separately request deletion and Git confirms it is merged.</p>
+            </div>
+            <button v-if="removalArmedId !== selectedWorktree.id" class="danger-outline-button" type="button" @click="armWorktreeRemoval(selectedWorktree)">Prepare removal</button>
+            <div v-else class="cleanup-confirmation">
+              <label class="check-row"><input v-model="removalConfirmed" type="checkbox" />I confirm this worktree should be removed.</label>
+              <label class="check-row"><input v-model="deleteMergedBranch" type="checkbox" />Also delete the branch, but only if Git reports it merged.</label>
+              <div>
+                <button class="text-button" type="button" @click="removalArmedId = ''">Cancel</button>
+                <button class="danger-outline-button" type="button" :disabled="!removalConfirmed" @click="removeWorktree">Remove clean worktree</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </main>
