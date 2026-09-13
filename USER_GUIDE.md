@@ -26,9 +26,10 @@ The current implementation can:
 - preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout;
 - inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation; and
 - check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement; and
-- run one bounded build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings.
+- run a build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings; and
+- send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3).
 
-Sending findings back to the builder, an automatic re-review loop, a human-approved merge, and a pre-PR report are planned but not enabled yet. Brainstorming, architecture comparison, worktree isolation, and a single build/review pass are available now.
+A human-approved merge and a pre-PR report are planned but not enabled yet. Brainstorming, architecture comparison, worktree isolation, and the build/review/response loop are available now.
 
 ## Installation
 
@@ -297,18 +298,18 @@ The intended bug workflow is:
 bug report
 → investigation
 → isolated builder worktree       )
-→ implementation                  )  available now — see "Build and review" above
-→ tests                           )
+→ implementation                  )
+→ tests                           )  available now — see "Build and review" above
 → independent review              )
 → findings                        )
-→ fixes or evidence-backed rejection  — planned
-→ re-review                           — planned
+→ fixes or evidence-backed rejection  )
+→ re-review                           )
 → human review
 ```
 
-You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, and confidence — this part already works today.
+You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, and confidence.
 
-Sending a finding back to the builder for an **Accepted**, **Rejected**, or **Partially accepted** response with evidence, and the reviewer rechecking fixed or disputed findings, are not implemented yet. When they are, the number of automatic re-review rounds will be a configurable setting rather than a fixed number, so it can be tuned per project instead of hardcoded; unresolved findings will stop after that limit and go to you. The system will never loop indefinitely.
+Sending a finding back to the builder for an **Accepted**, **Rejected**, or **Partially accepted** response with evidence, and the reviewer rechecking fixed or disputed findings, both work today — see "Sending findings back to the builder" under "Build and review" above. The number of automatic re-review rounds is a configurable per-build setting (default 3) rather than a fixed number, so it can be tuned per build instead of hardcoded; unresolved findings stop once that limit is reached and the workflow tells you to resolve them directly. The system never loops indefinitely on its own.
 
 ## Choosing models — planned
 
@@ -376,7 +377,8 @@ In **06 — Build**, choose independent builder and reviewer roles for a task an
 1. Select a task.
 2. Choose which provider builds and which reviews. The two must differ — one engineer is never asked to review its own work.
 3. Select which saved validation commands to run for this build; all are selected by default. A project with no saved validation commands skips straight to review.
-4. Select **Start build**.
+4. Set **Maximum review rounds** (default 3, 1-10). This is a per-build setting, not a fixed limit baked into the code — raise or lower it depending on how much back-and-forth you want to allow before a task needs your direct attention.
+5. Select **Start build**.
 
 What happens automatically:
 
@@ -387,7 +389,17 @@ What happens automatically:
 
 The build detail pane shows validation results, the diff that was reviewed, and every finding the reviewer raised. If the reviewer's response cannot be parsed into structured findings, the build is marked failed and the raw response is retained — nothing the reviewer said is silently dropped.
 
-This is one bounded pass. Sending findings back to the builder, an automatic re-review loop (capped at a configurable number of rounds), a human-approved merge with guarded automatic cleanup, and a pre-PR report are not implemented yet — see "Bug fixing — planned" below.
+### Sending findings back to the builder
+
+Once a build with open findings is **COMPLETED**, a **Send N open finding(s) to builder** button appears. Selecting it starts one review round:
+
+1. The builder receives each open finding and must respond to every one of them: **ACCEPTED** (with evidence and what it changed), **REJECTED** (with its reasoning), or **PARTIALLY_ACCEPTED**. It can edit the worktree again before responding.
+2. Validation re-runs (by default, the same commands as the previous round) and the diff is re-captured — this replaces the diff shown for the build with the latest snapshot; earlier rounds' diffs are not kept separately.
+3. The reviewer rechecks every finding it raised against the builder's response and the fresh diff, marking each **RESOLVED** or leaving it **OPEN** for another round, and may raise brand-new findings from the fresh diff.
+
+Each finding in the detail pane shows its round, current status (**OPEN** / **RESPONDED** / **RESOLVED**), the builder's verdict/evidence/action once it has responded, and the reviewer's recheck note once rechecked. The build heading shows **ROUND n / max**. Once a build reaches its configured maximum review rounds with findings still open, the **Send findings** button is replaced with a note telling you to resolve them directly — the workflow never keeps looping on its own.
+
+A human-approved merge with guarded automatic cleanup and a pre-PR report are not implemented yet — see "Bug fixing — planned" below.
 
 ## Usage safety
 
@@ -459,9 +471,9 @@ Read the exact command, exit code, stdout, and stderr. A failing command is reco
 
 The agent continues with local evidence when possible. If external information is essential, the run should stop with a clear blocked reason. Change the task's web policy only if you decide the additional access is appropriate.
 
-### Review loop reached three rounds — planned
+### Review loop reached its maximum rounds
 
-Automatic debate stops. Unresolved findings appear in the pre-PR report for you to decide. You can accept the risk, request a targeted human or AI investigation, change requirements, or send the task back for another explicitly started workflow.
+Once `reviewRound` reaches a build's configured `maxReviewRounds`, **Send findings to builder** is replaced with a note asking you to resolve the remaining findings directly — the workflow never starts another round on its own. Read the still-open findings' descriptions, evidence, and (if a round was attempted) the builder's and reviewer's own notes on them. You can accept the risk, fix it yourself, or start a fresh build with a higher `maxReviewRounds` if you want to allow more automatic back-and-forth. A pre-PR report summarizing unresolved findings for this decision is not implemented yet — see "Bug fixing — planned" above.
 
 ### Application will not start
 

@@ -146,13 +146,14 @@ type ManagedWorktree = {
   inspectionError: string | null;
 };
 
-type BuildRunStatus = "BUILDING" | "VALIDATING" | "REVIEWING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
+type BuildRunStatus = "BUILDING" | "VALIDATING" | "REVIEWING" | "RESPONDING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 type ValidationRunStatus = "PASSED" | "FAILED" | "ERROR";
 type FindingSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 type FindingCategory =
   | "CORRECTNESS" | "RACE_CONDITION" | "SECURITY" | "DATA_INTEGRITY" | "PERFORMANCE"
   | "TESTING" | "MAINTAINABILITY" | "MIGRATION" | "COMPATIBILITY";
 type FindingConfidence = "LOW" | "MEDIUM" | "HIGH";
+type FindingVerdict = "ACCEPTED" | "REJECTED" | "PARTIALLY_ACCEPTED";
 type ValidationRunRow = {
   id: string;
   commandId: string;
@@ -167,6 +168,7 @@ type ValidationRunRow = {
 type ReviewFinding = {
   id: string;
   ordinal: number;
+  round: number;
   severity: FindingSeverity;
   category: FindingCategory;
   file: string | null;
@@ -179,7 +181,11 @@ type ReviewFinding = {
   suggestedFix: string | null;
   suggestedTest: string | null;
   confidence: FindingConfidence;
-  status: "OPEN";
+  status: "OPEN" | "RESPONDED" | "RESOLVED";
+  builderVerdict: FindingVerdict | null;
+  builderEvidence: string | null;
+  builderAction: string | null;
+  reviewerRecheckNote: string | null;
 };
 type BuildRun = {
   id: string;
@@ -190,6 +196,8 @@ type BuildRun = {
   status: BuildRunStatus;
   diffUnstaged: string | null;
   diffStaged: string | null;
+  reviewRound: number;
+  maxReviewRounds: number;
   errorMessage: string | null;
   createdAt: string;
   builderRun: AgentRun | null;
@@ -301,12 +309,14 @@ const worktreeDrafts = reactive<Record<AgentProvider, { path: string; branchName
 const selectedBuildTaskId = ref("");
 const buildBuilderProvider = ref<AgentProvider>("CLAUDE");
 const buildReviewerProvider = ref<AgentProvider>("CODEX");
+const buildMaxReviewRounds = ref(3);
 const buildValidationSelection = reactive<Record<string, boolean>>({});
 const builds = ref<BuildRun[]>([]);
 const buildsLoading = ref(false);
 const buildError = ref("");
 const buildMessage = ref("");
 const startingBuild = ref(false);
+const respondingToFindings = ref(false);
 const selectedBuild = ref<BuildRun | null>(null);
 let buildPollTimer: number | null = null;
 
@@ -759,7 +769,7 @@ async function selectBuild(buildRunId: string) {
 
 function scheduleBuildRefresh() {
   if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
-  if (!selectedBuild.value || !["BUILDING", "VALIDATING", "REVIEWING"].includes(selectedBuild.value.status)) return;
+  if (!selectedBuild.value || !["BUILDING", "VALIDATING", "REVIEWING", "RESPONDING"].includes(selectedBuild.value.status)) return;
   buildPollTimer = window.setTimeout(async () => {
     if (selectedBuild.value) await selectBuild(selectedBuild.value.id);
   }, 1500);
@@ -779,6 +789,7 @@ async function startBuild() {
         builderProvider: buildBuilderProvider.value,
         reviewerProvider: buildReviewerProvider.value,
         validationCommandIds,
+        maxReviewRounds: buildMaxReviewRounds.value,
       }),
     });
     const result = await response.json();
@@ -805,6 +816,32 @@ function findingSeverityCounts(build: BuildRun) {
   const counts: Record<FindingSeverity, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
   for (const finding of build.findings) counts[finding.severity] += 1;
   return counts;
+}
+
+function openFindingsCount(build: BuildRun) {
+  return build.findings.filter((finding) => finding.status === "OPEN").length;
+}
+
+function canRespondToFindings(build: BuildRun) {
+  return build.status === "COMPLETED" && openFindingsCount(build) > 0 && build.reviewRound < build.maxReviewRounds;
+}
+
+async function respondToFindings() {
+  if (!selectedBuild.value) return;
+  respondingToFindings.value = true;
+  buildError.value = "";
+  buildMessage.value = "";
+  try {
+    const response = await fetch(`/api/builds/${selectedBuild.value.id}/respond`, { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not start a review-response round.");
+    buildMessage.value = "Sending the open findings back to the builder, then the reviewer will recheck them.";
+    await selectBuild(selectedBuild.value.id);
+  } catch (error) {
+    buildError.value = error instanceof Error ? error.message : "Could not start a review-response round.";
+  } finally {
+    respondingToFindings.value = false;
+  }
 }
 
 async function selectTask(taskId: string) {
@@ -1968,7 +2005,7 @@ onUnmounted(() => {
             <h2 id="build-heading">Let Claude build, and Codex review, without editing each other's work.</h2>
             <p>Choose independent builder and reviewer roles. The reviewer never touches the builder's worktree.</p>
           </div>
-          <span class="safety-badge">WORKTREE-SCOPED WRITE · ONE REVIEW ROUND</span>
+          <span class="safety-badge">WORKTREE-SCOPED WRITE · CONFIGURABLE REVIEW ROUNDS</span>
         </div>
 
         <div class="worktree-task-picker">
@@ -2007,6 +2044,10 @@ onUnmounted(() => {
                 <option value="CODEX" :disabled="buildBuilderProvider === 'CODEX'">Codex</option>
               </select>
             </label>
+            <label>
+              <span>Maximum review rounds</span>
+              <input v-model.number="buildMaxReviewRounds" type="number" min="1" max="10" :disabled="buildHasNonTerminalRun" />
+            </label>
             <div v-if="(projectForTask(selectedBuildTaskId)?.validationCommands.length ?? 0) > 0" class="check-row-group">
               <span>Validation commands</span>
               <label v-for="command in projectForTask(selectedBuildTaskId)?.validationCommands" :key="command.id" class="check-row">
@@ -2036,11 +2077,11 @@ onUnmounted(() => {
         <div v-if="selectedBuild" class="worktree-inspector">
           <div class="worktree-inspector-heading">
             <div>
-              <span>{{ selectedBuild.builderProvider }} BUILDS · {{ selectedBuild.reviewerProvider }} REVIEWS</span>
+              <span>{{ selectedBuild.builderProvider }} BUILDS · {{ selectedBuild.reviewerProvider }} REVIEWS · ROUND {{ selectedBuild.reviewRound }} / {{ selectedBuild.maxReviewRounds }}</span>
               <h3>{{ selectedBuild.status }}</h3>
             </div>
             <button
-              v-if="['BUILDING', 'VALIDATING', 'REVIEWING', 'CHECKPOINTED'].includes(selectedBuild.status)"
+              v-if="['BUILDING', 'VALIDATING', 'REVIEWING', 'RESPONDING', 'CHECKPOINTED'].includes(selectedBuild.status)"
               class="danger-outline-button" type="button" @click="cancelBuild"
             >Cancel</button>
           </div>
@@ -2080,16 +2121,30 @@ onUnmounted(() => {
             <ul v-else class="finding-list">
               <li v-for="finding in selectedBuild.findings" :key="finding.id" :class="['finding-item', finding.severity.toLowerCase()]">
                 <header>
-                  <span>{{ finding.severity }} · {{ finding.category }}</span>
+                  <span>{{ finding.severity }} · {{ finding.category }} · round {{ finding.round }}</span>
                   <strong>{{ finding.title }}</strong>
                   <span v-if="finding.file">{{ finding.file }}<template v-if="finding.startLine">:{{ finding.startLine }}</template></span>
+                  <span :class="['finding-status', finding.status.toLowerCase()]">{{ finding.status }}</span>
                 </header>
                 <p>{{ finding.description }}</p>
                 <p class="form-hint">Evidence: {{ finding.evidence }}</p>
                 <p class="form-hint">Impact: {{ finding.impact }}</p>
                 <p v-if="finding.suggestedFix" class="form-hint">Suggested fix: {{ finding.suggestedFix }}</p>
+                <template v-if="finding.builderVerdict">
+                  <p class="form-hint">Builder verdict: {{ finding.builderVerdict }} — {{ finding.builderEvidence }}</p>
+                  <p class="form-hint">Builder action: {{ finding.builderAction }}</p>
+                </template>
+                <p v-if="finding.reviewerRecheckNote" class="form-hint">Reviewer recheck: {{ finding.reviewerRecheckNote }}</p>
               </li>
             </ul>
+            <button
+              v-if="canRespondToFindings(selectedBuild)"
+              class="primary-button" type="button" :disabled="respondingToFindings" @click="respondToFindings"
+            >{{ respondingToFindings ? "Sending…" : `Send ${openFindingsCount(selectedBuild)} open finding(s) to builder` }}</button>
+            <p
+              v-else-if="selectedBuild.status === 'COMPLETED' && openFindingsCount(selectedBuild) > 0 && selectedBuild.reviewRound >= selectedBuild.maxReviewRounds"
+              class="form-hint"
+            >This build has reached its maximum of {{ selectedBuild.maxReviewRounds }} review round(s); resolve the remaining findings directly.</p>
           </div>
         </div>
       </section>

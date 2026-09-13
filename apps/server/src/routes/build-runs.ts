@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentAdapter, AgentProvider } from "@aiew/agents";
 import { WorktreeService } from "@aiew/git";
 import type { FastifyInstance } from "fastify";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
   agentRuns,
@@ -29,9 +29,20 @@ type StartBuildBody = {
   claudeEffort?: unknown;
   timeoutMs?: unknown;
   validationTimeoutMs?: unknown;
+  maxReviewRounds?: unknown;
 };
 
-const NON_TERMINAL_BUILD_STATUSES: readonly string[] = ["BUILDING", "VALIDATING", "REVIEWING", "CHECKPOINTED"];
+type RespondBody = {
+  validationCommandIds?: unknown;
+  claudeModel?: unknown;
+  codexModel?: unknown;
+  claudeEffort?: unknown;
+  timeoutMs?: unknown;
+  validationTimeoutMs?: unknown;
+};
+
+const NON_TERMINAL_BUILD_STATUSES: readonly string[] = ["BUILDING", "VALIDATING", "REVIEWING", "RESPONDING", "CHECKPOINTED"];
+const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 
 function agentProvider(input: unknown): AgentProvider | null {
   return input === "CLAUDE" || input === "CODEX" ? input : null;
@@ -111,6 +122,12 @@ export function registerBuildRoutes(
     if (!Number.isFinite(validationTimeoutMs) || validationTimeoutMs < 1_000 || validationTimeoutMs > 3_600_000) {
       return reply.code(400).send({ message: "Validation timeout must be between 1 second and 1 hour." });
     }
+    // Deliberately a per-build setting rather than a hardcoded constant (PROJECT_SPEC.md §23 names
+    // 3 as the default, not a fixed ceiling) — a human can raise or lower it per build at start time.
+    const maxReviewRounds = typeof request.body?.maxReviewRounds === "number" ? request.body.maxReviewRounds : DEFAULT_MAX_REVIEW_ROUNDS;
+    if (!Number.isInteger(maxReviewRounds) || maxReviewRounds < 1 || maxReviewRounds > 10) {
+      return reply.code(400).send({ message: "maxReviewRounds must be an integer between 1 and 10." });
+    }
 
     const providersToCheck = [builderProvider, reviewerProvider] as const;
     const readiness = await Promise.all(providersToCheck.map(async (checkedProvider) => {
@@ -144,7 +161,8 @@ export function registerBuildRoutes(
     const build: BuildRunRecord = {
       id: randomUUID(), taskId: task.id, projectId: project.id, builderProvider, reviewerProvider,
       worktreeId: worktree.id, builderRunId: null, reviewerRunId: null, status: "BUILDING",
-      diffUnstaged: null, diffStaged: null, errorMessage: null, createdAt: now, updatedAt: now,
+      diffUnstaged: null, diffStaged: null, reviewRound: 1, maxReviewRounds, errorMessage: null,
+      createdAt: now, updatedAt: now,
     };
     db.insert(buildRuns).values(build).run();
     void workflow.start(build.id, {
@@ -174,6 +192,56 @@ export function registerBuildRoutes(
       return reply.code(404).send({ message: "Build not found." });
     }
     return db.select().from(reviewFindings).where(eq(reviewFindings.buildRunId, request.params.id)).orderBy(asc(reviewFindings.ordinal)).all();
+  });
+
+  app.post<{ Params: { id: string }; Body: RespondBody }>("/api/builds/:id/respond", async (request, reply) => {
+    const build = db.select().from(buildRuns).where(eq(buildRuns.id, request.params.id)).get();
+    if (!build) return reply.code(404).send({ message: "Build not found." });
+    if (build.status !== "COMPLETED") return reply.code(409).send({ message: "Only a completed build can start a review-response round." });
+    const openFindingsCount = db.select({ id: reviewFindings.id }).from(reviewFindings)
+      .where(and(eq(reviewFindings.buildRunId, build.id), eq(reviewFindings.status, "OPEN"))).all().length;
+    if (!openFindingsCount) return reply.code(409).send({ message: "There are no open findings to respond to." });
+    if (build.reviewRound >= build.maxReviewRounds) {
+      return reply.code(409).send({
+        message: `This build has reached its maximum of ${build.maxReviewRounds} review round(s). Resolve the remaining findings directly, or start a new build if a human wants to allow more rounds.`,
+      });
+    }
+
+    const timeoutMs = typeof request.body?.timeoutMs === "number" ? request.body.timeoutMs : 900_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 3_600_000) {
+      return reply.code(400).send({ message: "Timeout must be between 1 second and 1 hour." });
+    }
+    const validationTimeoutMs = typeof request.body?.validationTimeoutMs === "number" ? request.body.validationTimeoutMs : 600_000;
+    if (!Number.isFinite(validationTimeoutMs) || validationTimeoutMs < 1_000 || validationTimeoutMs > 3_600_000) {
+      return reply.code(400).send({ message: "Validation timeout must be between 1 second and 1 hour." });
+    }
+
+    const providersToCheck = [build.builderProvider, build.reviewerProvider] as const;
+    const readiness = await Promise.all(providersToCheck.map(async (checkedProvider) => {
+      const adapter = adapters.get(checkedProvider);
+      return [checkedProvider, adapter ? await adapter.healthCheck() : null] as const;
+    }));
+    const unavailable = readiness.filter(([, health]) => !health?.available || !health.authenticated);
+    if (unavailable.length) {
+      return reply.code(503).send({
+        message: `Both the builder and reviewer must be ready before any usage is spent. Not ready: ${unavailable.map(([checkedProvider]) => checkedProvider).join(", ")}.`,
+      });
+    }
+    const usageDecision = providersToCheck
+      .map((checkedProvider) => usageSafety.evaluate(checkedProvider, { combined: true }))
+      .find((decision) => !decision.allowed);
+    if (usageDecision) {
+      return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+
+    void workflow.respondToFindings(build.id, {
+      models: { CLAUDE: text(request.body?.claudeModel) ?? undefined, CODEX: text(request.body?.codexModel) ?? undefined },
+      claudeEffort: text(request.body?.claudeEffort) ?? undefined,
+      timeoutMs,
+      validationTimeoutMs,
+      validationCommandIds: stringArray(request.body?.validationCommandIds),
+    });
+    return reply.code(202).send({ message: "Sending open findings back to the builder.", buildRunId: build.id });
   });
 
   app.post<{ Params: { id: string } }>("/api/builds/:id/cancel", async (request, reply) => {

@@ -23,15 +23,36 @@ const VALID_FINDINGS = JSON.stringify({
   }],
 });
 
+// Round 1's single finding always lands at ordinal 0 (BuildReviewWorkflow.storeFindings indexes
+// from the array position), so a response/recheck round refers back to it as ordinal 0.
+const VALID_RESPONSE = JSON.stringify({
+  responses: [{ ordinal: 0, verdict: "ACCEPTED", evidence: "Added a docstring to feature.txt.", action: "Added a comment above the file contents." }],
+});
+const VALID_RECHECK_RESOLVED = JSON.stringify({
+  recheckedFindings: [{ ordinal: 0, resolved: true, note: "The docstring is present in the new diff." }],
+  newFindings: [],
+});
+const VALID_RECHECK_REOPENED_WITH_NEW_FINDING = JSON.stringify({
+  recheckedFindings: [{ ordinal: 0, resolved: false, note: "The docstring is still missing." }],
+  newFindings: [{
+    severity: "LOW", category: "MAINTAINABILITY", file: "feature.txt", startLine: null, endLine: null,
+    title: "Consider a trailing newline", description: "The file lacks a trailing newline.",
+    evidence: "feature.txt", impact: "Minor style nit.", suggestedFix: null, suggestedTest: null, confidence: "LOW",
+  }],
+});
+
 /**
  * A fake adapter that actually writes a file into input.cwd when playing the builder role (proving
  * it respects WORKTREE_WRITE scoping the same way a real CLI would), and returns findings JSON when
- * playing the reviewer role — never writing anything in that role.
+ * playing the reviewer role — never writing anything in that role. Also handles a finding-response
+ * round: build-response:v1 (builder, WORKTREE_WRITE) and code-review-recheck:v1 (reviewer, READ_ONLY).
  */
 class FakeBuildAdapter implements AgentAdapter {
   constructor(
     readonly name: AgentProvider,
-    private readonly options: { reviewerOutput?: string; builderDelayMs?: number } = {},
+    private readonly options: {
+      reviewerOutput?: string; builderDelayMs?: number; responseOutput?: string; recheckOutput?: string;
+    } = {},
   ) {}
 
   async healthCheck(): Promise<AgentHealth> {
@@ -52,6 +73,13 @@ class FakeBuildAdapter implements AgentAdapter {
     } else if (input.promptVersion === "code-review:v1") {
       if (input.permissionProfile !== "READ_ONLY") throw new Error("Reviewer must run READ_ONLY.");
       yield { type: "stdout", runId: input.runId, occurredAt, chunk: this.options.reviewerOutput ?? VALID_FINDINGS };
+    } else if (input.promptVersion === "build-response:v1") {
+      if (input.permissionProfile !== "WORKTREE_WRITE") throw new Error("Builder must run WORKTREE_WRITE.");
+      await writeFile(join(input.cwd, "feature.txt"), "built by the fake builder\n// a docstring\n", "utf8");
+      yield { type: "stdout", runId: input.runId, occurredAt, chunk: this.options.responseOutput ?? VALID_RESPONSE };
+    } else if (input.promptVersion === "code-review-recheck:v1") {
+      if (input.permissionProfile !== "READ_ONLY") throw new Error("Reviewer must run READ_ONLY.");
+      yield { type: "stdout", runId: input.runId, occurredAt, chunk: this.options.recheckOutput ?? VALID_RECHECK_RESOLVED };
     }
     yield {
       type: "completed", runId: input.runId, occurredAt, exitCode: 0,
@@ -112,6 +140,22 @@ async function pollUntilTerminal(app: ReturnType<typeof buildApp>, buildRunId: s
     if (["COMPLETED", "FAILED", "CANCELLED", "CHECKPOINTED"].includes(build.status)) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  return build;
+}
+
+/** Round 1 only: a completed build with exactly VALID_FINDINGS' single OPEN finding at ordinal 0. */
+async function startCompletedBuild(app: ReturnType<typeof buildApp>, body: Record<string, unknown> = {}) {
+  await acknowledgeUnknownUsage(app);
+  const { task } = await createTaskAndProject(app, []);
+  const startResponse = await app.inject({
+    method: "POST", url: `/api/tasks/${task.id}/builds`,
+    payload: { builderProvider: "CLAUDE", reviewerProvider: "CODEX", ...body },
+  });
+  expect(startResponse.statusCode).toBe(202);
+  const build = await pollUntilTerminal(app, startResponse.json().buildRunId);
+  expect(build.status).toBe("COMPLETED");
+  expect(build.findings).toHaveLength(1);
+  expect(build.findings[0]).toMatchObject({ ordinal: 0, status: "OPEN" });
   return build;
 }
 
@@ -215,5 +259,139 @@ describe("build routes", () => {
     expect(build.reviewArtifact.rawOutput).toContain("not json at all");
     expect(build.reviewArtifact.parseError).toBeTruthy();
     expect(build.reviewArtifact.structuredData).toBeNull();
+  });
+});
+
+describe("build finding-response and re-review rounds", () => {
+  it("sends the open finding back to the builder, resolves it on recheck, and advances the review round", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+    expect(build.reviewRound).toBe(1);
+    expect(build.maxReviewRounds).toBe(3);
+
+    const respondResponse = await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    expect(respondResponse.statusCode).toBe(202);
+    const finalBuild = await pollUntilTerminal(app, build.id);
+
+    expect(finalBuild.status).toBe("COMPLETED");
+    expect(finalBuild.reviewRound).toBe(2);
+    expect(finalBuild.findings).toHaveLength(1);
+    expect(finalBuild.findings[0]).toMatchObject({
+      status: "RESOLVED", builderVerdict: "ACCEPTED",
+      builderEvidence: "Added a docstring to feature.txt.", builderAction: "Added a comment above the file contents.",
+      reviewerRecheckNote: "The docstring is present in the new diff.",
+    });
+    expect(finalBuild.findings[0].respondedAt).toBeTruthy();
+    // The diff snapshot was refreshed to the round-2 change, not left at round 1's.
+    expect(finalBuild.diffStaged + finalBuild.diffUnstaged).toContain("a docstring");
+  });
+
+  it("reopens a still-unresolved finding and appends a new one raised during the recheck", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX", { recheckOutput: VALID_RECHECK_REOPENED_WITH_NEW_FINDING })],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    const finalBuild = await pollUntilTerminal(app, build.id);
+
+    expect(finalBuild.status).toBe("COMPLETED");
+    expect(finalBuild.findings).toHaveLength(2);
+    const [original, added] = finalBuild.findings;
+    expect(original).toMatchObject({ ordinal: 0, status: "OPEN", builderVerdict: "ACCEPTED", reviewerRecheckNote: "The docstring is still missing." });
+    expect(added).toMatchObject({ ordinal: 1, status: "OPEN", title: "Consider a trailing newline" });
+  });
+
+  it("refuses a response round when there are no open findings", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX", { reviewerOutput: JSON.stringify({ findings: [] }) })],
+    });
+    apps.push(app);
+    await acknowledgeUnknownUsage(app);
+    const { task } = await createTaskAndProject(app, []);
+    const startResponse = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/builds`, payload: { builderProvider: "CLAUDE", reviewerProvider: "CODEX" },
+    });
+    const build = await pollUntilTerminal(app, startResponse.json().buildRunId);
+    expect(build.findings).toEqual([]);
+
+    const respondResponse = await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    expect(respondResponse.statusCode).toBe(409);
+    expect(respondResponse.json().message).toContain("no open findings");
+  });
+
+  it("refuses a response round once the build's configured maximum review rounds is reached", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app, { maxReviewRounds: 1 });
+
+    const respondResponse = await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    expect(respondResponse.statusCode).toBe(409);
+    expect(respondResponse.json().message).toContain("maximum of 1 review round");
+
+    // Nothing about the finding or the round changed.
+    const unchanged = (await app.inject({ method: "GET", url: `/api/builds/${build.id}` })).json();
+    expect(unchanged.reviewRound).toBe(1);
+    expect(unchanged.findings[0].status).toBe("OPEN");
+  });
+
+  it("fails cleanly, without losing the finding, when the builder's response cannot be parsed", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE", { responseOutput: "not json at all" }), new FakeBuildAdapter("CODEX")],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    const finalBuild = await pollUntilTerminal(app, build.id);
+
+    expect(finalBuild.status).toBe("FAILED");
+    expect(finalBuild.errorMessage).toContain("could not be parsed");
+    // The finding itself is untouched — still exactly as round 1 left it, not silently dropped.
+    expect(finalBuild.findings[0]).toMatchObject({ status: "OPEN", builderVerdict: null });
+  });
+
+  it("fails cleanly, keeping the builder's recorded response, when the reviewer's recheck cannot be parsed", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX", { recheckOutput: "not json at all" })],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    const finalBuild = await pollUntilTerminal(app, build.id);
+
+    expect(finalBuild.status).toBe("FAILED");
+    expect(finalBuild.errorMessage).toContain("could not be parsed");
+    // The builder's response was already durably recorded before the reviewer's recheck failed.
+    expect(finalBuild.findings[0]).toMatchObject({ status: "RESPONDED", builderVerdict: "ACCEPTED" });
+  });
+
+  it("rejects a response round on a build that isn't COMPLETED", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBuildAdapter("CLAUDE", { builderDelayMs: 200 }), new FakeBuildAdapter("CODEX")],
+    });
+    apps.push(app);
+    await acknowledgeUnknownUsage(app);
+    const { task } = await createTaskAndProject(app, []);
+    const startResponse = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/builds`, payload: { builderProvider: "CLAUDE", reviewerProvider: "CODEX" },
+    });
+    const respondResponse = await app.inject({ method: "POST", url: `/api/builds/${startResponse.json().buildRunId}/respond` });
+    expect(respondResponse.statusCode).toBe(409);
+    expect(respondResponse.json().message).toContain("Only a completed build");
   });
 });

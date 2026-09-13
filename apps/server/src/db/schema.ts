@@ -165,7 +165,8 @@ export type FindingCategory =
   | "MIGRATION"
   | "COMPATIBILITY";
 export type FindingConfidence = "LOW" | "MEDIUM" | "HIGH";
-export type FindingStatus = "OPEN";
+export type FindingStatus = "OPEN" | "RESPONDED" | "RESOLVED";
+export type FindingVerdict = "ACCEPTED" | "REJECTED" | "PARTIALLY_ACCEPTED";
 
 export type ParsedFinding = {
   severity: FindingSeverity;
@@ -184,14 +185,26 @@ export type ParsedFinding = {
 
 export type ReviewFindingsArtifact = { findings: ParsedFinding[] };
 
+/** A builder's per-finding reply to a round of review findings; see BuildReviewWorkflow.respondToFindings. */
+export type FindingResponseArtifact = {
+  responses: { ordinal: number; verdict: FindingVerdict; evidence: string; action: string }[];
+};
+
+/** A reviewer's recheck of a prior round's findings, plus any new findings from the fresh diff. */
+export type ReviewRecheckArtifact = {
+  recheckedFindings: { ordinal: number; resolved: boolean; note: string }[];
+  newFindings: ParsedFinding[];
+};
+
 export const taskArtifacts = sqliteTable("task_artifacts", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
-  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS"] }).notNull(),
+  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK"] }).notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
-  structuredData: text("structured_data", { mode: "json" }).$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact>(),
+  structuredData: text("structured_data", { mode: "json" })
+    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact>(),
   rawOutput: text("raw_output").notNull(),
   parseError: text("parse_error"),
   createdAt: text("created_at").notNull(),
@@ -289,6 +302,7 @@ export type BuildRunStatus =
   | "BUILDING"
   | "VALIDATING"
   | "REVIEWING"
+  | "RESPONDING"
   | "COMPLETED"
   | "FAILED"
   | "CANCELLED"
@@ -308,11 +322,18 @@ export const buildRuns = sqliteTable("build_runs", {
   worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   builderRunId: text("builder_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
   reviewerRunId: text("reviewer_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
-  status: text("status", { enum: ["BUILDING", "VALIDATING", "REVIEWING", "COMPLETED", "FAILED", "CANCELLED", "CHECKPOINTED"] }).notNull(),
+  status: text("status", { enum: ["BUILDING", "VALIDATING", "REVIEWING", "RESPONDING", "COMPLETED", "FAILED", "CANCELLED", "CHECKPOINTED"] }).notNull(),
   // Captured once, right after validation, so the UI always shows exactly what the reviewer saw
-  // rather than a live re-diff that could drift if the worktree is touched afterward.
+  // rather than a live re-diff that could drift if the worktree is touched afterward. A re-review
+  // round (see respondToFindings) intentionally overwrites this with the new snapshot; the diff
+  // history of earlier rounds is not separately retained — a known limitation, not an oversight.
   diffUnstaged: text("diff_unstaged"),
   diffStaged: text("diff_staged"),
+  // Round 1 is the initial build+review. respondToFindings increments this before starting the
+  // next round. maxReviewRounds is set once at build-start time (default 3, see PROJECT_SPEC.md
+  // §23) rather than hardcoded, so a human can raise or lower it per build without a code change.
+  reviewRound: integer("review_round").notNull().default(1),
+  maxReviewRounds: integer("max_review_rounds").notNull().default(3),
   errorMessage: text("error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -344,13 +365,15 @@ export type ValidationRunRecord = typeof validationRuns.$inferSelect;
 /**
  * One row per structured finding a reviewer returned (see ParsedFinding above for the same shape).
  * `id` and `status` are always server-assigned; a model's own id/status in its JSON output is
- * discarded, never trusted, since the only legitimate future writer of status is a human/builder
- * response (a later slice).
+ * discarded, never trusted. `round` records which review round first raised the finding; the
+ * builder* / reviewerRecheckNote columns are populated only once a re-review round processes it
+ * (see BuildReviewWorkflow.respondToFindings) and stay null on a finding still awaiting a response.
  */
 export const reviewFindings = sqliteTable("review_findings", {
   id: text("id").primaryKey(),
   buildRunId: text("build_run_id").notNull().references(() => buildRuns.id, { onDelete: "cascade" }),
   reviewerRunId: text("reviewer_run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  round: integer("round").notNull().default(1),
   ordinal: integer("ordinal").notNull(),
   severity: text("severity", { enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] }).notNull(),
   category: text("category", {
@@ -376,7 +399,12 @@ export const reviewFindings = sqliteTable("review_findings", {
   suggestedFix: text("suggested_fix"),
   suggestedTest: text("suggested_test"),
   confidence: text("confidence", { enum: ["LOW", "MEDIUM", "HIGH"] }).notNull(),
-  status: text("status", { enum: ["OPEN"] }).notNull().default("OPEN"),
+  status: text("status", { enum: ["OPEN", "RESPONDED", "RESOLVED"] }).notNull().default("OPEN"),
+  builderVerdict: text("builder_verdict", { enum: ["ACCEPTED", "REJECTED", "PARTIALLY_ACCEPTED"] }),
+  builderEvidence: text("builder_evidence"),
+  builderAction: text("builder_action"),
+  respondedAt: text("responded_at"),
+  reviewerRecheckNote: text("reviewer_recheck_note"),
   createdAt: text("created_at").notNull(),
 }, (table) => [index("review_findings_build_idx").on(table.buildRunId, table.ordinal)]);
 

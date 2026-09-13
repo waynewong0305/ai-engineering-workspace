@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and a first Phase 5 slice: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, one-time diff capture, and a `READ_ONLY` reviewer run producing structured findings. It does not yet implement the finding-response/re-review loop, human-approved merge, guarded auto-cleanup, or the pre-PR report — see Phase 5 below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and Phase 5's builder/validate/review loop through its second slice: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, and now a human-triggered finding-response/re-review round (builder responds ACCEPTED/REJECTED/PARTIALLY_ACCEPTED with evidence, the reviewer rechecks and may raise new findings) capped by a per-build, human-configurable maximum round count. It does not yet implement human-approved merge, guarded auto-cleanup, or the pre-PR report — see Phase 5 below.
 
 ## LLM agent policy
 
@@ -167,9 +167,12 @@ Completion record:
 - [x] Validation execution
 - [x] Diff viewer
 - [x] Structured findings
-- [ ] Finding response
-- [ ] Re-review
-- [ ] Maximum three rounds
+- [x] Finding response
+- [x] Re-review
+- [x] Maximum review rounds (configurable per build, default 3 — see slice 2 record; not yet a global setting)
+- [ ] Human-approved merge into the target branch
+- [ ] Post-merge validation before cleanup
+- [ ] Guarded automatic worktree removal / `Keep worktree after merge` / merged-branch deletion policy
 - [ ] Pre-PR report
 
 ### Phase 5, slice 1 completion record
@@ -257,6 +260,68 @@ Completion record:
   `end-to-end-workflow.test.ts` (per its own prior note) adding a build/review pass that reuses an
   already-created worktree, asserts findings are reachable via the API, and confirms the builder's
   leftover uncommitted change correctly blocks worktree removal until committed.
+
+### Phase 5, slice 2 completion record
+
+- Date: 2026-09-13
+- Scope: `PROJECT_SPEC.md` §23 (review response) — a human-triggered round that sends a build's
+  open findings back to the builder, records its per-finding `ACCEPTED`/`REJECTED`/
+  `PARTIALLY_ACCEPTED` verdict with evidence and action, re-runs validation and re-snapshots the
+  diff, then has the reviewer recheck each finding (resolved or still open) and raise any new
+  findings from the fresh diff — capped by a per-build maximum round count. Deliberately out of
+  scope, tracked as unchecked above: human-approved merge, post-merge validation, guarded
+  auto-cleanup, `Keep worktree after merge`, merged-branch deletion policy, and the pre-PR report.
+- Schema: `build_runs` gained `reviewRound` (starts at 1, incremented by each response round) and
+  `maxReviewRounds` (set once at build-start time, default 3, range 1-10 — deliberately a per-build
+  setting rather than a hardcoded constant, per the standing feedback that the round cap must be
+  configurable, not hardcoded). `review_findings` gained `round`, `builderVerdict`, `builderEvidence`,
+  `builderAction`, `respondedAt`, `reviewerRecheckNote`, and widened `status` from a single `OPEN`
+  value to `OPEN | RESPONDED | RESOLVED`. `build_runs.status` gained `RESPONDING`. `task_artifacts.kind`
+  gained `FINDING_RESPONSE` and `REVIEW_RECHECK`. All additive (`ALTER TABLE ... ADD COLUMN`);
+  `npm run db:generate` confirms no destructive change and the `kind`/`status` enum widenings needed
+  no migration (TypeScript-level only, as with every prior enum addition in this project).
+- `apps/server/src/services/build-review-workflow.ts`: new `respondToFindings` entry point and a
+  `respondPipeline` mirroring the original build/validate/review pipeline's shape — builder response
+  run (new `build-response:v1` prompt, `prompts/builder-response.md`) → validation (re-run against
+  the same command set as the prior round by default, via a new `previousValidationCommandIds`
+  lookup) → diff re-snapshot (intentionally overwrites the prior round's diff; per-round diff history
+  is not separately retained, a known limitation) → reviewer recheck run (new
+  `code-review-recheck:v1` prompt, `prompts/code-reviewer-recheck.md`). Both new structured-output
+  parses (`parseFindingResponses`, `parseRecheck`) are all-or-nothing like the existing finding parser
+  and additionally assert the response/recheck covers *exactly* the findings it was asked about
+  (`assertExactOrdinals`) — a missing or invented ordinal fails the whole round rather than silently
+  dropping a finding's disposition.
+- Known limitation, deliberately scoped out rather than overlooked: a usage-safety checkpoint during
+  the *original* build/validate/review pipeline (round 1) remains resumable via the existing
+  `/builds/:id/resume` endpoint as before. A checkpoint during a later response round is not — since
+  round 1's diff-nullability trick that `resume()` uses to infer which phase to resume from no longer
+  works once a diff already exists from an earlier round, `resume()` now explicitly refuses (fails
+  the build with a clear message) whenever `reviewRound > 1`, rather than silently resuming into the
+  wrong phase. Nothing already persisted for that round is lost; restarting currently requires a
+  fresh `/respond` call once usage allows, not `/resume`. Full mid-round checkpoint/resume is left for
+  a future slice.
+- UI (`apps/web/src/App.vue`): a "Maximum review rounds" number input (default 3) on the start-build
+  form; the build inspector heading now shows `ROUND {{reviewRound}} / {{maxReviewRounds}}`; each
+  finding shows its round, status (`OPEN`/`RESPONDED`/`RESOLVED`, color-coded), builder
+  verdict/evidence/action once responded, and the reviewer's recheck note once rechecked; a
+  "Send N open finding(s) to builder" button appears only when the build is `COMPLETED`, has at
+  least one `OPEN` finding, and hasn't reached its configured round cap, with an explanatory line
+  once the cap is reached instead. The stale "ONE REVIEW ROUND" badge from slice 1 is corrected to
+  "CONFIGURABLE REVIEW ROUNDS". Verified in the browser: the new field renders with its default,
+  the badge text updates, and no console errors — a real response round was deliberately not
+  triggered against the browser-visible registered project's task (no build existed for it yet, and
+  starting one would spend real provider usage); the full response/re-review cycle is instead proven
+  end-to-end with fake adapters in the automated test suite.
+- Tests executed: full workspace `npm test` (74 tests: 55 `apps/server` + 12 `packages/agents` + 7
+  `packages/git`, up from 67), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (reports the new migration only, confirms the enum widenings need none),
+  `npm run db:migrate` against the existing local database, `git diff --check` — all clean. New
+  coverage in `build-runs.test.ts` (7 new tests): a finding resolved on recheck with the round
+  advancing; a finding reopened plus a new finding raised on recheck; refusing a response round with
+  no open findings; refusing a response round once `maxReviewRounds` is reached (and confirming
+  nothing changed); failing cleanly (finding left untouched) when the builder's response can't be
+  parsed; failing cleanly (builder's response still recorded) when the reviewer's recheck can't be
+  parsed; and rejecting a response round on a build that isn't `COMPLETED`.
 
 ## Phase 6 — Planning and ADRs
 

@@ -443,6 +443,9 @@ legend small { margin-left: 8px; }
 .finding-item.critical, .finding-item.high { border-left-color: var(--danger); }
 .finding-item.medium { border-left-color: #ffcb6b; }
 .finding-item.low, .finding-item.info { border-left-color: var(--cyan); }
+.finding-item header .finding-status { margin-left: auto; font: 600 10px/1.3 ui-monospace, monospace; letter-spacing: 0.06em; color: var(--muted); }
+.finding-item header .finding-status.resolved { color: var(--lime); }
+.finding-item header .finding-status.responded { color: var(--cyan); }
 
 @keyframes pulse { to { background-position: -200% 0; } }
 
