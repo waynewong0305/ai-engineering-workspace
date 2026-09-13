@@ -184,6 +184,29 @@ safety is decided; do not add a second one.
   environment values. `.env`, `.env.*`, private keys, and cloud credential directories are never
   read automatically.
 
+## Frontend verification and agent-review approval
+
+- Deterministic local checks that do not call a model — configured frontend tests/builds and, once
+  implemented, supervised browser scenarios, console/network checks, accessibility scans, and
+  screenshot comparisons — may run as normal validation without a separate provider approval.
+- Before starting any Claude/Codex run whose purpose is to assess frontend UI/UX, or sending a
+  provider screenshots, rendered pages, DOM/accessibility output, or other browser evidence, stop
+  for a separate just-in-time human approval. Starting the build, allowing web access, or approving
+  an earlier code-review run does not satisfy this frontend-review approval.
+- The approval screen must name the provider and explain why agent review is being recommended,
+  which pages/scenarios and evidence will be shared, and that the run may consume provider usage.
+  Approval is scoped to the disclosed review run; broader or later frontend review needs another
+  approval.
+- Persist both approval and refusal with the displayed reason and scope. A refusal or unavailable
+  reviewer must produce an honest `HUMAN_REVIEW_REQUIRED`/`UI_REVIEW_SKIPPED` outcome, never a
+  fabricated `UI_VERIFIED` result. Automated findings may recommend an agent review but must never
+  start it automatically.
+- Conserve provider usage by default: do not recommend an agent UI/UX run when all configured
+  deterministic checks pass and approved baselines are unchanged unless the human explicitly asks
+  for one. Use one provider, send only affected pages/regions and concise failure excerpts, reuse
+  artifacts from the exact build revision, and require another explicit approval before consulting
+  a second provider or materially expanding the evidence scope.
+
 ## Prohibited automatic actions
 
 Never automate, in code or in your own actions while working in this repository: `git push`,

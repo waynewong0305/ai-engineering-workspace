@@ -1067,6 +1067,61 @@ status
 
 Agents must not claim a test passed unless the command actually returned successfully.
 
+## 24.1 Frontend verification and approval policy
+
+A successful type-check or production build does not prove that a frontend still renders or behaves
+correctly. For a project with frontend verification configured, the workspace should be able to run
+deterministic local checks inside the task worktree before human review:
+
+```text
+component and browser tests
+critical user scenarios
+desktop and mobile viewport checks
+console and failed-network-request capture
+accessibility scans
+approved-baseline screenshot comparison
+```
+
+These checks are validation processes, not agent runs, and may execute without separate model
+approval when their commands and scope were configured by the human. Browser execution must remain
+supervised, local, bounded, and isolated to the task worktree.
+
+Claude or Codex must not automatically inspect the rendered frontend or receive screenshots,
+rendered pages, DOM/accessibility output, or other browser evidence. Immediately before each such
+provider run, require an explicit human approval that displays:
+
+```text
+why an agent UI/UX review is recommended
+which provider will run
+which pages, scenarios, and evidence will be shared
+which automated failure or change triggered the recommendation
+that provider usage may be consumed
+```
+
+This is a separate just-in-time decision. Approval to start a build, approval for ordinary code
+review, a web-access decision, or a usage-safety acknowledgement must not be reused as approval for
+frontend agent review. The approval applies only to the disclosed run and scope, and the workspace
+must persist the displayed reason, scope, provider, decision, and timestamp.
+
+If the human declines, the workflow continues only as far as deterministic evidence permits and
+must report `UI_REVIEW_SKIPPED` or `HUMAN_REVIEW_REQUIRED`; it must never claim `UI_VERIFIED`.
+Automated checks may recommend provider review but must not launch it. A provider's visual opinion
+is advisory and never replaces final human UX judgment.
+
+Provider usage must be minimized:
+
+```text
+do not recommend agent review when deterministic checks pass and approved baselines are unchanged
+use one provider by default, not parallel duplicate reviews
+send only affected pages, changed screenshot regions, and concise relevant failure excerpts
+do not send full unchanged screenshot sets, complete logs, or unrelated DOM content
+reuse evidence captured for the exact build revision instead of regenerating or re-analyzing it
+require a new approval before adding a second provider or materially widening the evidence scope
+```
+
+If no reliable change-to-page mapping exists, say so in the approval reason rather than silently
+sending the entire application. The human may approve the broader scope or choose manual review.
+
 ---
 
 # 25. Pre-PR report

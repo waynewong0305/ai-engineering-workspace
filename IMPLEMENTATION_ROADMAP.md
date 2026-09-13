@@ -197,7 +197,14 @@ Goal: make normal failure safe and understandable.
 - [ ] SQLite backup/restore and migration recovery
 - [ ] Audit-history export
 - [ ] Startup recovery for interrupted runs
-- [ ] Accessibility and responsive UI audit
+- [ ] Supervised frontend verification runner (browser scenarios, console/network capture,
+      accessibility, responsive screenshots, and optional approved-baseline comparison)
+- [ ] Separate just-in-time human approval, with a displayed reason and persisted scope, before any
+      Claude/Codex frontend UI/UX review or disclosure of browser evidence to a provider
+- [ ] Token-efficient evidence selection: exception-only provider review, one-provider default,
+      affected-region/failure-excerpt inputs, exact-revision artifact reuse, and separate approval
+      before second-provider escalation or material scope expansion
+- [ ] Accessibility and responsive UI audit of this workspace itself
 
 Exit gate: documented failure drills preserve source code, history, and user control.
 

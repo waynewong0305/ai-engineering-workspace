@@ -433,6 +433,37 @@ Choose:
 
 You can disable web access at the task level before a run. A denied web request must remain visible in run history and cannot be bypassed silently.
 
+## Frontend verification — planned
+
+Today, a build can run the validation commands you configured for the project and an independent
+reviewer can inspect its code diff. The workspace does not yet open the changed application in a
+browser or show Claude/Codex rendered pages, screenshots, console failures, accessibility results,
+or responsive comparisons. A successful type-check or frontend build therefore does not guarantee
+that the UI still looks or behaves correctly; you must currently exercise consequential UI changes
+yourself before merging.
+
+The planned Phase 7 verifier will run configured browser scenarios, console/network checks,
+accessibility checks, and desktop/mobile screenshot comparisons locally inside the task worktree.
+Those deterministic checks do not call a model. If their results suggest that Claude or Codex
+should assess the UI/UX, the workspace will first ask you for a separate approval and show:
+
+- why agent review is recommended;
+- which provider will be used;
+- which pages, scenarios, and evidence will be shared; and
+- that the run may consume provider usage.
+
+Starting the build, allowing web access, or approving an ordinary code review will not count as
+approval for this visual review. If you decline, the result will say that agent UI review was
+skipped or that human review is required; it will not claim the UI was verified. Your judgment
+remains the final decision for subjective usability and design quality.
+
+To conserve tokens, the workspace will normally recommend no agent review when the configured
+checks pass and approved screenshots are unchanged. When review is warranted, it will use one
+provider and share only the affected pages or screenshot regions plus concise relevant failures.
+It will reuse evidence from that exact build rather than ask a model to inspect it repeatedly. Using
+the second provider or widening the review to substantially more pages/evidence requires another
+approval with a new reason.
+
 ## Git worktrees
 
 A Git worktree is another checked-out folder connected to the same repository history. It lets a branch have its own directory without copying the entire repository or disturbing your current checkout.

@@ -287,6 +287,29 @@ Integration tests should use temporary Git repositories and fake agent executabl
 
 Real Claude/Codex calls are manual acceptance tests. Automated tests must not require authentication, network access, or model credits.
 
+Frontend verification is currently limited to each registered project's configured validation
+commands. The workflow does not yet start a browser or give either provider rendered UI evidence.
+When the Phase 7 frontend verifier is implemented, keep deterministic execution in a supervised
+server-owned runner: start the configured preview inside the assigned worktree, wait on an explicit
+readiness condition, run bounded browser scenarios and responsive/accessibility checks, capture
+console/network failures and screenshot comparisons, then terminate the full preview/browser
+process tree. Do not add browser control directly to `AgentAdapter`.
+
+Provider-based UI/UX assessment is a distinct, provider-consuming stage. Before every such run,
+persist a just-in-time human decision tied to the exact provider, reason, pages/scenarios, evidence,
+and triggering automated result. Do not infer approval from the build start, ordinary reviewer run,
+task web-access policy, or usage-safety acknowledgement. A declined review remains visible as
+`UI_REVIEW_SKIPPED`/`HUMAN_REVIEW_REQUIRED`; only deterministic results that actually ran may be
+reported as passing, and neither automation nor a provider may replace final human UX approval.
+
+Treat provider context as an exception report, not a browser-session dump. If deterministic checks
+pass and approved baselines are unchanged, do not recommend a provider run unless the human asks.
+Otherwise select one provider and include only the mapped affected pages, changed image regions,
+compact accessibility/console/network failure excerpts, and the relevant acceptance criteria.
+Store and reuse those artifacts against the exact commit/diff identity. A second provider, full-app
+screenshot set, complete log, unrelated DOM snapshot, or other material scope expansion requires a
+new reason and a new approval; never broaden context silently when page-impact mapping is uncertain.
+
 The Phase 3 integration test uses paired fake Claude/Codex adapters and synchronization barriers to prove independent analyses and reciprocal reviews start in parallel, then verifies prompt versions, raw/structured artifacts, comparison, evidence, and the explicit web decision. Automated tests never spend provider credits.
 
 `apps/server/src/routes/end-to-end-workflow.test.ts` is different in kind from the rest: every other test above exercises one route or service in isolation, with fixtures seeded directly. This one drives the entire currently-implemented pipeline through the app's own HTTP API in one continuous run, in the order a real user follows it — register → health → draft → the usage-safety acknowledgement gate → independent analysis → cross-review → comparison/evidence → worktree creation → isolation → the deregistration-vs-linked-worktrees guard → cleanup — using a temporary repository and fake adapters. Extend this same test as later phases land rather than writing a second, separate end-to-end test; keep the per-phase integration tests above as the place for exhaustive edge cases.
