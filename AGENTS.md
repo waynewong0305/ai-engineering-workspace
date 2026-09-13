@@ -21,8 +21,8 @@ up-to-date record is **`IMPLEMENTATION_STATUS.md`**. Read it first. As of the ph
 recorded: project registration, agent adapters, independent brainstorming, Git worktree isolation,
 the cross-cutting Claude/Codex usage-safety system, build/review workflows inside worktrees (Phase
 5), and planning/ADRs/experiments/plan promotion (Phase 6) are implemented. Phase 7 hardening is in
-progress; process/environment and CLI-failure hardening are complete, while sensitive-path,
-worktree-conflict, cross-phase verification, and accessibility work remain. Recovery, database
+progress; process/environment, CLI-failure hardening, and cross-phase verification are complete,
+while sensitive-path, worktree-conflict, and accessibility work remain. Recovery, database
 backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost monitoring (Phase 8, spec in
 `USAGE_MONITORING_SPEC.md`) is queued behind Phase 7 — do not start it early without an explicit
 human instruction.

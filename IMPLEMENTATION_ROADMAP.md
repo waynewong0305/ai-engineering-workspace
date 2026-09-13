@@ -235,11 +235,11 @@ historical or current value is fabricated.
 
 ## End-to-end workflow verification (cross-cutting, added 2026-09-13)
 
-Not one of the phases above: a single integration test (`apps/server/src/routes/end-to-end-workflow.test.ts`) that drives every currently-implemented phase together through the app's own HTTP API, in the order a real user would — registration, health, brainstorm draft, the usage-safety acknowledgement gate, independent analysis, cross-review, comparison/evidence, worktree creation, isolation, the deregistration-vs-linked-worktrees guard, and cleanup — using a temporary repository and fake adapters, spending no real provider usage. See `IMPLEMENTATION_STATUS.md` for the full record.
+Not one of the phases above: a single integration test (`apps/server/src/routes/end-to-end-workflow.test.ts`) that drives every currently-implemented phase together through the app's own HTTP API, in the order a real user would — registration, health, brainstorm draft, the usage-safety acknowledgement gate, independent analysis, cross-review, comparison/evidence, worktree creation, isolation, a build/review round, an ADR, an isolated experiment, ADR promotion, the deregistration-vs-linked-worktrees guard, and cleanup — using a temporary repository and fake adapters, spending no real provider usage. See `IMPLEMENTATION_STATUS.md` for the full record.
 
-Exit gate: met through Phase 4. Phases 5 and 6 are complete but are covered by their own route and
-service integration tests rather than this single cross-phase test. Extend this same test (not a
-second one) during Phase 7 hardening to include the build/review and planning/ADR flows.
+Exit gate: met. The test now also covers the Phase 5 build/review loop and the Phase 6
+planning/ADR/experiment/promotion flow in the same continuous run, closing the Phase 7
+cross-phase-verification hardening item.
 
 ## Phase completion protocol
 

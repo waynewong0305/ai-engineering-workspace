@@ -63,6 +63,19 @@ class FakeAdapter implements AgentAdapter {
           }],
         }),
       };
+    } else if (input.promptVersion === "experiment-builder:v1") {
+      await writeFile(join(input.cwd, "shard-experiment.txt"), "sample tenants routed successfully\n", "utf8");
+      yield { type: "stdout", runId: input.runId, occurredAt, chunk: "Ran the minimal shard-routing experiment." };
+    } else if (input.promptVersion === "experiment-reviewer:v1") {
+      yield {
+        type: "stdout", runId: input.runId, occurredAt,
+        chunk: JSON.stringify({
+          verdict: "PROVEN",
+          reasoning: "The isolated diff contains the requested minimal routing experiment.",
+          result: "Sample tenants routed to the expected shards.",
+          conclusion: "The routing approach is feasible enough to record in an ADR.",
+        }),
+      };
     } else {
       const output = input.promptVersion.startsWith("brainstorm") ? analysisJson(this.name) : reviewJson(this.name);
       yield { type: "stdout", runId: input.runId, occurredAt, chunk: output };
@@ -92,7 +105,7 @@ async function createRepository() {
   return { repositoryPath, worktreeRoot };
 }
 
-describe("full workflow: registration -> brainstorm -> worktree isolation -> cleanup", () => {
+describe("full workflow: registration -> brainstorm -> build/review -> planning/ADR -> cleanup", () => {
   it("walks the entire currently-implemented pipeline start to end without spending real provider usage", async () => {
     const app = buildApp({ databasePath: ":memory:", adapters: [new FakeAdapter("CLAUDE"), new FakeAdapter("CODEX")] });
     apps.push(app);
@@ -203,12 +216,65 @@ describe("full workflow: registration -> brainstorm -> worktree isolation -> cle
       "commit", "-m", "Add shard resolver",
     ]);
 
-    // 9. Deregistration is refused while managed worktrees remain linked.
+    // 9. Record the architecture decision, run an isolated Phase 6 experiment in the other
+    // provider's worktree, and promote the ADR into a linked implementation task.
+    const adrResponse = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/adrs`,
+      payload: {
+        title: "Explicit shard routing", context: "The brainstorm and review support a routing layer.",
+        optionsConsidered: "Modulo routing; explicit tenant mapping.",
+        decision: "Use explicit tenant mapping.", reasons: "It supports controlled rebalancing.",
+        consequences: "A shard registry and routing layer must be built.",
+      },
+    });
+    expect(adrResponse.statusCode).toBe(201);
+    const adr = adrResponse.json();
+
+    const experimentStart = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/experiments`,
+      payload: {
+        hypothesis: "A minimal explicit routing table can route sample tenants consistently.",
+        builderProvider: "CODEX", reviewerProvider: "CLAUDE",
+      },
+    });
+    expect(experimentStart.statusCode).toBe(202);
+    let experiment: { status: string; verdict: string; worktreeId: string } | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      experiment = (await app.inject({ method: "GET", url: `/api/experiments/${experimentStart.json().experimentId}` })).json();
+      if (["COMPLETED", "FAILED", "CHECKPOINTED"].includes(experiment!.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(experiment).toMatchObject({ status: "COMPLETED", verdict: "PROVEN" });
+    expect(worktrees.some((worktree) => worktree.id === experiment!.worktreeId)).toBe(true);
+
+    const promotedResponse = await app.inject({
+      method: "POST", url: `/api/adrs/${adr.id}/promote`,
+      payload: {
+        title: "Build the shard registry", problemStatement: "Implement the accepted routing registry.",
+        planPhase: "Phase 1 — Registry",
+      },
+    });
+    expect(promotedResponse.statusCode).toBe(201);
+    expect(promotedResponse.json()).toMatchObject({ type: "IMPLEMENTATION", originAdrId: adr.id, planPhase: "Phase 1 — Registry" });
+    const promoted = (await app.inject({ method: "GET", url: `/api/adrs/${adr.id}/promoted-tasks` })).json();
+    expect(promoted).toHaveLength(1);
+    const taskAfterExperiment = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+    expect(taskAfterExperiment.evidence.some((item: { type: string; content: string }) =>
+      item.type === "EXPERIMENT_RESULT" && item.content.includes("PROVEN"))).toBe(true);
+
+    const experimentWorktree = worktrees.find((worktree) => worktree.id === experiment!.worktreeId)!;
+    await execFileAsync("git", ["-C", experimentWorktree.path, "add", "-A"]);
+    await execFileAsync("git", [
+      "-C", experimentWorktree.path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "Record shard experiment",
+    ]);
+
+    // 10. Deregistration is refused while managed worktrees remain linked.
     const blockedDeregister = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
     expect(blockedDeregister.statusCode).toBe(409);
     expect(blockedDeregister.json().code).toBe("WORKTREES_LINKED");
 
-    // 10. Clean up each worktree; deregistration then succeeds.
+    // 11. Clean up each worktree; deregistration then succeeds.
     for (const worktree of worktrees) {
       const removal = await app.inject({
         method: "DELETE", url: `/api/worktrees/${worktree.id}`, payload: { confirm: true, deleteBranch: false },
@@ -218,7 +284,7 @@ describe("full workflow: registration -> brainstorm -> worktree isolation -> cle
     const finalDeregister = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
     expect(finalDeregister.statusCode).toBe(204);
 
-    // 11. Usage was never fabricated: the only state on record is the human acknowledgement from step 4.
+    // 12. Usage was never fabricated: the only state on record is the human acknowledgement from step 4.
     const usage = (await app.inject({ method: "GET", url: "/api/usage" })).json();
     expect(usage.CLAUDE[0]).toMatchObject({ status: "UNAVAILABLE", usedPercent: null, source: null });
     expect(usage.CODEX[0]).toMatchObject({ status: "UNAVAILABLE", usedPercent: null, source: null });
