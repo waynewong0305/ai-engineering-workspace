@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. Phase 6 (planning and ADRs) is now underway: architecture decision records (create, list, edit, reclassify status) are implemented; experiments and plan promotion/linked-task creation are not yet. Phase 7 (hardening) remains unimplemented — see below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. Phase 6 (planning and ADRs) is now underway: architecture decision records (create, list, edit, reclassify status) and isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item) are both implemented; plan promotion/linked-task creation is not yet. Phase 7 (hardening) remains unimplemented — see below.
 
 ## LLM agent policy
 
@@ -466,7 +466,7 @@ Completion record:
 - [x] Assumption board editing (already shipped in Phase 3 — see the correction above; content and
       type reclassification both work today)
 - [x] ADRs
-- [ ] Experiments
+- [x] Experiments
 - [ ] Plan promotion
 - [ ] Linked implementation tasks
 
@@ -527,6 +527,64 @@ Completion record:
   task-scoped listing, a partial `PATCH` that leaves omitted fields unchanged, and rejecting an
   invalid status value. Extended `build-runs.test.ts`'s pre-PR report tests with a case proving an
   ADR linked via `relatedTaskIds` (or originating from the build's own task) appears in the report.
+
+### Phase 6, slice 2 completion record — experiments
+
+- Date: 2026-09-13
+- Scope: `PROJECT_SPEC.md` §19 — an isolated proof-of-concept run on an architecture task: a builder
+  implements only the smallest POC needed to test a stated hypothesis, an independent reviewer
+  assesses whether it actually holds, and the outcome becomes an `EXPERIMENT_RESULT` evidence-board
+  item automatically. Deliberately out of scope, tracked as unchecked above: plan promotion and
+  linked implementation tasks (§20), the last Phase 6 item.
+- Deliberately much smaller than `BuildReviewWorkflow` (Phase 5), not a copy of it: new
+  `apps/server/src/services/experiment-workflow.ts` has no validation-command execution (a POC
+  isn't expected to pass a project's full test suite), no finding-response/re-review loop, and no
+  merge — an experiment's outcome is meant to inform a decision via evidence, never to land in the
+  target branch. New prompts `prompts/experiment-builder.md` (told explicitly to implement only the
+  smallest POC and to actually test it, not just implement) and `prompts/experiment-reviewer.md`
+  (returns a structured `PROVEN`/`DISPROVEN`/`INCONCLUSIVE` verdict with reasoning, result, and
+  conclusion — instructed to return `INCONCLUSIVE` rather than guess when the diff doesn't clearly
+  demonstrate the hypothesis either way).
+- Schema: new `experiments` table (a genuine `CREATE TABLE`, following slice 1's ADR precedent of
+  avoiding Phase 5's known `ALTER TABLE ... ADD COLUMN ... REFERENCES` foreign-key pitfall) and a
+  widened `task_artifacts.kind` (`EXPERIMENT_RESULT`, TypeScript-level only — `db:generate` confirmed
+  no migration needed). **Known, deliberate limitation, not an oversight:** an experiment reuses the
+  exact same worktree slot (`ensureWorktreeForTask`, keyed on `(taskId, provider)`) an ordinary Phase
+  5 build would use for that task and provider — a separate experiment-specific worktree-naming
+  scheme (the spec's own example names one differently: `experiment/TASK-123/shard-routing`) was
+  considered and deliberately not built, since it would need widening `worktrees`' unique
+  `(taskId, provider)` index on an existing Phase 4 table, a real migration-risk trade-off not
+  justified for this slice. In practice this means an architecture task cannot run both a regular
+  Phase 5 build and an experiment for the same provider at the same time; it can for two different
+  providers, or sequentially.
+- New `apps/server/src/routes/experiments.ts`: `POST /api/tasks/:id/experiments` (starts
+  immediately — hypothesis + both providers required up front, no separate draft/start step, unlike
+  brainstorm tasks — refuses a second concurrent experiment for the same task+provider), `GET
+  /api/tasks/:id/experiments`, `GET /api/experiments/:id`, `POST /api/experiments/:id/cancel`. Same
+  provider-readiness and usage-safety preflight pattern as every other provider-consuming route in
+  this app.
+- UI: a new "EXPERIMENTS / PROOFS OF CONCEPT" subsection on the Brainstorm task detail pane
+  (`apps/web/src/App.vue`), next to the evidence board and brainstorm plan report — deliberately
+  placed there rather than under "08 — Decisions" (which slice 1 dedicated to ADRs specifically),
+  since an experiment belongs to a task's own working context and its result feeds that same
+  task's evidence board. Reuses the `.adr-form`/`.adr-item` CSS fix from slice 1 (a single stacked
+  column, not evidence board's fixed 3-column grid) for the same reason it was needed there: an
+  experiment's hypothesis/result/conclusion fields don't fit a short type/content/source shape.
+  Verified in the browser: the section renders with an empty state and no console errors. A real
+  experiment was deliberately not started against the browser-visible registered project's task (it
+  spends real provider usage, like every other agent-run feature in this app) — the full
+  builder → diff → reviewer → verdict → evidence pipeline, including the unparseable-verdict and
+  concurrent-experiment-refusal paths, is instead proven end-to-end with fake adapters in the
+  automated test suite.
+- Tests executed: full workspace `npm test` (110 tests: 87 `apps/server` + 12 `packages/agents` + 11
+  `packages/git`, up from 103), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (reports only the new `experiments` table), `git diff --check` — all clean.
+  New coverage in `experiments.test.ts` (7 tests): a full builder → reviewer → verdict →
+  evidence-item run (checking the evidence item's content and source provider, not just the
+  experiment row); rejecting same-provider builder/reviewer; rejecting a missing hypothesis; failing
+  cleanly when the reviewer's verdict can't be parsed, and confirming no evidence item is created in
+  that case; refusing a second concurrent experiment for the same task/provider; listing experiments
+  for a task; and 404s for a nonexistent task/experiment.
 
 ## Phase 7 — Hardening
 

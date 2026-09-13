@@ -71,6 +71,13 @@
       "when": 1789290403580,
       "tag": "0009_heavy_captain_britain",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1789291294992,
+      "tag": "0010_parallel_prism",
+      "breakpoints": true
     }
   ]
 }

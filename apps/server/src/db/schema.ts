@@ -196,15 +196,25 @@ export type ReviewRecheckArtifact = {
   newFindings: ParsedFinding[];
 };
 
+export type ExperimentVerdict = "PROVEN" | "DISPROVEN" | "INCONCLUSIVE";
+
+/** An experiment reviewer's structured assessment of whether the POC actually supports its hypothesis. */
+export type ExperimentVerdictArtifact = {
+  verdict: ExperimentVerdict;
+  reasoning: string;
+  result: string;
+  conclusion: string;
+};
+
 export const taskArtifacts = sqliteTable("task_artifacts", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
-  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK"] }).notNull(),
+  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT"] }).notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   structuredData: text("structured_data", { mode: "json" })
-    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact>(),
+    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact>(),
   rawOutput: text("raw_output").notNull(),
   parseError: text("parse_error"),
   createdAt: text("created_at").notNull(),
@@ -275,6 +285,42 @@ export const adrs = sqliteTable("adrs", {
 ]);
 
 export type AdrRecord = typeof adrs.$inferSelect;
+
+export type ExperimentStatus = "RUNNING" | "REVIEWING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
+
+/**
+ * PROJECT_SPEC.md §19. Deliberately reuses the same worktree slot an ordinary Phase 5 build would
+ * use for (taskId, builderProvider) — see WorktreeService/ensureWorktreeForTask — rather than a
+ * separate experiment-specific worktree-naming scheme; an architecture task running an experiment
+ * for a provider and a full Phase 5 build for that same provider at the same time would collide on
+ * that slot, a known, documented limitation rather than an oversight (see the completion record).
+ * No validation-command integration and no merge: a POC is meant to inform a decision via its
+ * resulting evidence-board item, not to land in the target branch.
+ */
+export const experiments = sqliteTable("experiments", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  hypothesis: text("hypothesis").notNull(),
+  builderProvider: text("builder_provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  reviewerProvider: text("reviewer_provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
+  builderRunId: text("builder_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  reviewerRunId: text("reviewer_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  status: text("status", { enum: ["RUNNING", "REVIEWING", "COMPLETED", "FAILED", "CANCELLED", "CHECKPOINTED"] }).notNull(),
+  diffUnstaged: text("diff_unstaged"),
+  diffStaged: text("diff_staged"),
+  testExecuted: text("test_executed"),
+  result: text("result"),
+  conclusion: text("conclusion"),
+  verdict: text("verdict", { enum: ["PROVEN", "DISPROVEN", "INCONCLUSIVE"] }),
+  evidenceItemId: text("evidence_item_id").references(() => evidenceItems.id, { onDelete: "set null" }),
+  errorMessage: text("error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("experiments_task_created_idx").on(table.taskId, table.createdAt)]);
+
+export type ExperimentRecord = typeof experiments.$inferSelect;
 
 export type UsageProvider = "CLAUDE" | "CODEX";
 export type UsageSource = "CLI_REPORTED" | "MANUAL" | "RATE_LIMIT_ERROR";

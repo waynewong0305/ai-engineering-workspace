@@ -5,6 +5,7 @@ import { createDatabase } from "./db/database.js";
 import { registerAdrRoutes } from "./routes/adrs.js";
 import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerBuildRoutes } from "./routes/build-runs.js";
+import { registerExperimentRoutes } from "./routes/experiments.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUsageSafetyRoutes } from "./routes/usage-safety.js";
@@ -43,6 +44,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   registerBuildRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
   registerUsageSafetyRoutes(app, usageSafety);
   registerAdrRoutes(app, db);
+  registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
 
   return app;
 }

@@ -1,0 +1,30 @@
+CREATE TABLE `experiments` (
+	`id` text PRIMARY KEY NOT NULL,
+	`task_id` text NOT NULL,
+	`project_id` text NOT NULL,
+	`hypothesis` text NOT NULL,
+	`builder_provider` text NOT NULL,
+	`reviewer_provider` text NOT NULL,
+	`worktree_id` text,
+	`builder_run_id` text,
+	`reviewer_run_id` text,
+	`status` text NOT NULL,
+	`diff_unstaged` text,
+	`diff_staged` text,
+	`test_executed` text,
+	`result` text,
+	`conclusion` text,
+	`verdict` text,
+	`evidence_item_id` text,
+	`error_message` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	FOREIGN KEY (`task_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`worktree_id`) REFERENCES `worktrees`(`id`) ON UPDATE no action ON DELETE set null,
+	FOREIGN KEY (`builder_run_id`) REFERENCES `agent_runs`(`id`) ON UPDATE no action ON DELETE set null,
+	FOREIGN KEY (`reviewer_run_id`) REFERENCES `agent_runs`(`id`) ON UPDATE no action ON DELETE set null,
+	FOREIGN KEY (`evidence_item_id`) REFERENCES `evidence_items`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE INDEX `experiments_task_created_idx` ON `experiments` (`task_id`,`created_at`);

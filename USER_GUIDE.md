@@ -31,9 +31,10 @@ The current implementation can:
 - send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3);
 - merge a completed build's worktree into a target branch once you explicitly approve it, re-run validation against the merged result, and automatically clean up the worktree and (optionally) its branch only when every safety condition holds; and
 - generate a pre-PR report for a build on demand, summarizing the problem, implementation, files changed, findings by disposition, tests, and merge state, always marking human review as required; and
-- create, edit, and reclassify architecture decision records (ADRs) for a task, numbered sequentially per project, stored locally and never exported into your repository automatically.
+- create, edit, and reclassify architecture decision records (ADRs) for a task, numbered sequentially per project, stored locally and never exported into your repository automatically; and
+- run an isolated proof-of-concept experiment against a stated hypothesis, with an independent reviewer returning a proven/disproven/inconclusive verdict that's automatically recorded on the task's evidence board.
 
-Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, and ADRs are all available now.
+Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
 ## Installation
 
@@ -303,11 +304,11 @@ You can generate this report at any point in the workflow, not only once the tas
 The planning path is:
 
 ```text
-idea → brainstorm → architecture → ADR       ) available now — see "Architecture decisions" below
-→ implementation plan → coding tasks         — planned
+idea → brainstorm → architecture → experiment → ADR   ) available now — see below
+→ implementation plan → coding tasks                  — planned
 ```
 
-Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Create an Architecture Decision Record only after you choose an option.
+Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Run an experiment to test a specific technical hypothesis before committing to it. Create an Architecture Decision Record once you choose an option.
 
 Promoting an approved decision into implementation phases and linked coding tasks with explicit acceptance criteria is not implemented yet. The links that would matter — a future reviewer moving from a code task back to the plan, ADR, experiment, and original problem — are not yet tracked as a relationship; an ADR's `relatedTaskIds` field is a loose, human-curated list you fill in yourself, not an enforced link.
 
@@ -329,6 +330,25 @@ Each ADR is numbered sequentially within its project (`ADR-0001`, `ADR-0002`, ..
 ADRs are stored only in this application's local database. Nothing is ever written into your registered repository automatically — if you want an ADR committed as a Markdown file in the repo itself, that would be a separate, explicit, human-approved action, and is not implemented.
 
 A build's pre-PR report (see "Build and review" below) automatically surfaces any ADR that either originated from that build's task or names it in `relatedTaskIds`.
+
+### Experiments
+
+On a task's detail pane (**03 — Brainstorm**), the **EXPERIMENTS / PROOFS OF CONCEPT** section next to the evidence board lets you test a specific technical hypothesis before committing to it:
+
+1. Write a **Hypothesis** — a specific, testable claim (for example, "explicit tenant-to-shard routing can be implemented with a simple modulo router").
+2. Choose a **Builder** and a **Reviewer** (must differ, same as Build and review).
+3. Select **Start experiment**.
+
+What happens automatically:
+
+1. The builder gets write access scoped to an isolated worktree and is explicitly told to implement only the smallest proof-of-concept needed to test the hypothesis — not a production-ready solution — and to actually test what it builds rather than only reasoning about it.
+2. The full diff is captured once.
+3. The reviewer receives the diff and the builder's own summary, with read-only access, and returns a verdict: **PROVEN**, **DISPROVEN**, or **INCONCLUSIVE**, with its reasoning, what was actually observed, and a short, decision-ready conclusion. The reviewer is instructed to return INCONCLUSIVE rather than guess when the evidence doesn't clearly support either outcome.
+4. That verdict and conclusion are automatically added to the task's evidence board as an **EXPERIMENT_RESULT** record — you don't have to copy it over yourself.
+
+An experiment never merges anywhere and never runs your project's validation commands — it exists to inform a decision, not to ship code. Only one experiment can run at a time per task and provider; starting a second one for the same task and provider while the first is still going is refused. A task cannot run both a regular build (see "Build and review" below) and an experiment for the *same* provider at the same time — they share the same isolated worktree slot for that task/provider — but a different provider, or a later attempt after the first finishes, works fine.
+
+If the reviewer's response can't be parsed into a structured verdict, the experiment is marked failed, the raw response is retained, and no evidence item is created — never a fabricated result.
 
 ## Bug fixing — partially planned
 

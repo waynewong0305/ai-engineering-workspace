@@ -1076,7 +1076,62 @@ async function selectTask(taskId: string) {
   if (index >= 0) tasks.value[index] = selectedTask.value!;
   brainstormReport.value = null;
   brainstormReportError.value = "";
+  experimentError.value = "";
+  await loadExperimentsForTask();
   scheduleTaskRefresh();
+}
+
+async function loadExperimentsForTask() {
+  if (!selectedTask.value) {
+    experimentsForTask.value = [];
+    return;
+  }
+  const response = await fetch(`/api/tasks/${selectedTask.value.id}/experiments`);
+  if (response.ok) experimentsForTask.value = await response.json();
+  scheduleExperimentRefresh();
+}
+
+function scheduleExperimentRefresh() {
+  if (experimentPollTimer !== null) window.clearTimeout(experimentPollTimer);
+  const active = experimentsForTask.value.some((experiment) => ["RUNNING", "REVIEWING"].includes(experiment.status));
+  if (!active) return;
+  experimentPollTimer = window.setTimeout(() => { void loadExperimentsForTask(); }, 1500);
+}
+
+async function startExperiment() {
+  if (!selectedTask.value || !experimentHypothesis.value.trim()) return;
+  startingExperiment.value = true;
+  experimentError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/experiments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hypothesis: experimentHypothesis.value,
+        builderProvider: experimentBuilderProvider.value,
+        reviewerProvider: experimentReviewerProvider.value,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not start the experiment.");
+    experimentHypothesis.value = "";
+    await loadExperimentsForTask();
+  } catch (error) {
+    experimentError.value = error instanceof Error ? error.message : "Could not start the experiment.";
+  } finally {
+    startingExperiment.value = false;
+  }
+}
+
+async function cancelExperiment(experiment: Experiment) {
+  experimentError.value = "";
+  const response = await fetch(`/api/experiments/${experiment.id}/cancel`, { method: "POST" });
+  if (!response.ok) {
+    const result = await response.json();
+    experimentError.value = result.message ?? "Could not cancel the experiment.";
+    return;
+  }
+  await loadExperimentsForTask();
 }
 
 async function loadBrainstormReport() {
@@ -1466,6 +1521,7 @@ onUnmounted(() => {
   eventSource?.close();
   if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
   if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
+  if (experimentPollTimer !== null) window.clearTimeout(experimentPollTimer);
   window.removeEventListener("hashchange", updateActiveSection);
 });
 </script>
@@ -2065,6 +2121,45 @@ onUnmounted(() => {
                 <p><strong>Evidence board</strong><br />{{ brainstormReport.evidence.length }} record(s).</p>
                 <p><strong>Human decision required</strong><br />YES — this is a plan to review, not an approved decision.</p>
                 <p><strong>Recommended next action</strong><br />{{ brainstormReport.recommendedNextAction }}</p>
+              </div>
+            </div>
+
+            <div class="worktree-usages">
+              <div class="subsection-heading"><span>EXPERIMENTS / PROOFS OF CONCEPT</span><strong>{{ experimentsForTask.length }} run(s)</strong></div>
+              <p v-if="experimentError" class="error-text" role="alert">{{ experimentError }}</p>
+              <form class="evidence-form adr-form" @submit.prevent="startExperiment">
+                <label><span>Hypothesis</span><textarea v-model="experimentHypothesis" maxlength="5000" placeholder="e.g. Explicit tenant-to-shard routing can be implemented with a simple modulo router." required></textarea></label>
+                <label>
+                  <span>Builder</span>
+                  <select v-model="experimentBuilderProvider">
+                    <option value="CLAUDE" :disabled="experimentReviewerProvider === 'CLAUDE'">Claude Code</option>
+                    <option value="CODEX" :disabled="experimentReviewerProvider === 'CODEX'">Codex</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Reviewer</span>
+                  <select v-model="experimentReviewerProvider">
+                    <option value="CLAUDE" :disabled="experimentBuilderProvider === 'CLAUDE'">Claude Code</option>
+                    <option value="CODEX" :disabled="experimentBuilderProvider === 'CODEX'">Codex</option>
+                  </select>
+                </label>
+                <button class="ghost-button" type="submit" :disabled="startingExperiment">{{ startingExperiment ? "Starting…" : "Start experiment" }}</button>
+              </form>
+
+              <p v-if="!experimentsForTask.length" class="form-hint">No experiments yet for this task.</p>
+              <div v-for="experiment in experimentsForTask" :key="experiment.id" class="evidence-item adr-item">
+                <header>
+                  <strong>{{ experiment.hypothesis }}</strong>
+                  <span>{{ experiment.status }}<template v-if="experiment.verdict"> · {{ experiment.verdict }}</template></span>
+                </header>
+                <p v-if="experiment.errorMessage" class="error-text" role="alert">{{ experiment.errorMessage }}</p>
+                <p><strong>Builder / Reviewer</strong> {{ providerLabel(experiment.builderProvider) }} builds, {{ providerLabel(experiment.reviewerProvider) }} reviews</p>
+                <p v-if="experiment.result"><strong>Result</strong> {{ experiment.result }}</p>
+                <p v-if="experiment.conclusion"><strong>Conclusion</strong> {{ experiment.conclusion }}</p>
+                <button
+                  v-if="['RUNNING', 'REVIEWING', 'CHECKPOINTED'].includes(experiment.status)"
+                  class="danger-outline-button" type="button" @click="cancelExperiment(experiment)"
+                >Cancel</button>
               </div>
             </div>
           </div>
