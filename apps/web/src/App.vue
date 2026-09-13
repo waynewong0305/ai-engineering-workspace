@@ -1305,7 +1305,7 @@ onUnmounted(() => {
                 ? `This failure's wording suggests ${providerLabel(currentRun.provider)} may have hit its usage limit — the workspace could not confirm that automatically.`
                 : `Did this fail because ${providerLabel(currentRun.provider)} hit its usage limit? The workspace could not tell automatically.` }}
             </p>
-            <button class="ghost-button" type="button" @click="markProviderExhausted(currentRun.provider)">Mark {{ providerLabel(currentRun.provider) }} as exhausted</button>
+            <button class="ghost-button" type="button" @click="markProviderExhausted(currentRun.provider)">Mark as exhausted</button>
           </div>
         </article>
       </section>
@@ -1499,7 +1499,7 @@ onUnmounted(() => {
                   ? `This failure's wording suggests ${providerLabel(entry.provider)} may have hit its usage limit — the workspace could not confirm that automatically.`
                   : `Did ${providerLabel(entry.provider)} fail because it hit its usage limit? The workspace could not tell automatically.` }}
               </p>
-              <button class="ghost-button" type="button" @click="markProviderExhausted(entry.provider)">Mark {{ providerLabel(entry.provider) }} as exhausted</button>
+              <button class="ghost-button" type="button" @click="markProviderExhausted(entry.provider)">Mark as exhausted</button>
             </div>
 
             <div v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section">
