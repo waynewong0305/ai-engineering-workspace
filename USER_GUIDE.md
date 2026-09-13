@@ -16,9 +16,13 @@ The current implementation can:
 - run an explicit, read-only repository explanation with Claude Code or Codex;
 - stream the visible answer and process messages;
 - cancel an active run; and
-- retain run output and audit metadata locally.
+- retain run output and audit metadata locally;
+- create brainstorm and architecture task drafts with an explicit per-task web decision;
+- run Claude and Codex analyses independently, then cross-review in both directions;
+- retain structured and raw responses and compare consensus, disagreements, questions, missing evidence, and experiments; and
+- add or correct facts, assumptions, questions, decisions, and experiment results on a persistent evidence board.
 
-Task orchestration, brainstorms, worktrees, reviews, ADRs, and reports are planned but not enabled yet. Sections below that describe those workflows are marked as planned so this guide does not imply unfinished behavior is available.
+Worktrees, implementation/review loops, ADRs, and reports are planned but not enabled yet. Brainstorming and architecture comparison are available now and remain read-only.
 
 ## Installation
 
@@ -54,7 +58,7 @@ claude --help
 
 AI Engineering Workspace will never ask for your Claude password or copy authentication tokens into its database. If Claude reports that authentication is required, complete authentication in your own terminal and use **Recheck tools** in the application.
 
-Claude Code was not available in the environment during this first implementation session. Claude agent execution will remain disabled until its installed CLI capabilities are inspected.
+The inspected environment has Claude Code 2.1.269 and supports restricted read-only runs, structured streaming output, model selection, and effort levels. Availability and authentication are still checked locally each time.
 
 ### Codex setup
 
@@ -185,40 +189,50 @@ These runs use a read-only repository profile and disable web access. They canno
 
 Claude Code may be installed but show **Authentication required**. Run `claude auth login` yourself in a terminal, then select **Recheck tools**. The application never asks for or stores the provider credential.
 
-### Select Claude and Codex models — planned
+### Select Claude and Codex models
 
-Model settings will have four layers:
+Repository explanations and brainstorming tasks accept editable provider model IDs. Leaving an ID blank uses the provider default, and every run stores the requested value plus the actual model when the CLI reveals it.
+
+A future settings increment will add four-level resolution:
 
 1. global defaults;
 2. per-project defaults;
 3. per-task overrides; and
 4. per-agent-role overrides.
 
-The most specific explicit setting wins. The application will prefer models reported by the installed CLI/account. When a CLI cannot list models, you will be able to enter an editable model ID. Every run will preserve both the requested model and the actual model when the CLI reveals it. A substitution will be visible in run history.
+The most specific explicit setting will win. Neither inspected CLI exposes an authoritative local model-list command, so editable IDs remain the current fallback.
 
-### Configure web permission — planned
+### Configure web permission
 
-Each task will offer:
+Each brainstorm or architecture draft requires one explicit choice:
 
 ```text
 Web Access
 
 ○ Disabled
-○ Ask before use
 ○ Enabled for this task
 ```
 
-The default is **Ask before use**. The selected policy and the final allow/deny decision will be recorded with the run. The application will never silently enable web access.
+The safe initial selection is **Disabled**. The task records the allow/deny decision, decision time, and human decision source; every run copies that audit decision. The application never silently enables web access. Project registration still describes the broader product default as “ask before use,” but no provider run starts until the task form contains an explicit resolved choice.
 
-## Brainstorm workflow — planned
+## Brainstorm workflow
 
-Suppose you create:
+In **03 — Independent brainstorming**:
+
+1. Select a registered project.
+2. Enter the title, task type, risk, and problem statement.
+3. Explicitly disable or allow web access for this task.
+4. Select **Create draft**. This stores local data only and does not use a provider.
+5. Review the saved draft and provider readiness. Optionally enter provider model IDs and Claude effort.
+6. Select **Start independent analyses**. This is the deliberate action that can start four paid/provider runs.
+
+For example:
 
 ```text
 Design database sharding for 500 tenant databases
 ```
 
-The intended flow is:
+The workflow is:
 
 1. You describe the problem and mark known facts.
 2. Claude receives the problem as an independent architect. It does not see Codex's answer.
@@ -227,7 +241,9 @@ The intended flow is:
 5. Codex critiques Claude's analysis.
 6. Claude critiques Codex's analysis.
 7. The comparison screen groups consensus, disagreements, open questions, missing evidence, and recommended experiments.
-8. You correct facts, change assumptions, request evidence, or decide which disagreement matters.
+8. You correct facts and assumptions, add evidence or decisions, and decide which disagreement matters.
+
+The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. You can cancel while analysis or cross-review is active. A server restart during active provider processes is not yet reconciled automatically.
 
 Claude's role is not to lead automatically, and Codex's role is not merely to approve. Either provider can be assigned as architect or skeptic. Cross-review should distinguish a factual error from a legitimate difference in engineering judgment.
 
@@ -241,7 +257,7 @@ The evidence board will use these record types:
 - **Decision:** a human-approved choice.
 - **Experiment result:** evidence produced by a bounded test or proof of concept.
 
-Items show whether they came from you, Claude, Codex, or the system. You can edit or reclassify them. An AI suggestion never becomes a human decision merely because both models agree.
+Items show whether they came from you, Claude, or Codex. You can edit or reclassify them through the local API; the current screen supports adding records and correcting their content. An AI suggestion never becomes a human decision merely because both models agree.
 
 ### Consensus and disagreement
 

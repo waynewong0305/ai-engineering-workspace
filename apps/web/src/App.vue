@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 
 type ToolHealth = {
   available: boolean;
@@ -54,6 +54,68 @@ type AgentRun = {
   durationMs: number | null;
 };
 
+type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED";
+type BrainstormAnalysis = {
+  summary: string;
+  facts: string[];
+  assumptions: string[];
+  unknowns: string[];
+  options: Array<{ name: string; description: string; advantages: string[]; disadvantages: string[]; risks: string[] }>;
+  recommendedExperiments: string[];
+  recommendation: string | null;
+};
+type CrossReview = {
+  summary: string;
+  agreements: string[];
+  disagreements: string[];
+  factualErrors: string[];
+  unsupportedAssumptions: string[];
+  missingFailureCases: string[];
+  hiddenOperationalCosts: string[];
+  migrationRisks: string[];
+  openQuestions: string[];
+  missingEvidence: string[];
+  recommendedExperiments: string[];
+};
+type TaskArtifact = {
+  id: string;
+  kind: "ANALYSIS" | "CROSS_REVIEW";
+  provider: AgentProvider;
+  targetProvider: AgentProvider | null;
+  structuredData: BrainstormAnalysis | CrossReview | null;
+  rawOutput: string;
+  parseError: string | null;
+};
+type EvidenceItem = {
+  id: string;
+  type: "FACT" | "ASSUMPTION" | "QUESTION" | "DECISION" | "EXPERIMENT_RESULT";
+  content: string;
+  sourceProvider: AgentProvider | null;
+};
+type BrainstormTask = {
+  id: string;
+  projectId: string;
+  title: string;
+  problemStatement: string;
+  type: "BRAINSTORM" | "ARCHITECTURE";
+  status: TaskStatus;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  webAccessPolicy: "DISABLED" | "ENABLED_FOR_TASK";
+  webAccessPermitted: boolean;
+  webAccessDecidedAt: string;
+  errorMessage: string | null;
+  runs?: Array<AgentRun & { role: "INDEPENDENT_ANALYSIS" | "CROSS_REVIEW"; targetProvider: AgentProvider | null }>;
+  artifacts?: TaskArtifact[];
+  evidence?: EvidenceItem[];
+  comparison?: {
+    consensus: string[];
+    disagreements: string[];
+    openQuestions: string[];
+    missingEvidence: string[];
+    recommendedExperiments: string[];
+  } | null;
+};
+
 const health = ref<HealthResponse | null>(null);
 const loading = ref(true);
 const healthError = ref("");
@@ -72,6 +134,30 @@ const runError = ref("");
 const startingRun = ref(false);
 const currentRun = ref<AgentRun | null>(null);
 let eventSource: EventSource | null = null;
+let taskPollTimer: number | null = null;
+const tasks = ref<BrainstormTask[]>([]);
+const tasksLoading = ref(true);
+const selectedTask = ref<BrainstormTask | null>(null);
+const taskError = ref("");
+const taskMessage = ref("");
+const creatingTask = ref(false);
+const startingTask = ref(false);
+const evidenceType = ref<EvidenceItem["type"]>("FACT");
+const evidenceContent = ref("");
+const editingEvidenceId = ref("");
+const editingEvidenceContent = ref("");
+const editingEvidenceType = ref<EvidenceItem["type"]>("FACT");
+const taskForm = reactive({
+  projectId: "",
+  title: "Database horizontal scaling",
+  type: "ARCHITECTURE" as "BRAINSTORM" | "ARCHITECTURE",
+  riskLevel: "HIGH" as BrainstormTask["riskLevel"],
+  problemStatement: "How should this system support database sharding?",
+  webAccessPermitted: false,
+  claudeModel: "",
+  codexModel: "",
+  claudeEffort: "",
+});
 const form = reactive({
   name: "",
   repositoryPath: "",
@@ -109,9 +195,156 @@ async function loadProjects() {
     if (!response.ok) throw new Error("Could not load projects.");
     projects.value = await response.json();
     if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].id;
+    if (!taskForm.projectId && projects.value[0]) taskForm.projectId = projects.value[0].id;
   } finally {
     projectsLoading.value = false;
   }
+}
+
+async function loadTasks() {
+  tasksLoading.value = true;
+  try {
+    const response = await fetch("/api/tasks");
+    if (!response.ok) throw new Error("Could not load brainstorming tasks.");
+    tasks.value = await response.json();
+    if (!selectedTask.value && tasks.value[0]) await selectTask(tasks.value[0].id);
+  } catch (error) {
+    taskError.value = error instanceof Error ? error.message : "Could not load brainstorming tasks.";
+  } finally {
+    tasksLoading.value = false;
+  }
+}
+
+async function selectTask(taskId: string) {
+  taskError.value = "";
+  const response = await fetch(`/api/tasks/${taskId}`);
+  if (!response.ok) {
+    taskError.value = "Could not load the task.";
+    return;
+  }
+  selectedTask.value = await response.json();
+  const index = tasks.value.findIndex((task) => task.id === taskId);
+  if (index >= 0) tasks.value[index] = selectedTask.value!;
+  scheduleTaskRefresh();
+}
+
+function scheduleTaskRefresh() {
+  if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
+  if (!selectedTask.value || !["ANALYZING", "CROSS_REVIEW"].includes(selectedTask.value.status)) return;
+  taskPollTimer = window.setTimeout(async () => {
+    if (selectedTask.value) await selectTask(selectedTask.value.id);
+  }, 1500);
+}
+
+async function createTask() {
+  creatingTask.value = true;
+  taskError.value = "";
+  taskMessage.value = "";
+  try {
+    const response = await fetch("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: taskForm.projectId,
+        title: taskForm.title,
+        type: taskForm.type,
+        riskLevel: taskForm.riskLevel,
+        problemStatement: taskForm.problemStatement,
+        webAccessPermitted: taskForm.webAccessPermitted,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not create the task.");
+    tasks.value.unshift(result);
+    selectedTask.value = result;
+    taskMessage.value = "Draft created. Review the web decision, then start the four-run workflow when ready.";
+  } catch (error) {
+    taskError.value = error instanceof Error ? error.message : "Could not create the task.";
+  } finally {
+    creatingTask.value = false;
+  }
+}
+
+async function startBrainstorm() {
+  if (!selectedTask.value) return;
+  startingTask.value = true;
+  taskError.value = "";
+  taskMessage.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        claudeModel: taskForm.claudeModel,
+        codexModel: taskForm.codexModel,
+        claudeEffort: taskForm.claudeEffort,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not start the task.");
+    taskMessage.value = "Both independent analyses are starting. Cross-reviews will follow only after both finish.";
+    await selectTask(selectedTask.value.id);
+  } catch (error) {
+    taskError.value = error instanceof Error ? error.message : "Could not start the task.";
+  } finally {
+    startingTask.value = false;
+  }
+}
+
+async function cancelBrainstorm() {
+  if (!selectedTask.value) return;
+  const response = await fetch(`/api/tasks/${selectedTask.value.id}/cancel`, { method: "POST" });
+  const result = await response.json();
+  if (!response.ok) taskError.value = result.message ?? "Could not cancel the task.";
+  await selectTask(selectedTask.value.id);
+}
+
+async function addEvidence() {
+  if (!selectedTask.value || !evidenceContent.value.trim()) return;
+  const response = await fetch(`/api/tasks/${selectedTask.value.id}/evidence`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: evidenceType.value, content: evidenceContent.value }),
+  });
+  const result = await response.json();
+  if (!response.ok) taskError.value = result.message ?? "Could not add the record.";
+  else {
+    evidenceContent.value = "";
+    await selectTask(selectedTask.value.id);
+  }
+}
+
+function editEvidence(item: EvidenceItem) {
+  editingEvidenceId.value = item.id;
+  editingEvidenceContent.value = item.content;
+  editingEvidenceType.value = item.type;
+}
+
+async function saveEvidence(item: EvidenceItem) {
+  if (!selectedTask.value || !editingEvidenceContent.value.trim()) return;
+  const response = await fetch(`/api/tasks/${selectedTask.value.id}/evidence/${item.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: editingEvidenceType.value, content: editingEvidenceContent.value }),
+  });
+  const result = await response.json();
+  if (!response.ok) taskError.value = result.message ?? "Could not update the record.";
+  else {
+    editingEvidenceId.value = "";
+    await selectTask(selectedTask.value.id);
+  }
+}
+
+function analysisFor(provider: AgentProvider) {
+  return selectedTask.value?.artifacts?.find((item) => item.kind === "ANALYSIS" && item.provider === provider)?.structuredData as BrainstormAnalysis | null | undefined;
+}
+
+function reviewFor(provider: AgentProvider) {
+  return selectedTask.value?.artifacts?.find((item) => item.kind === "CROSS_REVIEW" && item.provider === provider)?.structuredData as CrossReview | null | undefined;
+}
+
+function runStatus(provider: AgentProvider, role: "INDEPENDENT_ANALYSIS" | "CROSS_REVIEW") {
+  return selectedTask.value?.runs?.find((run) => run.provider === provider && run.role === role)?.status ?? "WAITING";
 }
 
 async function loadAgentHealth() {
@@ -240,7 +473,11 @@ async function recheckProject(project: Project) {
   if (response.ok) Object.assign(project, result);
 }
 
-onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth()]));
+onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks()]));
+onUnmounted(() => {
+  eventSource?.close();
+  if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
+});
 </script>
 
 <template>
@@ -258,8 +495,8 @@ onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth()]));
         <p class="nav-label">Workspace</p>
         <a class="nav-item active" href="#projects"><span>01</span>Projects</a>
         <a class="nav-item" href="#agent-runs"><span>02</span>Agent runs</a>
-        <a class="nav-item disabled" href="#brainstorm" aria-disabled="true"><span>03</span>Brainstorm</a>
-        <a class="nav-item disabled" href="#architecture" aria-disabled="true"><span>04</span>Architecture</a>
+        <a class="nav-item" href="#brainstorm"><span>03</span>Brainstorm</a>
+        <a class="nav-item" href="#brainstorm"><span>04</span>Architecture</a>
         <a class="nav-item disabled" href="#build" aria-disabled="true"><span>05</span>Build</a>
         <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>06</span>Reviews</a>
         <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>07</span>Decisions</a>
@@ -470,6 +707,238 @@ onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth()]));
           <details v-if="currentRun.errorOutput"><summary>Process messages</summary><pre>{{ currentRun.errorOutput }}</pre></details>
           <small v-if="currentRun.durationMs !== null">Completed in {{ (currentRun.durationMs / 1000).toFixed(1) }}s</small>
         </article>
+      </section>
+
+      <section id="brainstorm" class="project-panel brainstorm-panel" aria-labelledby="brainstorm-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">03 — INDEPENDENT BRAINSTORMING</p>
+            <h2 id="brainstorm-heading">Turn disagreement into an engineering artifact.</h2>
+            <p>Claude and Codex analyze independently, review each other only afterward, and remain read-only throughout.</p>
+          </div>
+          <span class="safety-badge">4 RUNS · READ ONLY</span>
+        </div>
+
+        <form class="project-form" @submit.prevent="createTask">
+          <div class="field-row task-first-row">
+            <label>
+              <span>Registered project</span>
+              <select v-model="taskForm.projectId" required>
+                <option disabled value="">Select a project</option>
+                <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+              </select>
+            </label>
+            <label>
+              <span>Task title</span>
+              <input v-model="taskForm.title" maxlength="160" required autocomplete="off" />
+            </label>
+          </div>
+          <div class="field-row">
+            <label>
+              <span>Task type</span>
+              <select v-model="taskForm.type">
+                <option value="BRAINSTORM">Brainstorm</option>
+                <option value="ARCHITECTURE">Architecture</option>
+              </select>
+            </label>
+            <label>
+              <span>Risk level</span>
+              <select v-model="taskForm.riskLevel">
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+                <option value="CRITICAL">Critical</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            <span>Problem statement</span>
+            <textarea v-model="taskForm.problemStatement" rows="5" maxlength="20000" required></textarea>
+          </label>
+
+          <fieldset class="web-decision">
+            <legend>Web access <small>Required decision · recorded with this task</small></legend>
+            <div class="choice-grid">
+              <label :class="['choice-card', { selected: !taskForm.webAccessPermitted }]">
+                <input v-model="taskForm.webAccessPermitted" class="radio-input" type="radio" :value="false" />
+                <span><strong>No web access</strong><small>Use only the registered repository and supplied context.</small></span>
+              </label>
+              <label :class="['choice-card', { selected: taskForm.webAccessPermitted }]">
+                <input v-model="taskForm.webAccessPermitted" class="radio-input" type="radio" :value="true" />
+                <span><strong>Allow for this task</strong><small>Both agents may use their built-in web tools for this task only.</small></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <p v-if="taskError" class="form-message error-text" role="alert">{{ taskError }}</p>
+          <p v-if="taskMessage" class="form-message success-text" role="status">{{ taskMessage }}</p>
+          <div class="form-actions">
+            <span>Creating a draft is free. Provider usage begins only when you start the analysis.</span>
+            <button class="primary-button" type="submit" :disabled="creatingTask || !taskForm.projectId">
+              {{ creatingTask ? "Creating…" : "Create draft" }}
+            </button>
+          </div>
+        </form>
+
+        <div class="task-workspace">
+          <aside class="task-list" aria-label="Brainstorm tasks">
+            <div class="task-list-heading"><strong>Tasks</strong><span>{{ tasks.length }}</span></div>
+            <p v-if="tasksLoading">Loading tasks…</p>
+            <p v-else-if="tasks.length === 0">No brainstorming tasks yet.</p>
+            <button
+              v-for="task in tasks"
+              v-else
+              :key="task.id"
+              :class="['task-list-item', { selected: selectedTask?.id === task.id }]"
+              type="button"
+              @click="selectTask(task.id)"
+            >
+              <span>{{ task.type }}</span>
+              <strong>{{ task.title }}</strong>
+              <small>{{ task.status }}</small>
+            </button>
+          </aside>
+
+          <div v-if="selectedTask" class="task-detail">
+            <div class="task-detail-heading">
+              <div>
+                <span>{{ selectedTask.type }} · {{ selectedTask.riskLevel }} RISK</span>
+                <h3>{{ selectedTask.title }}</h3>
+                <p>{{ selectedTask.problemStatement }}</p>
+              </div>
+              <span :class="['task-status', selectedTask.status.toLowerCase()]">{{ selectedTask.status }}</span>
+            </div>
+
+            <div class="stage-track" aria-label="Workflow stages">
+              <div :class="{ current: selectedTask.status === 'DRAFT', complete: selectedTask.status !== 'DRAFT' }"><span>01</span><strong>Draft</strong></div>
+              <div :class="{ current: selectedTask.status === 'ANALYZING', complete: ['CROSS_REVIEW', 'READY'].includes(selectedTask.status) }"><span>02</span><strong>Independent</strong></div>
+              <div :class="{ current: selectedTask.status === 'CROSS_REVIEW', complete: selectedTask.status === 'READY' }"><span>03</span><strong>Cross-review</strong></div>
+              <div :class="{ current: selectedTask.status === 'READY', complete: selectedTask.status === 'READY' }"><span>04</span><strong>Compare</strong></div>
+            </div>
+
+            <div class="web-audit">
+              <span>WEB DECISION</span>
+              <strong>{{ selectedTask.webAccessPermitted ? "Allowed for this task" : "Disabled" }}</strong>
+              <small>Recorded {{ new Date(selectedTask.webAccessDecidedAt).toLocaleString() }}</small>
+            </div>
+
+            <div v-if="selectedTask.status === 'DRAFT'" class="launch-box">
+              <div class="field-row">
+                <label><span>Claude model <small>Blank uses default</small></span><input v-model="taskForm.claudeModel" placeholder="Provider default" /></label>
+                <label><span>Codex model <small>Blank uses default</small></span><input v-model="taskForm.codexModel" placeholder="Provider default" /></label>
+              </div>
+              <label>
+                <span>Claude effort <small>Optional</small></span>
+                <select v-model="taskForm.claudeEffort">
+                  <option value="">Provider default</option>
+                  <option v-for="effort in agentHealth.CLAUDE?.capabilities.availableEffortLevels ?? []" :key="effort" :value="effort">{{ effort }}</option>
+                </select>
+              </label>
+              <div class="provider-pair">
+                <span><i :class="['status-light', agentHealth.CLAUDE?.authenticated ? 'ok' : 'missing']"></i>Claude {{ agentHealth.CLAUDE?.authenticated ? "ready" : "not ready" }}</span>
+                <span><i :class="['status-light', agentHealth.CODEX?.authenticated ? 'ok' : 'missing']"></i>Codex {{ agentHealth.CODEX?.authenticated ? "ready" : "not ready" }}</span>
+              </div>
+              <button
+                class="primary-button"
+                type="button"
+                :disabled="startingTask || !agentHealth.CLAUDE?.authenticated || !agentHealth.CODEX?.authenticated"
+                @click="startBrainstorm"
+              >{{ startingTask ? "Starting…" : "Start independent analyses" }}</button>
+              <small>This deliberately starts up to four paid/provider runs: two analyses followed by two reviews.</small>
+            </div>
+
+            <div v-if="['ANALYZING', 'CROSS_REVIEW'].includes(selectedTask.status)" class="live-stages">
+              <div><span>Claude analysis</span><strong>{{ runStatus('CLAUDE', 'INDEPENDENT_ANALYSIS') }}</strong></div>
+              <div><span>Codex analysis</span><strong>{{ runStatus('CODEX', 'INDEPENDENT_ANALYSIS') }}</strong></div>
+              <div><span>Claude review</span><strong>{{ runStatus('CLAUDE', 'CROSS_REVIEW') }}</strong></div>
+              <div><span>Codex review</span><strong>{{ runStatus('CODEX', 'CROSS_REVIEW') }}</strong></div>
+              <button class="ghost-button" type="button" @click="cancelBrainstorm">Cancel workflow</button>
+            </div>
+            <p v-if="selectedTask.errorMessage" class="form-message error-text">{{ selectedTask.errorMessage }}</p>
+
+            <div v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section">
+              <div class="subsection-heading"><span>INDEPENDENT OUTPUTS</span><strong>Kept separate until both completed</strong></div>
+              <div class="analysis-grid">
+                <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="analysis-card">
+                  <header><span>{{ provider === 'CLAUDE' ? 'Claude' : 'Codex' }}</span><small>{{ runStatus(provider, 'INDEPENDENT_ANALYSIS') }}</small></header>
+                  <template v-if="analysisFor(provider)">
+                    <p>{{ analysisFor(provider)?.summary }}</p>
+                    <h4>Options</h4>
+                    <div v-for="option in analysisFor(provider)?.options" :key="option.name" class="option-block">
+                      <strong>{{ option.name }}</strong><p>{{ option.description }}</p>
+                      <small>{{ option.advantages.length }} advantages · {{ option.disadvantages.length }} disadvantages · {{ option.risks.length }} risks</small>
+                    </div>
+                    <h4>Recommendation</h4><p>{{ analysisFor(provider)?.recommendation ?? "No recommendation yet." }}</p>
+                  </template>
+                  <details v-if="selectedTask.artifacts?.find((item) => item.kind === 'ANALYSIS' && item.provider === provider)">
+                    <summary>Raw response</summary>
+                    <pre>{{ selectedTask.artifacts?.find((item) => item.kind === 'ANALYSIS' && item.provider === provider)?.rawOutput }}</pre>
+                  </details>
+                </article>
+              </div>
+            </div>
+
+            <div v-if="reviewFor('CLAUDE') || reviewFor('CODEX')" class="review-section">
+              <div class="subsection-heading"><span>RECIPROCAL REVIEWS</span><strong>Each reviews the other</strong></div>
+              <div class="analysis-grid">
+                <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="review-card">
+                  <header><span>{{ provider === 'CLAUDE' ? 'Claude critiques Codex' : 'Codex critiques Claude' }}</span></header>
+                  <p>{{ reviewFor(provider)?.summary }}</p>
+                  <h4>Disagreements</h4>
+                  <ul><li v-for="item in reviewFor(provider)?.disagreements" :key="item">{{ item }}</li></ul>
+                  <h4>Missing evidence</h4>
+                  <ul><li v-for="item in reviewFor(provider)?.missingEvidence" :key="item">{{ item }}</li></ul>
+                </article>
+              </div>
+            </div>
+
+            <div v-if="selectedTask.comparison" class="comparison-section">
+              <div class="subsection-heading"><span>TRANSPARENT COMPARISON</span><strong>No automatic winner</strong></div>
+              <div class="comparison-grid">
+                <article v-for="(items, label) in selectedTask.comparison" :key="label">
+                  <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
+                  <ul v-if="items.length"><li v-for="item in items" :key="item">{{ item }}</li></ul>
+                  <p v-else>No item was asserted by the structured reviews.</p>
+                </article>
+              </div>
+            </div>
+
+            <div class="evidence-board">
+              <div class="subsection-heading"><span>ASSUMPTION / EVIDENCE BOARD</span><strong>{{ selectedTask.evidence?.length ?? 0 }} records</strong></div>
+              <form class="evidence-form" @submit.prevent="addEvidence">
+                <select v-model="evidenceType">
+                  <option value="FACT">Fact</option><option value="ASSUMPTION">Assumption</option>
+                  <option value="QUESTION">Question</option><option value="DECISION">Decision</option>
+                  <option value="EXPERIMENT_RESULT">Experiment result</option>
+                </select>
+                <input v-model="evidenceContent" maxlength="5000" placeholder="Add a human correction, fact, question, decision, or experiment result…" />
+                <button class="ghost-button" type="submit">Add record</button>
+              </form>
+              <div class="evidence-list">
+                <article v-for="item in selectedTask.evidence" :key="item.id" class="evidence-item">
+                  <span>{{ item.type }}</span>
+                  <template v-if="editingEvidenceId === item.id">
+                    <div class="evidence-edit">
+                      <select v-model="editingEvidenceType">
+                        <option value="FACT">Fact</option><option value="ASSUMPTION">Assumption</option>
+                        <option value="QUESTION">Question</option><option value="DECISION">Decision</option>
+                        <option value="EXPERIMENT_RESULT">Experiment result</option>
+                      </select>
+                      <input v-model="editingEvidenceContent" />
+                    </div>
+                    <button class="ghost-button" type="button" @click="saveEvidence(item)">Save</button>
+                  </template>
+                  <template v-else>
+                    <p>{{ item.content }}</p>
+                    <small>{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
+                    <button class="text-button" type="button" @click="editEvidence(item)">Edit</button>
+                  </template>
+                </article>
+              </div>
+            </div>
+          </div>
+          <div v-else class="task-detail empty-task">Create or select a task to inspect its workflow.</div>
+        </div>
       </section>
     </main>
   </div>

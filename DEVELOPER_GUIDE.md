@@ -14,6 +14,7 @@ Fastify API
     ├── SQLite / Drizzle
     ├── repository inspection through Git CLI
     ├── persistent agent-run manager
+    ├── brainstorm workflow orchestration and structured parsing
     └── AgentAdapter implementations + process supervisor
 ```
 
@@ -28,7 +29,7 @@ apps/
 packages/
   agents/    provider-neutral contracts, CLI adapters, environment policy, process supervisor
   shared/    shared types with no platform dependencies
-prompts/     planned versioned prompt files
+prompts/     versioned analysis and cross-review prompt files
 data/        ignored local SQLite database
 docs/
   decisions/ lightweight architecture decision records
@@ -75,7 +76,7 @@ Refreshes current branch and clean/dirty status. It intentionally does not fetch
 
 ## Database schema
 
-The initial SQLite schema contains `projects`:
+The SQLite schema contains registered `projects` plus Phase 2/3 workflow records:
 
 - `id`: UUID string primary key;
 - `name`;
@@ -87,9 +88,11 @@ The initial SQLite schema contains `projects`:
 - `git_status` (`CLEAN` or `DIRTY`); and
 - ISO timestamps.
 
+`tasks` stores brainstorm/architecture inputs, state, risk, and the resolved human web-access decision. `agent_runs` and `agent_run_events` retain provider requests and normalized streams. `task_artifacts` stores the visible raw response plus parsed analysis/review JSON, `task_comparisons` stores the deterministic comparison, and `evidence_items` provides the persistent fact/assumption/question/decision/experiment board.
+
 Drizzle schema is in `apps/server/src/db/schema.ts`; generated SQL and migration metadata are in `apps/server/drizzle/`. The runtime applies pending migrations when the server opens the database. WAL and foreign-key enforcement are enabled.
 
-Future normalized tables should include tasks, agent runs/events, prompts/versions, evidence items, cross-reviews, ADRs, plans, worktrees, validation runs, review findings/responses, and audit events. Introduce them with the phase that owns their behavior; do not create speculative tables early.
+Future normalized tables should add ADRs, plans, worktrees, validation runs, review findings/responses, and broader audit events with the phase that owns their behavior; do not create speculative tables early.
 
 ## AgentAdapter
 
@@ -125,7 +128,7 @@ The inspected Codex CLI 0.153.4 supports:
 - approval policy control; and
 - specialized review input through `codex review`.
 
-Do not use `danger-full-access` or bypass flags as normal product features. Claude capabilities are intentionally undecided until the CLI is installed and inspected.
+Do not use `danger-full-access` or bypass flags as normal product features. The inspected Claude Code 2.1.269 supports restricted mode, explicit read-only tools, stream JSON, model selection, effort levels, and web tools when the task decision permits them.
 
 ## Model discovery and configuration
 
@@ -140,13 +143,15 @@ Implement capability probing behind adapters. A provider capability response sho
 
 Settings resolution order is role override, task override, project default, global default. Store the resolved request before launch. After completion, store the actual model only when provider output supplies it. `null` means unknown; it must not be filled by copying the requested value.
 
-## Workflow engine — planned
+## Brainstorm workflow engine
 
-The workflow engine belongs in `packages/core`. It should consume domain commands and emit persisted state transitions. Suggested states from the specification are `DRAFT`, `BRAINSTORMING`, `AWAITING_COMPARISON`, `PLANNING`, `READY_TO_BUILD`, `BUILDING`, `VALIDATING`, `REVIEWING`, `CHANGES_REQUESTED`, `READY_FOR_HUMAN_REVIEW`, `DONE`, and `FAILED`.
+The Phase 3 `BrainstormWorkflow` service currently lives in the server beside the run manager. It persists `DRAFT → ANALYZING → CROSS_REVIEW → READY`, with `FAILED` and `CANCELLED` terminal paths. Move the stable, multi-workflow state-machine contract into `packages/core` when Phase 4/5 introduces additional task types and transitions.
 
-Transitions must be explicit and tested. Refreshing the browser must reconstruct state from SQLite. Long-running work is represented by run records and events, not in-memory UI state. Cancellation is a terminal run result distinct from failure.
+Transitions are explicit and integration-tested. Refreshing the browser reconstructs state from SQLite. Long-running work is represented by run records and events, not in-memory UI state. Cancellation is a terminal run result distinct from failure.
 
 Independent brainstorm branches must be scheduled from the same user problem without exposing one provider's output to the other. Cross-review begins only after both original analyses are durably stored.
+
+`brainstorm-analysis:v1` and `cross-review:v1` live under `prompts/`. The workflow validates their JSON shapes without discarding invalid or original output. The comparison is deterministic: reciprocal review agreements feed consensus; disagreements and factual/assumption concerns stay visible; unknowns, missing evidence, and experiments are deduplicated. It never selects a winner.
 
 ## Git and worktree layer
 
@@ -177,7 +182,7 @@ Sensitive path rules should reject automatic reads of `.env`, `.env.*`, private 
 
 ## Web permission model
 
-Persist a task policy (`DISABLED`, `ASK_BEFORE_USE`, or `ENABLED_FOR_TASK`) and a resolved run decision. `ASK_BEFORE_USE` starts unresolved. A run that actually requires browsing must pause before launching with web flags, obtain a user decision, and then record who decided and when.
+Brainstorm drafts currently resolve the decision before creation as `DISABLED` or `ENABLED_FOR_TASK`, record the human decision and time, and copy it to every run. The broader `ASK_BEFORE_USE` state remains a future interactive permission flow; unresolved decisions are never passed to adapters.
 
 Adapters translate the resolved decision into supported provider flags. If a CLI cannot guarantee the requested restriction, report the capability mismatch and block the run. Never infer permission from general network availability.
 
@@ -230,7 +235,7 @@ Integration tests should use temporary Git repositories and fake agent executabl
 
 Real Claude/Codex calls are manual acceptance tests. Automated tests must not require authentication, network access, or model credits.
 
-The current Phase 1 integration test creates a temporary Git repository, registers it through the Fastify route, and verifies the repository remains clean.
+The Phase 3 integration test uses paired fake Claude/Codex adapters and synchronization barriers to prove independent analyses and reciprocal reviews start in parallel, then verifies prompt versions, raw/structured artifacts, comparison, evidence, and the explicit web decision. Automated tests never spend provider credits.
 
 ## Change protocol
 

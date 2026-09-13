@@ -15,6 +15,13 @@
       "when": 1789237605725,
       "tag": "0001_closed_xorn",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789266628468,
+      "tag": "0002_skinny_luke_cage",
+      "breakpoints": true
     }
   ]
 }

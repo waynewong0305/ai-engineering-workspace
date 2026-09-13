@@ -53,7 +53,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
     if (input.permissionProfile !== "READ_ONLY") throw new Error("CodexAdapter currently supports READ_ONLY runs only.");
-    if (input.webAccess.permitted !== false) throw new Error("This release requires web access to be disabled for agent runs.");
+    if (input.webAccess.permitted === null) throw new Error("A web-access decision is required before starting an agent run.");
     if (input.model.effort) throw new Error("The installed Codex CLI does not expose a supported effort flag.");
 
     const health = await this.healthCheck();
@@ -64,9 +64,9 @@ export class CodexAdapter implements AgentAdapter {
     const args = [
       "exec", "--json", "--color", "never", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "-C", input.cwd, "-s", "read-only",
-      "--disable", "browser_use", "--disable", "browser_use_external",
       "--disable", "computer_use", "--disable", "apps", "--disable", "plugins",
     ];
+    if (!input.webAccess.permitted) args.push("--disable", "browser_use", "--disable", "browser_use_external");
     if (input.model.requested && input.model.requested !== "(provider default)") {
       args.push("-m", input.model.requested);
     }
@@ -109,8 +109,8 @@ export class CodexAdapter implements AgentAdapter {
               actualModel,
               effort: input.model.effort ?? null,
               cliVersion: health.cliVersion,
-              promptVersion: "repository-explanation-v1",
-              webAccessPermitted: false,
+              promptVersion: input.promptVersion,
+              webAccessPermitted: input.webAccess.permitted,
             },
           };
         } else if (event.type === "cancelled") {

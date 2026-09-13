@@ -30,6 +30,7 @@ export type AgentRunInput = {
   runId: string;
   cwd: string;
   prompt: string;
+  promptVersion: string;
   permissionProfile: PermissionProfile;
   webAccess: WebAccessDecision;
   sessionId?: string;
@@ -60,4 +61,3 @@ export type AgentEvent =
   | { type: "completed"; runId: string; occurredAt: string; exitCode: number; metadata: AgentRunMetadata }
   | { type: "failed"; runId: string; occurredAt: string; message: string; exitCode: number | null }
   | { type: "cancelled"; runId: string; occurredAt: string };
-

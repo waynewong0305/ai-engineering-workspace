@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, and deliberate read-only Claude Code/Codex repository-explanation runs with SSE output, cancellation, timeouts, and persisted history. It does not yet create worktrees, run saved project commands, or implement multi-agent task workflows.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, and persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board. It does not yet create worktrees, run saved project commands, or implement code-writing/review workflows.
 
 ## Phase 0 — Bootstrap
 
@@ -79,14 +79,23 @@ Current record:
 
 ## Phase 3 — Brainstorming
 
-- [ ] Task creation
-- [ ] Independent Claude analysis
-- [ ] Independent Codex analysis
-- [ ] Structured results
-- [ ] Raw-output retention
-- [ ] Cross-review
-- [ ] Comparison screen
-- [ ] Assumption/evidence board
+- [x] Brainstorm and architecture task creation
+- [x] Parallel independent Claude/Codex analysis
+- [x] Versioned prompts and structured-result validation
+- [x] Raw-output retention
+- [x] Reciprocal cross-review
+- [x] Consensus/disagreement/question/evidence/experiment comparison
+- [x] Persistent editable assumption/evidence board
+- [x] Explicit per-task web decision and run audit
+
+Current record:
+
+- Date: 2026-09-13
+- Decisions: task drafts are free and separate from the paid start action; analysis providers receive identical task context independently; cross-review begins only after both analyses persist; the comparison is deterministic and never selects a winner; task web access is resolved explicitly before creation.
+- Modules introduced: task/artifact/comparison/evidence schema and migration, `BrainstormWorkflow`, task APIs, versioned prompt files, and the Phase 3 task/comparison UI.
+- Tests executed: paired fake-provider parallelism barriers; full analysis → review → comparison workflow; structured/raw persistence; evidence creation/update; explicit web-decision validation; full TypeScript check; production build; migrated local API/UI inspection.
+- Acceptance state: the database-sharding task exists as a `DRAFT` for the registered Boostorder project with web disabled. Its real four provider runs were not started automatically because they spend provider usage.
+- Known limitations: active provider processes are not reconciled after a server restart; deterministic comparison depends on structured cross-review quality; the screen edits evidence content while type reclassification is currently API-only.
 
 ## Phase 4 — Git worktrees
 

@@ -104,16 +104,16 @@ Exit gate: the full path passes with a fake adapter without spending model credi
 
 Goal: preserve independent analysis and make disagreement useful.
 
-- [ ] Task creation for brainstorm and architecture types
-- [ ] Parallel independent analyses without cross-contamination
-- [ ] Versioned prompts and structured-result parsing
-- [ ] Raw-output retention
-- [ ] Cross-review in both directions
-- [ ] Comparison view: consensus, disagreements, questions, evidence, experiments
-- [ ] Persistent assumption/evidence board
-- [ ] Per-task web permission prompt and audit record
+- [x] Task creation for brainstorm and architecture types
+- [x] Parallel independent analyses without cross-contamination
+- [x] Versioned prompts and structured-result parsing
+- [x] Raw-output retention
+- [x] Cross-review in both directions
+- [x] Comparison view: consensus, disagreements, questions, evidence, experiments
+- [x] Persistent assumption/evidence board
+- [x] Per-task web permission prompt and audit record
 
-Exit gate: the database-sharding acceptance problem produces two independent analyses and a transparent comparison while both agents remain read-only.
+Exit gate: the database-sharding acceptance draft is created with web disabled. Fake-provider acceptance passes; the real four-provider-run acceptance remains a deliberate user action because it spends provider usage.
 
 ## Phase 4 — Git worktree isolation
 

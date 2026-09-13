@@ -33,7 +33,7 @@ class FakeCodexAdapter implements AgentAdapter {
       type: "completed", runId: input.runId, occurredAt, exitCode: 0,
       metadata: {
         provider: "CODEX", requestedModel: input.model.requested, actualModel: "fixture-model",
-        effort: null, cliVersion: "fake-codex 1.0", promptVersion: "repository-explanation-v1", webAccessPermitted: false,
+        effort: null, cliVersion: "fake-codex 1.0", promptVersion: input.promptVersion, webAccessPermitted: input.webAccess.permitted === true,
       },
     };
   }

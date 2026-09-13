@@ -58,15 +58,16 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
     if (input.permissionProfile !== "READ_ONLY") throw new Error("ClaudeAdapter currently supports READ_ONLY runs only.");
-    if (input.webAccess.permitted !== false) throw new Error("This release requires web access to be disabled for agent runs.");
+    if (input.webAccess.permitted === null) throw new Error("A web-access decision is required before starting an agent run.");
     const health = await this.healthCheck();
     if (!health.available || !health.authenticated || !health.cliVersion) {
       throw new Error(health.message ?? "Claude Code is not ready.");
     }
 
+    const tools = input.webAccess.permitted ? "Read,Glob,Grep,WebSearch,WebFetch" : "Read,Glob,Grep";
     const args = [
       "-p", input.prompt, "--output-format", "stream-json", "--verbose", "--restricted",
-      "--tools", "Read,Glob,Grep", "--permission-mode", "plan", "--permission-prompts", "none",
+      "--tools", tools, "--permission-mode", "plan", "--permission-prompts", "none",
       "--strict-mcp-config", "--mcp-config", "{}", "--setting-sources", "", "--disable-slash-commands", "--no-chrome",
     ];
     if (input.sessionId) args.push("--resume", input.sessionId);
@@ -113,8 +114,8 @@ export class ClaudeAdapter implements AgentAdapter {
               actualModel,
               effort: input.model.effort ?? null,
               cliVersion: health.cliVersion,
-              promptVersion: "repository-explanation-v1",
-              webAccessPermitted: false,
+              promptVersion: input.promptVersion,
+              webAccessPermitted: input.webAccess.permitted,
             },
           };
         } else if (event.type === "cancelled") {
@@ -131,4 +132,3 @@ export class ClaudeAdapter implements AgentAdapter {
     return this.supervisor.cancel(runId);
   }
 }
-

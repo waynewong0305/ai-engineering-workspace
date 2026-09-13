@@ -25,9 +25,8 @@ export function registerAgentRunRoutes(
   app: FastifyInstance,
   db: WorkspaceDatabase,
   adapters: Map<AgentProvider, AgentAdapter>,
+  manager = new AgentRunManager(db),
 ) {
-  const manager = new AgentRunManager(db);
-
   app.get("/api/agents/health", async () => {
     const entries = await Promise.all([...adapters].map(async ([provider, adapter]) => [provider, await adapter.healthCheck()] as const));
     return Object.fromEntries(entries);
@@ -64,7 +63,8 @@ export function registerAgentRunRoutes(
     }
     const now = new Date().toISOString();
     const run = {
-      id: randomUUID(), projectId, provider, prompt,
+      id: randomUUID(), projectId, taskId: null, provider,
+      role: "REPOSITORY_EXPLANATION" as const, targetProvider: null, prompt,
       promptVersion: "repository-explanation-v1",
       requestedModel: stringValue(request.body.model) ?? "(provider default)",
       actualModel: null,
@@ -82,6 +82,7 @@ export function registerAgentRunRoutes(
       runId: run.id,
       cwd: project.repositoryPath,
       prompt,
+      promptVersion: run.promptVersion,
       permissionProfile: "READ_ONLY",
       webAccess: { policy: "DISABLED", permitted: false, decidedAt: now, decidedBy: "SYSTEM" },
       outputFormat: "JSONL",
