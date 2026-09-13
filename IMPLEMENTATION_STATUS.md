@@ -190,3 +190,17 @@ Completion record:
 - [ ] Database backups
 - [ ] Cleanup tools
 - [ ] Audit history
+
+## End-to-end workflow verification (cross-cutting)
+
+Not one of the phases above: every earlier phase's tests exercise one route or service at a time with fake data seeded directly. Nothing proved the pieces actually work *together*, in the order a real user would drive them, using only the app's own HTTP surface.
+
+- [x] Single integration test walking the entire currently-implemented pipeline in one continuous run: register a project → confirm tool health → draft a brainstorm task → usage-safety refuses to start it blind → acknowledge both providers → independent analyses run and cross-review follows automatically → comparison and evidence are populated → both Claude and Codex worktrees are created from the approved task → isolation is verified (three worktrees total, source checkout untouched) → deregistration is refused while worktrees remain linked → each worktree is cleaned up → deregistration then succeeds → usage was never fabricated (still `UNAVAILABLE`, only the two acknowledgements from earlier are on record).
+
+Completion record:
+
+- Date: 2026-09-13
+- File: `apps/server/src/routes/end-to-end-workflow.test.ts`. Uses a temporary Git repository and fake `AgentAdapter` implementations (no synchronization barrier needed here — that parallelism guarantee is already proven in `tasks.test.ts`; this test's job is pipeline correctness, not timing) and spends no real provider usage.
+- This test doubles as a regression guard for the cross-phase interactions two earlier fixes introduced: the combined-workflow usage-safety acknowledgement gate (step 4) and the deregistration-vs-linked-worktrees guard (step 8) — both are now proven not just in isolation but as part of the full flow a user actually follows.
+- Tests executed: full workspace `npm test` (59 tests: 40 `apps/server` + 5 `packages/agents` + 6 `packages/git` + 9 `scripts/check-agent-policy.test.mjs`), `npm run typecheck`, `npm run build`, `git diff --check` — all clean.
+- Known limitation: Phase 5 (build/review) isn't implemented yet, so this walkthrough necessarily stops at worktree creation/cleanup; extend it to cover the builder/reviewer loop once that phase lands rather than writing a second, separate end-to-end test.

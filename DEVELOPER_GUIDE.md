@@ -280,6 +280,8 @@ Real Claude/Codex calls are manual acceptance tests. Automated tests must not re
 
 The Phase 3 integration test uses paired fake Claude/Codex adapters and synchronization barriers to prove independent analyses and reciprocal reviews start in parallel, then verifies prompt versions, raw/structured artifacts, comparison, evidence, and the explicit web decision. Automated tests never spend provider credits.
 
+`apps/server/src/routes/end-to-end-workflow.test.ts` is different in kind from the rest: every other test above exercises one route or service in isolation, with fixtures seeded directly. This one drives the entire currently-implemented pipeline through the app's own HTTP API in one continuous run, in the order a real user follows it — register → health → draft → the usage-safety acknowledgement gate → independent analysis → cross-review → comparison/evidence → worktree creation → isolation → the deregistration-vs-linked-worktrees guard → cleanup — using a temporary repository and fake adapters. Extend this same test as later phases land rather than writing a second, separate end-to-end test; keep the per-phase integration tests above as the place for exhaustive edge cases.
+
 ## Agent policy synchronization
 
 `AGENTS.md` is the canonical policy for any LLM coding agent working in this repository; `CLAUDE.md`

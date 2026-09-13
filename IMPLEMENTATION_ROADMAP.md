@@ -195,6 +195,12 @@ Goal: make normal failure safe and understandable.
 
 Exit gate: documented failure drills preserve source code, history, and user control.
 
+## End-to-end workflow verification (cross-cutting, added 2026-09-13)
+
+Not one of the phases above: a single integration test (`apps/server/src/routes/end-to-end-workflow.test.ts`) that drives every currently-implemented phase together through the app's own HTTP API, in the order a real user would — registration, health, brainstorm draft, the usage-safety acknowledgement gate, independent analysis, cross-review, comparison/evidence, worktree creation, isolation, the deregistration-vs-linked-worktrees guard, and cleanup — using a temporary repository and fake adapters, spending no real provider usage. See `IMPLEMENTATION_STATUS.md` for the full record.
+
+Exit gate: met for everything implemented so far. Extend this same test (not a second one) once Phase 5 adds the build/review loop.
+
 ## Phase completion protocol
 
 At the end of every phase:
