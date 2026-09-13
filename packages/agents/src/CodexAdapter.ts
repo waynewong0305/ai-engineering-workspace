@@ -65,20 +65,16 @@ export class CodexAdapter implements AgentAdapter {
 
     // WORKTREE_WRITE switches the sandbox to workspace-write (Codex's own OS-level write
     // confinement to the working directory, stronger than anything this adapter can enforce) and
-    // disables interactive approval prompts since no human is present to answer them.
-    // NOTE: `-s workspace-write` and `--ask-for-approval never` are taken from the public Codex CLI
-    // flag set, not re-verified against the installed binary — this environment has no standalone
-    // `codex` executable on PATH to run `codex exec --help` against (only a copy bundled inside the
-    // ChatGPT app and a Codex plugin were found). Confirm these exact flag/value spellings against
-    // a real `codex exec --help` before relying on this in production, the same way Phase 2 originally
-    // verified its READ_ONLY flag set.
+    // routes approval requests through Codex's own automatic review because no human is present to
+    // answer an interactive prompt. These flags were re-verified against the installed Codex CLI
+    // during Phase 7; its earlier `--ask-for-approval never` spelling is no longer supported.
     const sandbox = input.permissionProfile === "WORKTREE_WRITE" ? "workspace-write" : "read-only";
     const args = [
       "exec", "--json", "--color", "never", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "-C", input.cwd, "-s", sandbox,
       "--disable", "computer_use", "--disable", "apps", "--disable", "plugins",
     ];
-    if (input.permissionProfile === "WORKTREE_WRITE") args.push("--ask-for-approval", "never");
+    if (input.permissionProfile === "WORKTREE_WRITE") args.push("--approve-for-me");
     if (!input.webAccess.permitted) args.push("--disable", "browser_use", "--disable", "browser_use_external");
     if (input.model.requested && input.model.requested !== "(provider default)") {
       args.push("-m", input.model.requested);

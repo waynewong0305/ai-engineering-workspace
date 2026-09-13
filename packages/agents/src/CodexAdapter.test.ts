@@ -61,7 +61,7 @@ describe("CodexAdapter", () => {
     expect(args).not.toContain("--ask-for-approval");
   });
 
-  it("uses the workspace-write sandbox and disables approval prompts for WORKTREE_WRITE", async () => {
+  it("uses the workspace-write sandbox and routes approval through automatic review for WORKTREE_WRITE", async () => {
     const executable = await createFakeCodexExecutable();
     const supervisor = new CapturingSupervisor();
     const adapter = new CodexAdapter(supervisor, executable);
@@ -71,7 +71,8 @@ describe("CodexAdapter", () => {
     expect(events.at(-1)?.type).toBe("completed");
     const args = supervisor.lastInput!.args;
     expect(args[args.indexOf("-s") + 1]).toBe("workspace-write");
-    expect(args[args.indexOf("--ask-for-approval") + 1]).toBe("never");
+    expect(args).toContain("--approve-for-me");
+    expect(args).not.toContain("--ask-for-approval");
   });
 
   it("refuses a TEST_ONLY run", async () => {

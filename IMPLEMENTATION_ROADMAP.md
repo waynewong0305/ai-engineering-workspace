@@ -189,10 +189,10 @@ into linked, reviewable implementation tasks without modifying a target reposito
 
 Goal: make normal failure safe and understandable.
 
-- [ ] Deny-list and environment-sanitization tests
-- [ ] Process-tree cancellation and timeout tests
-- [ ] CLI authentication-expiry handling
-- [ ] Model-unavailable and substitution handling
+- [x] Deny-list and environment-sanitization tests
+- [x] Process-tree cancellation and timeout tests
+- [x] CLI authentication-expiry handling
+- [x] Model-unavailable and substitution handling
 - [ ] Worktree conflict recovery
 - [ ] SQLite backup/restore and migration recovery
 - [ ] Audit-history export

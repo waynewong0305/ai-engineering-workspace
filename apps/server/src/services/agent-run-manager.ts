@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { AgentAdapter, AgentEvent, AgentRunInput } from "@aiew/agents";
+import {
+  classifyAgentFailure,
+  modelSubstitutionFailure,
+  type AgentAdapter,
+  type AgentEvent,
+  type AgentRunInput,
+} from "@aiew/agents";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import { agentRunEvents, agentRuns, type AgentRunEventRecord, type AgentRunRecord } from "../db/schema.js";
@@ -20,7 +26,12 @@ function payloadFor(event: AgentEvent): Record<string, unknown> {
     case "stderr": return { chunk: event.chunk };
     case "structured_output": return { value: event.value };
     case "completed": return { exitCode: event.exitCode, metadata: event.metadata };
-    case "failed": return { message: event.message, exitCode: event.exitCode };
+    case "failed": return {
+      message: event.message,
+      exitCode: event.exitCode,
+      failureKind: event.failureKind,
+      actualModel: event.actualModel,
+    };
     default: return {};
   }
 }
@@ -53,7 +64,7 @@ export class AgentRunManager {
           await adapter.cancel(run.id);
           break;
         }
-        this.persistEvent(run.id, event, started);
+        this.persistEvent(run.id, this.normalizeEvent(run, event), started);
       }
     } catch (error) {
       if (this.cancellationRequested.has(run.id)) return;
@@ -65,11 +76,32 @@ export class AgentRunManager {
         message: error instanceof Error ? error.message : "Agent run failed.",
         exitCode: null,
       };
-      this.persistEvent(run.id, event, started);
+      this.persistEvent(run.id, this.normalizeEvent(run, event), started);
     } finally {
       this.cancellationRequested.delete(run.id);
       this.sequenceByRun.delete(run.id);
     }
+  }
+
+  private normalizeEvent(run: AgentRunRecord, event: AgentEvent): AgentEvent {
+    if (event.type === "completed") {
+      const substitution = modelSubstitutionFailure(run.provider, run.requestedModel, event.metadata.actualModel);
+      if (!substitution) return event;
+      return {
+        type: "failed",
+        runId: run.id,
+        occurredAt: event.occurredAt,
+        message: substitution.message,
+        exitCode: event.exitCode,
+        failureKind: substitution.kind,
+        actualModel: event.metadata.actualModel,
+      };
+    }
+    if (event.type !== "failed") return event;
+    const current = this.db.select({ errorOutput: agentRuns.errorOutput }).from(agentRuns)
+      .where(eq(agentRuns.id, run.id)).get();
+    const classified = classifyAgentFailure(run.provider, `${event.message}\n${current?.errorOutput ?? ""}`);
+    return { ...event, message: classified.message, failureKind: classified.kind };
   }
 
   async cancel(runId: string, adapter: AgentAdapter): Promise<boolean> {
@@ -123,6 +155,7 @@ export class AgentRunManager {
     } else if (event.type === "failed") {
       this.db.update(agentRuns).set({
         status: "FAILED", errorMessage: event.message, exitCode: event.exitCode,
+        actualModel: event.actualModel === undefined ? current.actualModel : event.actualModel,
         durationMs: Date.now() - started, completedAt: event.occurredAt, updatedAt,
       }).where(eq(agentRuns.id, runId)).run();
       this.usageSafety?.recordRateLimitError(current.provider, event.message);

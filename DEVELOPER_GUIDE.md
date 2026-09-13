@@ -233,14 +233,23 @@ Adapters translate the resolved decision into supported provider flags. If a CLI
 
 The Phase 2 implementation uses `spawn` without a shell. The process supervisor:
 
-1. validates the absolute working directory and currently rejects every profile except `READ_ONLY`;
-2. constructs an allowlisted environment and rejects credential-like overrides;
+1. validates the absolute working directory and confines `WORKTREE_WRITE`/`TEST_ONLY` to a real
+   linked Git worktree rather than the developer's primary checkout;
+2. constructs an allowlisted environment, rejects credential-like overrides, and prevents a run
+   from redirecting trusted authentication/configuration paths inherited from the server;
 3. starts the provider process without a shell and in its own process group where supported;
 4. streams bounded stdout/stderr chunks;
-5. terminates the process group on timeout or cancellation; and
+5. terminates the process group on timeout or cancellation, escalating from `SIGTERM` to `SIGKILL`
+   after a bounded grace period so an uncooperative descendant cannot keep the run alive; and
 6. emits one normalized terminal result.
 
 `AgentRunManager` writes each normalized event to SQLite before broadcasting it. It separately stores visible output, structured raw events, and stderr; each channel is capped at 5 MiB. The Phase 2 routes expose run creation, detail/history, cancellation, provider health, and SSE event replay. Refresh recovery can reconstruct completed and in-progress records from SQLite, although startup reconciliation for a process interrupted by a server restart remains Phase 7 work.
+
+Before persistence, terminal failures are classified provider-neutrally as authentication required,
+model unavailable, timeout, or ordinary process failure so the stored message tells the human what
+action is required. A completed provider event is converted to a failed run when its reported actual
+model differs from a non-default model explicitly requested by the human; the reported actual model
+is still retained for audit. Unknown actual-model data is never treated as a substitution.
 
 SSE is the initial transport because run output is primarily server-to-client; cancellation and user decisions remain normal HTTP commands. Revisit WebSocket only if later bidirectional streaming requirements justify it.
 

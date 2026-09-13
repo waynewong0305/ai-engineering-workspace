@@ -53,11 +53,26 @@ export type AgentRunMetadata = {
   webAccessPermitted: boolean;
 };
 
+export type AgentFailureKind =
+  | "AUTHENTICATION_REQUIRED"
+  | "MODEL_UNAVAILABLE"
+  | "MODEL_SUBSTITUTED"
+  | "TIMEOUT"
+  | "PROCESS_ERROR";
+
 export type AgentEvent =
   | { type: "started"; runId: string; occurredAt: string }
   | { type: "stdout"; runId: string; occurredAt: string; chunk: string }
   | { type: "stderr"; runId: string; occurredAt: string; chunk: string }
   | { type: "structured_output"; runId: string; occurredAt: string; value: unknown }
   | { type: "completed"; runId: string; occurredAt: string; exitCode: number; metadata: AgentRunMetadata }
-  | { type: "failed"; runId: string; occurredAt: string; message: string; exitCode: number | null }
+  | {
+      type: "failed";
+      runId: string;
+      occurredAt: string;
+      message: string;
+      exitCode: number | null;
+      failureKind?: AgentFailureKind;
+      actualModel?: string | null;
+    }
   | { type: "cancelled"; runId: string; occurredAt: string };

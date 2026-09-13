@@ -17,7 +17,18 @@ const ALLOWED_ENVIRONMENT_KEYS = new Set([
   "XDG_STATE_HOME",
 ]);
 
-const SENSITIVE_KEY = /(?:^|_)(?:API_?KEY|AUTH|CREDENTIALS?|DATABASE_URL|PASSWORD|PRIVATE_?KEY|SECRET|TOKEN)(?:_|$)|^(?:ANTHROPIC|AWS|AZURE|GCP|GOOGLE|OPENAI)_/i;
+const IMMUTABLE_SOURCE_KEYS = new Set([
+  "CODEX_HOME",
+  "HOME",
+  "PATH",
+  "TMPDIR",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+]);
+
+const SENSITIVE_KEY = /(?:^|_)(?:ACCESS_?KEY|API_?KEY|AUTH|BEARER|CLIENT_?SECRET|CONNECTION_?STRING|COOKIE|CREDENTIALS?|DATABASE_URL|KEYCHAIN|PASS(?:PHRASE|WORD)|PRIVATE_?KEY|SECRET|SESSION|TOKEN)(?:_|$)|^(?:ANTHROPIC|AWS|AZURE|GCP|GITHUB|GITLAB|GOOGLE|NPM|OPENAI)_/i;
 
 export class UnsafeEnvironmentError extends Error {}
 
@@ -39,6 +50,12 @@ export function sanitizeEnvironment(
     if (!ALLOWED_ENVIRONMENT_KEYS.has(key)) {
       throw new UnsafeEnvironmentError(`Environment variable ${key} is not in the agent allowlist.`);
     }
+    if (IMMUTABLE_SOURCE_KEYS.has(key)) {
+      throw new UnsafeEnvironmentError(`Environment variable ${key} is inherited from the trusted server process and cannot be overridden per run.`);
+    }
+    if (value.includes("\0")) {
+      throw new UnsafeEnvironmentError(`Environment variable ${key} contains an invalid null byte.`);
+    }
     environment[key] = value;
   }
 
@@ -46,4 +63,3 @@ export function sanitizeEnvironment(
   environment.TERM = environment.TERM ?? "dumb";
   return environment;
 }
-

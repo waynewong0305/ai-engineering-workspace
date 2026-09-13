@@ -210,6 +210,12 @@ These runs use a read-only repository profile and disable web access. They canno
 
 Claude Code may be installed but show **Authentication required**. Run `claude auth login` yourself in a terminal, then select **Recheck tools**. The application never asks for or stores the provider credential.
 
+If authentication expires during a run, the failed run now explains that re-authentication and a
+tool recheck are required. If the provider reports a different model from one you explicitly
+requested, the run is failed and both model names remain visible in its record; the application does
+not silently accept the substitute. Cancellation and timeout stop the provider's whole process tree,
+including an uncooperative child process after a short forced-termination grace period.
+
 ### Select Claude and Codex models
 
 Repository explanations and brainstorming tasks accept editable provider model IDs. Leaving an ID blank uses the provider default, and every run stores the requested value plus the actual model when the CLI reveals it.
@@ -559,11 +565,11 @@ Run the provider CLI manually and follow its supported login flow. AI Engineerin
 
 Confirm the requested model is available to the locally authenticated account. Select another model explicitly or edit the configured model ID. Review run history to confirm the requested and actual values; do not assume a fallback occurred.
 
-### Agent command failed — planned
+### Agent command failed
 
 Open the run record and inspect its exit code, stderr, working directory, CLI version, permission profile, and model request. A failed run remains failed; the application will not label partial text as a success.
 
-### Agent timed out — planned
+### Agent timed out
 
 Check whether the task was too broad or the configured timeout was too short. Inspect captured output, narrow the request, and start a new run. The original timeout remains in history.
 

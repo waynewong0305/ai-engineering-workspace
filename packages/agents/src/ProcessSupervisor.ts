@@ -55,10 +55,17 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
 type ActiveProcess = {
   child: ChildProcess;
   finishReason: "CANCELLED" | "TIMED_OUT" | null;
+  forceKillTimer: NodeJS.Timeout | null;
 };
 
 export class ProcessSupervisor {
   private readonly active = new Map<string, ActiveProcess>();
+
+  constructor(private readonly terminationGraceMs = 2_000) {
+    if (!Number.isFinite(terminationGraceMs) || terminationGraceMs < 1 || terminationGraceMs > 30_000) {
+      throw new Error("Process termination grace period must be between 1 ms and 30 seconds.");
+    }
+  }
 
   async *run(input: SupervisedProcessInput): AsyncIterable<SupervisedProcessEvent> {
     if (this.active.has(input.runId)) throw new Error(`Run ${input.runId} is already active.`);
@@ -90,7 +97,7 @@ export class ProcessSupervisor {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const active: ActiveProcess = { child, finishReason: null };
+    const active: ActiveProcess = { child, finishReason: null, forceKillTimer: null };
     this.active.set(input.runId, active);
     const maxChunkBytes = input.maxChunkBytes ?? 256 * 1024;
     let terminal = false;
@@ -105,13 +112,14 @@ export class ProcessSupervisor {
 
     const timeout = setTimeout(() => {
       active.finishReason = "TIMED_OUT";
-      this.kill(child);
+      this.terminate(active);
     }, input.timeoutMs);
 
     const finish = (event: SupervisedProcessEvent) => {
       if (terminal) return;
       terminal = true;
       clearTimeout(timeout);
+      if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
       this.active.delete(input.runId);
       queue.push(event);
       queue.close();
@@ -139,18 +147,25 @@ export class ProcessSupervisor {
     const active = this.active.get(runId);
     if (!active) return;
     active.finishReason = "CANCELLED";
-    this.kill(active.child);
+    this.terminate(active);
   }
 
-  private kill(child: ChildProcess) {
+  private terminate(active: ActiveProcess) {
+    this.signal(active.child, "SIGTERM");
+    if (active.forceKillTimer) return;
+    active.forceKillTimer = setTimeout(() => this.signal(active.child, "SIGKILL"), this.terminationGraceMs);
+    active.forceKillTimer.unref();
+  }
+
+  private signal(child: ChildProcess, signal: NodeJS.Signals) {
     if (child.pid && process.platform !== "win32") {
       try {
-        process.kill(-child.pid, "SIGTERM");
+        process.kill(-child.pid, signal);
         return;
       } catch {
         // Fall back to killing the direct child.
       }
     }
-    child.kill("SIGTERM");
+    child.kill(signal);
   }
 }

@@ -16,5 +16,28 @@ describe("sanitizeEnvironment", () => {
   it("rejects credential-like overrides", () => {
     expect(() => sanitizeEnvironment({ OPENAI_API_KEY: "secret" }, {})).toThrow(UnsafeEnvironmentError);
   });
-});
 
+  it.each([
+    "GITHUB_TOKEN",
+    "NPM_AUTH_TOKEN",
+    "DB_PASSWORD",
+    "SERVICE_CLIENT_SECRET",
+    "SESSION_COOKIE",
+    "DATABASE_CONNECTION_STRING",
+  ])("rejects additional credential-shaped override %s", (key) => {
+    expect(() => sanitizeEnvironment({ [key]: "must-not-leak" }, {})).toThrow(UnsafeEnvironmentError);
+  });
+
+  it.each(["HOME", "PATH", "CODEX_HOME", "XDG_CONFIG_HOME", "TMPDIR"])(
+    "does not let a run redirect trusted process location %s",
+    (key) => {
+      expect(() => sanitizeEnvironment({ [key]: "/tmp/untrusted" }, { [key]: "/trusted" })).toThrow(
+        /trusted server process/,
+      );
+    },
+  );
+
+  it("rejects null bytes in otherwise allowed overrides", () => {
+    expect(() => sanitizeEnvironment({ LANG: "en_US\0.UTF-8" }, {})).toThrow(/null byte/);
+  });
+});

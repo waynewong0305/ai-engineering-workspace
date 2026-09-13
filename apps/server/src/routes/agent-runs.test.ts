@@ -41,6 +41,37 @@ class FakeCodexAdapter implements AgentAdapter {
   async cancel() {}
 }
 
+class FailingCodexAdapter extends FakeCodexAdapter {
+  constructor(private readonly detail: string) {
+    super();
+  }
+
+  override async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+    const occurredAt = new Date().toISOString();
+    yield { type: "started", runId: input.runId, occurredAt };
+    yield { type: "stderr", runId: input.runId, occurredAt, chunk: this.detail };
+    yield {
+      type: "failed", runId: input.runId, occurredAt,
+      message: "Agent process exited with code 1.", exitCode: 1,
+    };
+  }
+}
+
+class SubstitutingCodexAdapter extends FakeCodexAdapter {
+  override async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+    const occurredAt = new Date().toISOString();
+    yield { type: "started", runId: input.runId, occurredAt };
+    yield {
+      type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+      metadata: {
+        provider: "CODEX", requestedModel: input.model.requested, actualModel: "substitute-model",
+        effort: null, cliVersion: "fake-codex 1.0", promptVersion: input.promptVersion,
+        webAccessPermitted: input.webAccess.permitted === true,
+      },
+    };
+  }
+}
+
 async function createTestRepository() {
   const repositoryPath = await mkdtemp(join(tmpdir(), "aiew-agent-repo-"));
   await execFileAsync("git", ["init", "-b", "main", repositoryPath]);
@@ -48,6 +79,17 @@ async function createTestRepository() {
   await execFileAsync("git", ["-C", repositoryPath, "add", "README.md"]);
   await execFileAsync("git", ["-C", repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Initial"]);
   return repositoryPath;
+}
+
+async function waitForTerminalRun(app: ReturnType<typeof buildApp>, runId: string) {
+  let run;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await app.inject({ method: "GET", url: `/api/agent-runs/${runId}` });
+    run = response.json();
+    if (["COMPLETED", "FAILED", "CANCELLED"].includes(run.status)) return run;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return run;
 }
 
 describe("agent run routes", () => {
@@ -66,13 +108,7 @@ describe("agent run routes", () => {
     expect(createResponse.statusCode).toBe(202);
     const created = createResponse.json();
 
-    let run;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const response = await app.inject({ method: "GET", url: `/api/agent-runs/${created.id}` });
-      run = response.json();
-      if (run.status === "COMPLETED") break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    const run = await waitForTerminalRun(app, created.id);
 
     expect(run).toMatchObject({
       status: "COMPLETED",
@@ -118,6 +154,56 @@ describe("agent run routes", () => {
 
     const audit = (await app.inject({ method: "GET", url: "/api/usage/audit?provider=CODEX" })).json();
     expect(audit[0]).toMatchObject({ eventType: "CHECKPOINT_TRIGGERED", status: "EXHAUSTED" });
+  });
+
+  it("turns an authentication-expiry process failure into actionable guidance", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FailingCodexAdapter("Authentication required: token expired")],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const response = await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: { projectId: project.id, provider: "CODEX", prompt: "Explain this repository." },
+    });
+    const run = await waitForTerminalRun(app, response.json().id);
+
+    expect(run.status).toBe("FAILED");
+    expect(run.errorMessage).toContain("authentication is required or has expired");
+    expect(run.errorMessage).toContain("Authenticate manually");
+    expect(run.events.at(-1)).toMatchObject({
+      type: "failed",
+      payload: { failureKind: "AUTHENTICATION_REQUIRED" },
+    });
+  });
+
+  it("refuses to accept a silently substituted explicitly requested model", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new SubstitutingCodexAdapter()] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const response = await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: {
+        projectId: project.id, provider: "CODEX", prompt: "Explain this repository.",
+        model: "requested-model",
+      },
+    });
+    const run = await waitForTerminalRun(app, response.json().id);
+
+    expect(run).toMatchObject({ status: "FAILED", actualModel: "substitute-model" });
+    expect(run.errorMessage).toContain("instead of the explicitly requested requested-model");
+    expect(run.errorMessage).toContain("requires a human decision");
+    expect(run.events.at(-1)).toMatchObject({
+      type: "failed",
+      payload: { failureKind: "MODEL_SUBSTITUTED", actualModel: "substitute-model" },
+    });
   });
 
   it("rejects an unregistered project", async () => {

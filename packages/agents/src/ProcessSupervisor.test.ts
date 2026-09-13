@@ -77,6 +77,67 @@ describe("ProcessSupervisor", () => {
     expect(events.at(-1)?.type).toBe("cancelled");
   });
 
+  it("force-kills a cancelled process group when the parent and child ignore SIGTERM", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "aiew-supervisor-"));
+    const supervisor = new ProcessSupervisor(50);
+    const childProgram = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
+    const parentProgram = [
+      "const { spawn } = require('node:child_process');",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childProgram)}], { stdio: 'ignore' });`,
+      "process.stdout.write(String(child.pid));",
+      "process.on('SIGTERM', () => {});",
+      "setInterval(() => {}, 1000);",
+    ].join(" ");
+    const events = [];
+    let descendantPid: number | null = null;
+
+    for await (const event of supervisor.run({
+      runId: "cancel-tree",
+      command: process.execPath,
+      args: ["-e", parentProgram],
+      cwd,
+      permissionProfile: "READ_ONLY",
+      timeoutMs: 5_000,
+    })) {
+      events.push(event);
+      if (event.type === "stdout") {
+        descendantPid = Number.parseInt(event.chunk, 10);
+        await supervisor.cancel("cancel-tree");
+      }
+    }
+
+    expect(events.at(-1)?.type).toBe("cancelled");
+    expect(descendantPid).not.toBeNull();
+    let descendantAlive = true;
+    for (let attempt = 0; attempt < 20 && descendantAlive; attempt += 1) {
+      try {
+        process.kill(descendantPid!, 0);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      } catch {
+        descendantAlive = false;
+      }
+    }
+    expect(descendantAlive).toBe(false);
+  });
+
+  it("force-kills a timed-out process that ignores SIGTERM", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "aiew-supervisor-"));
+    const supervisor = new ProcessSupervisor(50);
+    const events = [];
+    const startedAt = Date.now();
+    for await (const event of supervisor.run({
+      runId: "timeout-force-kill",
+      command: process.execPath,
+      args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+      cwd,
+      permissionProfile: "READ_ONLY",
+      timeoutMs: 1_000,
+    })) events.push(event);
+
+    expect(events.at(-1)?.type).toBe("timed_out");
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it("permits WORKTREE_WRITE/TEST_ONLY inside a real Git worktree, and refuses them against a primary checkout", async () => {
     const { repositoryPath, worktreePath } = await createRepositoryWithWorktree();
     const supervisor = new ProcessSupervisor();

@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 (hardening) remains unimplemented — see below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is in progress — see below.
 
 Documentation consistency maintenance (2026-09-13): reconciled `AGENTS.md`, this status record,
 `IMPLEMENTATION_ROADMAP.md`, `PROJECT_SPEC.md`, `DEVELOPER_GUIDE.md`, and
@@ -645,14 +645,42 @@ Completion record:
 
 ## Phase 7 — Hardening
 
-- [ ] Expanded environment-sanitization and deny-list hardening
+- [x] Expanded environment-sanitization and deny-list hardening
 - [ ] Sensitive path deny list
-- [ ] Process cancellation and timeouts
-- [ ] CLI failure handling
+- [x] Process cancellation and timeouts
+- [x] CLI failure handling
 - [ ] Worktree conflict handling
 - [ ] Database backups
 - [ ] Cleanup tools
 - [ ] Audit history
+
+### Phase 7, slice 1 completion record — process, environment, and CLI failures
+
+- Date: 2026-09-13
+- Expanded the environment deny-list to cover access keys, bearer/client secrets, connection
+  strings, cookies, passphrases, sessions, and common GitHub/GitLab/npm credential prefixes.
+  Per-run input can no longer redirect trusted authentication/configuration locations (`HOME`,
+  `CODEX_HOME`, `PATH`, `TMPDIR`, or XDG directories), and null-byte values are rejected.
+- `ProcessSupervisor` now sends `SIGTERM` to the whole process group and escalates to `SIGKILL`
+  after a bounded grace period. New tests prove both cancellation and timeout finish even when a
+  parent and its descendant ignore `SIGTERM`, rather than leaving an orphan process or hanging the
+  run forever.
+- Added provider-neutral failure classification for expired/missing authentication, unavailable
+  models, timeouts, and ordinary process errors. Failure events persist the classification in their
+  event payload and replace opaque exit-code messages with actionable guidance. If a CLI reports a
+  different actual model from an explicitly requested model, the run is failed and the actual model
+  is retained; the workspace never silently accepts a substitution. Provider-default runs remain
+  valid because no exact model was requested, and a missing actual-model report remains unknown
+  rather than fabricated.
+- Re-inspected the installed CLIs before changing invocation flags. The current Codex `exec --help`
+  supports `--approve-for-me`, not the previously configured `--ask-for-approval never`; Phase 7
+  updates `WORKTREE_WRITE` runs to the supported workspace-write plus automatic-review form and
+  adds an argument-construction regression test. No provider call was made.
+- Focused verification before the full phase-slice suite: 35 `packages/agents` tests and 5
+  `agent-runs` route tests passed; agent and server TypeScript checks were clean.
+- Full verification: `npm test` (139 workspace tests: 93 server + 35 agents + 11 Git, plus 9
+  policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
+  db:generate` (no schema changes), and `git diff --check`; all passed under Node 22.23.2.
 
 ## Phase 8 — Usage, token, and cost monitoring
 
