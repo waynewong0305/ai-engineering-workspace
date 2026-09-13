@@ -95,6 +95,7 @@ Current record:
 - [x] Persistent editable assumption/evidence board
 - [x] Explicit per-task web decision and run audit
 - [x] On-demand brainstorm plan report (`GET /api/tasks/:id/report`)
+- [x] Per-task open-question count surfaced in the task list
 
 Current record:
 
@@ -107,6 +108,8 @@ Current record:
 - Correction (2026-09-13): this record previously said "the screen edits evidence content while type reclassification is currently API-only." That was inaccurate even at the time — `PATCH /api/tasks/:taskId/evidence/:itemId` and the evidence board's own Edit → type select → Save flow (`editingEvidenceType` in `App.vue`) both shipped in the same commit as this record and already support changing an item's type (e.g. `QUESTION` → `DECISION`). No code changed to fix this; only the stale claim did, caught while scoping Phase 6.
 
 Later addition (2026-09-13): a brainstorm plan export, modeled on the build workflow's existing pre-PR report (`apps/server/src/services/pre-pr-report.ts`). `buildBrainstormPlanReport` (`apps/server/src/services/brainstorm-report.ts`) reads a task's analyses, cross-reviews, comparison, and evidence and assembles them into a report; unlike the build report it never blocks on task status — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed, with a status-appropriate recommended next action, since a brainstorm task has no single fixed reviewer to gate on. Exposed as `GET /api/tasks/:id/report` and a **BRAINSTORM PLAN REPORT** section with a **Generate report** button on the task detail pane, next to the evidence board. Verified with a route-level test that runs the fake-adapter workflow to `READY` and checks the full report shape, a 404 test for an unknown task, `npm test`/`typecheck`/`build`/`check:agent-policy`/`db:generate` (no schema change), and manual browser verification of the button and its output on a `DRAFT` task.
+
+Later addition (2026-09-13): with several tasks running at once there was no way to tell which needed human attention without opening each one individually, so `GET /api/tasks` and `GET /api/tasks/:id` now both return `openQuestionCount` (a count of the task's `evidence_items` rows of type `QUESTION`, computed in application code rather than a SQL aggregate, matching this route file's existing style) and the task-list sidebar item in `App.vue` shows an amber "N open question(s)" badge whenever that count is nonzero. A question stops counting the moment a human reclassifies it away from `QUESTION` (typically to `DECISION`) through the evidence board's existing edit flow — no new state was added. No schema change. Verified with two new assertions in `tasks.test.ts` (the list endpoint and the detail endpoint both report the count derived from the fake-adapter workflow's real evidence), the full verification list, and manual browser verification (added a `QUESTION` record through the UI, confirmed the badge appeared, then removed that test record from the local database directly since there is no delete-evidence endpoint yet).
 
 ## Phase 4 — Git worktrees
 

@@ -54,20 +54,29 @@ export function registerTaskRoutes(
 
   app.get<{ Querystring: { projectId?: string } }>("/api/tasks", async (request) => {
     const query = db.select().from(tasks);
-    return request.query.projectId
+    const rows = request.query.projectId
       ? query.where(eq(tasks.projectId, request.query.projectId)).orderBy(desc(tasks.createdAt)).all()
       : query.orderBy(desc(tasks.createdAt)).all();
+    // One pass over every QUESTION record rather than a per-task query — cheap for a local, single-user
+    // workspace's evidence volume, and avoids an N+1 query per row in the list a human scans across tasks.
+    const openQuestionCounts = new Map<string, number>();
+    for (const item of db.select({ taskId: evidenceItems.taskId }).from(evidenceItems).where(eq(evidenceItems.type, "QUESTION")).all()) {
+      openQuestionCounts.set(item.taskId, (openQuestionCounts.get(item.taskId) ?? 0) + 1);
+    }
+    return rows.map((task) => ({ ...task, openQuestionCount: openQuestionCounts.get(task.id) ?? 0 }));
   });
 
   app.get<{ Params: { id: string } }>("/api/tasks/:id", async (request, reply) => {
     const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
     if (!task) return reply.code(404).send({ message: "Task not found." });
+    const evidence = db.select().from(evidenceItems).where(eq(evidenceItems.taskId, task.id)).orderBy(asc(evidenceItems.createdAt)).all();
     return {
       ...task,
       runs: db.select().from(agentRuns).where(eq(agentRuns.taskId, task.id)).orderBy(asc(agentRuns.createdAt)).all(),
       artifacts: db.select().from(taskArtifacts).where(eq(taskArtifacts.taskId, task.id)).orderBy(asc(taskArtifacts.createdAt)).all(),
-      evidence: db.select().from(evidenceItems).where(eq(evidenceItems.taskId, task.id)).orderBy(asc(evidenceItems.createdAt)).all(),
+      evidence,
       comparison: db.select().from(taskComparisons).where(eq(taskComparisons.taskId, task.id)).get()?.content ?? null,
+      openQuestionCount: evidence.filter((item) => item.type === "QUESTION").length,
     };
   });
 
@@ -101,7 +110,7 @@ export function registerTaskRoutes(
       errorMessage: null, createdAt: now, updatedAt: now,
     };
     db.insert(tasks).values(task).run();
-    return reply.code(201).send({ ...task, runs: [], artifacts: [], evidence: [], comparison: null });
+    return reply.code(201).send({ ...task, runs: [], artifacts: [], evidence: [], comparison: null, openQuestionCount: 0 });
   });
 
   app.post<{ Params: { id: string }; Body: StartTaskBody }>("/api/tasks/:id/start", async (request, reply) => {

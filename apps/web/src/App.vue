@@ -92,6 +92,24 @@ type EvidenceItem = {
   content: string;
   sourceProvider: AgentProvider | null;
 };
+type ExperimentStatus = "RUNNING" | "REVIEWING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
+type ExperimentVerdict = "PROVEN" | "DISPROVEN" | "INCONCLUSIVE";
+type Experiment = {
+  id: string;
+  taskId: string;
+  hypothesis: string;
+  builderProvider: AgentProvider;
+  reviewerProvider: AgentProvider;
+  status: ExperimentStatus;
+  testExecuted: string | null;
+  result: string | null;
+  conclusion: string | null;
+  verdict: ExperimentVerdict | null;
+  errorMessage: string | null;
+  createdAt: string;
+  builderRun: AgentRun | null;
+  reviewerRun: AgentRun | null;
+};
 type AdrStatus = "PROPOSED" | "ACCEPTED" | "REJECTED" | "SUPERSEDED";
 type Adr = {
   id: string;
@@ -125,6 +143,7 @@ type BrainstormTask = {
   runs?: Array<AgentRun & { role: "INDEPENDENT_ANALYSIS" | "CROSS_REVIEW"; targetProvider: AgentProvider | null }>;
   artifacts?: TaskArtifact[];
   evidence?: EvidenceItem[];
+  openQuestionCount: number;
   comparison?: {
     consensus: string[];
     disagreements: string[];
@@ -344,6 +363,13 @@ const editingEvidenceType = ref<EvidenceItem["type"]>("FACT");
 const brainstormReport = ref<BrainstormPlanReport | null>(null);
 const loadingBrainstormReport = ref(false);
 const brainstormReportError = ref("");
+const experimentsForTask = ref<Experiment[]>([]);
+const experimentHypothesis = ref("");
+const experimentBuilderProvider = ref<AgentProvider>("CLAUDE");
+const experimentReviewerProvider = ref<AgentProvider>("CODEX");
+const startingExperiment = ref(false);
+const experimentError = ref("");
+let experimentPollTimer: number | null = null;
 const taskForm = reactive({
   projectId: "",
   title: "Database horizontal scaling",
@@ -1815,6 +1841,9 @@ onUnmounted(() => {
               <span>{{ task.type }}</span>
               <strong>{{ task.title }}</strong>
               <small>{{ task.status }}</small>
+              <small v-if="task.openQuestionCount" class="open-question-badge">
+                {{ task.openQuestionCount }} open question{{ task.openQuestionCount === 1 ? "" : "s" }}
+              </small>
             </button>
           </aside>
 

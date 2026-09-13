@@ -255,6 +255,7 @@ legend small { margin-left: 8px; }
 .task-list-item span, .task-list-item small { color: #71849f; font: 600 10px/1.3 ui-monospace, monospace; letter-spacing: 0.06em; }
 .task-list-item strong { font-size: 13px; line-height: 1.35; }
 .task-list-item small { color: var(--cyan); }
+.task-list-item .open-question-badge { justify-self: start; padding: 3px 7px; border: 1px solid rgba(255, 200, 120, 0.45); border-radius: 4px; color: #ffcf78; }
 
 .task-detail { min-width: 0; }
 .task-detail-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }

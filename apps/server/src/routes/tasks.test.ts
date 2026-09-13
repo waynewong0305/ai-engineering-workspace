@@ -144,7 +144,7 @@ describe("brainstorm task routes", () => {
     });
     expect(createResponse.statusCode).toBe(201);
     const created = createResponse.json();
-    expect(created).toMatchObject({ status: "DRAFT", webAccessPolicy: "DISABLED", webAccessDecidedBy: "USER" });
+    expect(created).toMatchObject({ status: "DRAFT", webAccessPolicy: "DISABLED", webAccessDecidedBy: "USER", openQuestionCount: 0 });
 
     await acknowledgeUnknownUsage(app);
     const startResponse = await app.inject({ method: "POST", url: `/api/tasks/${created.id}/start`, payload: {} });
@@ -169,8 +169,14 @@ describe("brainstorm task routes", () => {
       missingEvidence: ["Per-tenant storage distribution"],
     });
     expect(task.evidence.filter((item: { type: string }) => item.type === "FACT")).toHaveLength(2);
+    expect(task.evidence.filter((item: { type: string }) => item.type === "QUESTION")).toHaveLength(2);
+    expect(task.openQuestionCount).toBe(2);
     expect(starts.get("brainstorm-analysis:v1")?.size).toBe(2);
     expect(starts.get("cross-review:v1")?.size).toBe(2);
+
+    const listResponse = await app.inject({ method: "GET", url: `/api/tasks?projectId=${project.id}` });
+    const list = listResponse.json();
+    expect(list.find((entry: { id: string }) => entry.id === created.id)?.openQuestionCount).toBe(2);
 
     const evidenceResponse = await app.inject({
       method: "POST", url: `/api/tasks/${created.id}/evidence`, payload: { type: "DECISION", content: "Use explicit tenant-to-shard mapping." },

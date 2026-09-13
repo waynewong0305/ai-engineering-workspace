@@ -264,6 +264,8 @@ The workflow is:
 
 The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. You can cancel while analysis or cross-review is active. A server restart during active provider processes is not yet reconciled automatically.
 
+When you have several tasks going at once, each entry in the **Tasks** sidebar list shows an **N open question(s)** badge whenever its evidence board holds one or more `QUESTION` records, so you can tell at a glance which tasks still need a human to weigh in — without opening each one. A question stops counting once you reclassify it to a different record type (typically `DECISION`).
+
 Claude's role is not to lead automatically, and Codex's role is not merely to approve. Either provider can be assigned as architect or skeptic. Cross-review should distinguish a factual error from a legitimate difference in engineering judgment.
 
 ### Facts, assumptions, and decisions
