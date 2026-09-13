@@ -1625,6 +1625,30 @@ audit history
 
 ---
 
+## Phase 8 — Usage, token, and cost monitoring
+
+Queued behind Phases 5–7 (see `IMPLEMENTATION_ROADMAP.md`). Full spec: `USAGE_MONITORING_SPEC.md`.
+
+Implement:
+
+```text
+UsageRecord per agent run (tokens, cache, cost, billing mode, usage source)
+centralized versioned pricing registry
+API-equivalent cost calculation, always labeled as such
+workspace/project/task/run usage dashboard
+cross-review cost breakdown by role/workflow
+task usage budgets integrated with the max-review-round cap
+historical backfill from provider-reported data only
+```
+
+Acceptance:
+
+A small real Claude run and a small real Codex run each produce a usage record with correctly
+labeled billing mode and usage-source reliability, the workspace dashboard reflects both, and no
+historical or current value is fabricated.
+
+---
+
 # 35. Testing strategy
 
 Unit test:

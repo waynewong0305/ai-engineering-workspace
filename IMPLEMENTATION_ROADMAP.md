@@ -195,6 +195,31 @@ Goal: make normal failure safe and understandable.
 
 Exit gate: documented failure drills preserve source code, history, and user control.
 
+## Phase 8 — Usage, token, and cost monitoring (queued, added 2026-09-13)
+
+Goal: make Claude/Codex token usage, billing mode, and API-equivalent cost visible from workspace
+level down to an individual run, without ever presenting an estimate as an exact figure.
+
+Queued behind Phases 5–7: do not start until the rest of Phase 5 (finding-response/re-review/merge/
+pre-PR report), Phase 6, and Phase 7 are complete, unless explicitly pulled forward by the user.
+Full spec, data model, UI surfaces, budget behavior, backfill rules, and testing/reporting
+requirements: `USAGE_MONITORING_SPEC.md`. Re-investigate installed Claude/Codex CLI capabilities at
+execution time — do not assume this roadmap's or that spec's CLI findings still hold.
+
+- [ ] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
+- [ ] `UsageRecord` data model and migration, linked to run/task/project
+- [ ] Centralized, versioned pricing registry and auditable API-equivalent cost calculation
+- [ ] Workspace/project/task/run usage dashboard and drill-down UI, each value labeled with its
+      usage-source reliability (`EXACT`/`CALCULATED`/`ESTIMATED`/`UNAVAILABLE`)
+- [ ] Cross-review cost breakdown by role/workflow
+- [ ] Task usage budgets (presets + custom) integrated with the existing max-review-round cap
+- [ ] Historical backfill from recoverable provider-reported data only, with a backfill report
+- [ ] Usage & Cost settings
+
+Exit gate: a small real Claude run and a small real Codex run each produce a usage record with
+correctly labeled billing mode and usage-source reliability, the dashboard reflects both, and no
+historical or current value is fabricated.
+
 ## End-to-end workflow verification (cross-cutting, added 2026-09-13)
 
 Not one of the phases above: a single integration test (`apps/server/src/routes/end-to-end-workflow.test.ts`) that drives every currently-implemented phase together through the app's own HTTP API, in the order a real user would — registration, health, brainstorm draft, the usage-safety acknowledgement gate, independent analysis, cross-review, comparison/evidence, worktree creation, isolation, the deregistration-vs-linked-worktrees guard, and cleanup — using a temporary repository and fake adapters, spending no real provider usage. See `IMPLEMENTATION_STATUS.md` for the full record.

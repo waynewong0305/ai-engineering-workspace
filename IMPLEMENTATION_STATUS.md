@@ -277,6 +277,22 @@ Completion record:
 - [ ] Cleanup tools
 - [ ] Audit history
 
+## Phase 8 — Usage, token, and cost monitoring
+
+Not started. Queued behind the rest of Phase 5, Phase 6, and Phase 7 — see
+`IMPLEMENTATION_ROADMAP.md`'s Phase 8 entry and the full spec at `USAGE_MONITORING_SPEC.md`. Do not
+start without an explicit human instruction to pull it forward, and re-verify installed Claude/Codex
+CLI usage-telemetry capabilities at that time rather than trusting this record.
+
+- [ ] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
+- [ ] `UsageRecord` data model and migration
+- [ ] Pricing registry and API-equivalent cost calculation
+- [ ] Workspace/project/task/run usage dashboard
+- [ ] Cross-review cost breakdown
+- [ ] Task usage budgets integrated with the max-review-round cap
+- [ ] Historical backfill with a backfill report
+- [ ] Usage & Cost settings
+
 ## End-to-end workflow verification (cross-cutting)
 
 Not one of the phases above: every earlier phase's tests exercise one route or service at a time with fake data seeded directly. Nothing proved the pieces actually work *together*, in the order a real user would drive them, using only the app's own HTTP surface.
