@@ -506,7 +506,7 @@ AI Engineering Workspace uses separate task worktrees so a builder cannot overwr
 
 2. Edit the directory path, branch name, and base ref if the generated values are not what you want. All three are independent and previewed before anything is created.
 3. Select **Create Claude worktree** or **Create Codex worktree**. This is the explicit action that creates the worktree; nothing is created automatically. Creation never switches or modifies your active checkout, and Git rejects (and the screen reports) any path, branch, ref, or ownership collision before anything changes.
-4. Select **Inspect and manage** on a created worktree to see its branch, HEAD, clean/dirty status, staged and unstaged diff, and any active usage lease.
+4. Select **Inspect and manage** on a created worktree to see its branch, HEAD, clean/dirty status, staged and unstaged diff, and any active usage lease. A file matching the sensitive-path deny list (`.env`/`.env.*`, SSH private keys, AWS credential files, macOS keychain data) is never shown here or sent to a reviewer — the diff names it and explains why it was excluded instead of silently omitting it.
 5. **Move directory** and **Rename branch** are independent controls: moving the directory never renames the branch, and renaming the branch never moves the directory. Both are disabled while the worktree is dirty, locked, or in use, and disabled (with an explanation) if Git no longer reports a live worktree at that path.
 6. **Prepare removal** arms a two-step confirmation. You must check both "I confirm this worktree should be removed" and, separately, whether to also delete the branch. Branch deletion only succeeds when Git confirms the branch is merged into its base ref; the worktree directory is retained by default and the branch is retained unless you explicitly ask for its deletion too.
 
@@ -636,6 +636,8 @@ Dirty status does not prevent registration. Before creating a future worktree or
 ### Worktree conflict
 
 Inspect the worktree path and branch shown by the application. A path, branch, ref, or ownership collision is reported before anything is created; choose a new task branch/path or reuse the existing managed worktree instead. If a worktree record shows an inspection error because Git no longer lists it (for example, after an interrupted creation or a worktree removed outside the application), use removal to clear the stale record — this only ever discards the database record, never a live, uncommitted worktree. Never delete a worktree directory manually while Git still tracks it unless you understand the recovery steps.
+
+If creating a worktree fails outright (a real, if rare, filesystem or Git error after the usual checks already passed), the record is kept as **ERROR** with the underlying cause shown, and the task/provider slot stays occupied — retrying without acting on it returns the same specific error naming that record's id and what happened, rather than a generic "already managed" message. Remove the ERROR record (the same two-step confirmation as any other removal) and retry once you've addressed the underlying cause. Two near-simultaneous attempts to create the same task's worktree are also resolved cleanly this way: exactly one succeeds, and the other receives the same specific, actionable conflict instead of an unhandled failure.
 
 ### Tests failed — planned
 

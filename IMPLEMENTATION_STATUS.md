@@ -647,10 +647,10 @@ Completion record:
 ## Phase 7 — Hardening
 
 - [x] Expanded environment-sanitization and deny-list hardening
-- [ ] Sensitive path deny list
+- [x] Sensitive path deny list
 - [x] Process cancellation and timeouts
 - [x] CLI failure handling
-- [ ] Worktree conflict handling
+- [x] Worktree conflict handling
 - [x] Database backups and restart-only restore
 - [x] Cleanup diagnostics and explicit stale-lease release
 - [x] Audit-history export
@@ -743,6 +743,60 @@ Completion record:
   agents + 11 Git, plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run
   check:agent-policy`, `npm run db:generate` (18 tables, no additional schema drift after migration
   `0012`), and `git diff --check`.
+
+### Phase 7, slice 3 completion record — sensitive-path deny list and worktree conflict handling
+
+- Date: 2026-09-13
+- **Sensitive path deny list** (`packages/git/src/sensitive-paths.ts`): a provider-neutral
+  `isSensitivePath()` matcher for the exact file categories PROJECT_SPEC.md §11 names — `.env` and
+  `.env.*`, SSH private keys (`id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519` and their `.pub` twins,
+  anything under a `.ssh/` directory, `*.pem`), AWS credentials (`.aws/credentials`, `.aws/config`),
+  and macOS keychain data (`*.keychain`, `*.keychain-db`, anything under `Library/Keychains/`).
+  `WorktreeService.diff()` and `diffIncludingUntracked()` now route every diff through a redacting
+  helper: it lists the changed paths, splits sensitive from safe, and re-runs the diff pathspec
+  -limited to the safe subset only — a matching file's content never reaches a reviewer prompt, an
+  evidence item, or a pre-PR report. Nothing is silently dropped: the returned diff text is prefixed
+  with a note naming exactly which files were excluded and why, so a human always sees that a
+  sensitive file changed even though its content wasn't shown. This is deliberately a second,
+  separate deny list from `packages/agents/src/environment.ts`'s environment-*variable* deny list —
+  the two protect different channels.
+- Known, accepted scope limit: this closes the gap in what the *application itself* automatically
+  captures and forwards (diff/evidence capture, the only channel this app controls end-to-end). It
+  does not attempt to restrict what a running Claude Code or Codex CLI process could read directly
+  via its own Read/Glob tools inside its permitted working directory — doing that would mean adding
+  unverified, provider-specific tool-permission-rule flags to the adapters (Codex in particular
+  isn't installed in this environment to verify against), which conflicts with this project's
+  standing rule to re-inspect installed CLIs before changing invocation flags rather than guess at
+  undocumented behavior. Recorded here rather than silently assumed away.
+- **Worktree conflict handling** (`apps/server/src/routes/worktrees.ts`): the real gap was not
+  Git-level merge conflicts (already handled by `WorktreeService.beginMerge`'s `CONFLICT` result,
+  covered since Phase 4/5) but the *managed-record* layer above it. A worktree whose creation fails
+  after `validateProposal()` already passed (a genuine, if rare, filesystem/Git error) left its
+  (task, provider) slot permanently stuck: the explicit create route never checked for an existing
+  record first, so a retry hit the `worktrees` table's `(taskId, provider)` unique-index violation
+  and surfaced a generic "already managed" message that named nothing and suggested no fix. A human
+  had no way to discover that deleting the dead `ERROR` record (already possible via the existing
+  orphaned-record recovery path) was the way out. `createManagedWorktree` and
+  `ensureWorktreeForTask` now share one `existingSlotError()` check that runs before ever touching
+  Git: an `ACTIVE` slot, an in-flight `CREATING` slot, and a failed `ERROR` slot each get a distinct
+  error code and a message naming the existing record's id (and, for `ERROR`, its recorded cause and
+  the exact removal call that frees it). The database's unique index remains the final backstop for
+  a genuine concurrent race between two creation attempts — its failure is now caught and re-mapped
+  to the same specific error rather than a raw constraint message.
+- Tests added: `packages/git/src/sensitive-paths.test.ts` (13 blocked / 6 allowed path cases);
+  `packages/git/src/WorktreeService.test.ts` gained a redaction case proving a `.env` file's content
+  never appears in either `diff()` or `diffIncludingUntracked()` while an ordinary file's does;
+  `apps/server/src/routes/worktrees.test.ts` gained a real (not mocked) creation-failure case — a
+  plain file placed at the exact deterministic parent directory the app's own naming scheme needs,
+  so `WorktreeService.create()`'s own `mkdir` fails after validation already passed — proving the
+  `ERROR` record carries a real cause, a blind retry gets the specific `WORKTREE_SLOT_FAILED`
+  conflict, removal recovers it, and a clean retry then succeeds; and a genuine concurrent
+  double-create case (two simultaneous requests for the same task/provider) proving exactly one
+  wins and the other gets a clear conflict, never an unhandled failure or a duplicate worktree.
+- Full verification: `npm test` (166 workspace tests: 100 server + 35 agents + 31 `packages/git`
+  across its two files, plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run
+  check:agent-policy`, `npm run db:generate` (no schema changes — this unit added no columns), and
+  `git diff --check`; all passed under Node 22.23.2.
 
 ## Phase 8 — Usage, token, and cost monitoring
 

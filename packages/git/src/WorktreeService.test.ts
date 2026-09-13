@@ -91,6 +91,29 @@ describe("WorktreeService", () => {
     expect(status.trim()).toBe("?? feature.txt");
   });
 
+  it("redacts sensitive files from diffs of both tracked and untracked changes", async () => {
+    const { repositoryPath, worktreeRoot } = await createRepository();
+    const service = new WorktreeService();
+    const proposal = proposeWorktree(worktreeRoot, "306-abcd", "Sensitive diff redaction", "CLAUDE", "main");
+    await service.create(repositoryPath, worktreeRoot, proposal);
+
+    await writeFile(join(proposal.path, "feature.txt"), "ordinary change\n", "utf8");
+    await writeFile(join(proposal.path, ".env"), "API_KEY=super-secret\n", "utf8");
+
+    const untracked = await service.diffIncludingUntracked(proposal.path);
+    expect(untracked.staged).toContain("feature.txt");
+    expect(untracked.staged).toContain("ordinary change");
+    expect(untracked.staged).not.toContain("super-secret");
+    expect(untracked.staged).toMatch(/1 sensitive file\(s\) excluded.*\.env/);
+
+    await execFileAsync("git", ["-C", proposal.path, "add", "feature.txt", ".env"]);
+    const tracked = await service.diff(proposal.path);
+    expect(tracked.staged).toContain("feature.txt");
+    expect(tracked.staged).not.toContain("super-secret");
+    expect(tracked.staged).toMatch(/1 sensitive file\(s\) excluded.*\.env/);
+    expect(tracked.unstaged).toBe("");
+  });
+
   it("rejects path traversal, invalid refs, and collisions before creation", async () => {
     const { repositoryPath, worktreeRoot } = await createRepository();
     const service = new WorktreeService();

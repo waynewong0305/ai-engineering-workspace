@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { isSensitivePath } from "./sensitive-paths.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_GIT_OUTPUT = 10 * 1024 * 1024;
@@ -85,6 +86,24 @@ async function canonicalWithMissing(path: string): Promise<string> {
   }
   const canonicalParent = await realpath(cursor).catch(() => cursor);
   return resolve(canonicalParent, ...missing);
+}
+
+/**
+ * Runs a `git diff`-family command scoped to non-sensitive paths only (see sensitive-paths.ts):
+ * lists the files the unscoped command would touch, then re-runs it pathspec-limited to the safe
+ * subset. A file matching the deny list is never included in the returned text — its presence is
+ * only ever surfaced via the prepended note, never its content.
+ */
+async function redactedDiff(worktreePath: string, baseArgs: string[]): Promise<string> {
+  const changed = (await git(worktreePath, [...baseArgs, "--name-only", "-z"])).stdout
+    .split("\0").map((entry) => entry.trim()).filter(Boolean);
+  if (changed.length === 0) return "";
+  const sensitive = changed.filter(isSensitivePath);
+  const safe = changed.filter((path) => !isSensitivePath(path));
+  const body = safe.length ? (await git(worktreePath, [...baseArgs, "--", ...safe])).stdout : "";
+  if (sensitive.length === 0) return body;
+  const note = `# ${sensitive.length} sensitive file(s) excluded from this diff per PROJECT_SPEC.md §11: ${sensitive.join(", ")}\n`;
+  return `${note}${body}`;
 }
 
 function parseWorktreeList(output: string): GitWorktreeEntry[] {
@@ -200,10 +219,10 @@ export class WorktreeService {
 
   async diff(worktreePath: string) {
     const [unstaged, staged] = await Promise.all([
-      git(worktreePath, ["diff", "--no-ext-diff", "--"]),
-      git(worktreePath, ["diff", "--cached", "--no-ext-diff", "--"]),
+      redactedDiff(worktreePath, ["diff", "--no-ext-diff"]),
+      redactedDiff(worktreePath, ["diff", "--cached", "--no-ext-diff"]),
     ]);
-    return { unstaged: unstaged.stdout, staged: staged.stdout };
+    return { unstaged, staged };
   }
 
   /**
@@ -219,8 +238,8 @@ export class WorktreeService {
   async diffIncludingUntracked(worktreePath: string) {
     await git(worktreePath, ["add", "-A"]);
     try {
-      const full = await git(worktreePath, ["diff", "--cached", "--no-ext-diff", "--"]);
-      return { unstaged: "", staged: full.stdout };
+      const staged = await redactedDiff(worktreePath, ["diff", "--cached", "--no-ext-diff"]);
+      return { unstaged: "", staged };
     } finally {
       await git(worktreePath, ["reset"]).catch(() => undefined);
     }

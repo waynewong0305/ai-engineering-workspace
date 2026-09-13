@@ -6,6 +6,36 @@ import type { WorkspaceDatabase } from "../db/database.js";
 import { projects, tasks, worktrees, type ProjectRecord, type TaskRecord, type WorktreeRecord } from "../db/schema.js";
 import { WorktreeUsageManager } from "../services/worktree-usage-manager.js";
 
+/**
+ * A specific, actionable conflict for an already-occupied (task, provider) slot — the same case
+ * the `worktrees` table's unique index enforces, but diagnosed with the existing record's id,
+ * status, and (for a failed prior attempt) its recorded error, instead of a raw database
+ * constraint message that gives a human nothing to act on.
+ */
+function existingSlotError(existing: WorktreeRecord): WorktreeSafetyError {
+  if (existing.status === "ACTIVE") {
+    return new WorktreeSafetyError(
+      `A ${existing.provider} worktree already exists for this task (id ${existing.id}, path ${existing.path}). Reuse it instead of creating another.`,
+      "WORKTREE_SLOT_ACTIVE",
+    );
+  }
+  if (existing.status === "CREATING") {
+    return new WorktreeSafetyError(
+      `A ${existing.provider} worktree is already being created for this task (id ${existing.id}). Wait for it to finish before retrying.`,
+      "WORKTREE_SLOT_CREATING",
+    );
+  }
+  return new WorktreeSafetyError(
+    `A previous attempt to create the ${existing.provider} worktree for this task failed (id ${existing.id}): `
+      + `${existing.lastError ?? "no error was recorded"}. Delete it (DELETE /api/worktrees/${existing.id} with confirm) before retrying.`,
+    "WORKTREE_SLOT_FAILED",
+  );
+}
+
+function findWorktreeSlot(db: WorkspaceDatabase, taskId: string, provider: WorktreeProvider) {
+  return db.select().from(worktrees).where(and(eq(worktrees.taskId, taskId), eq(worktrees.provider, provider))).get();
+}
+
 /** Shared by the explicit-proposal POST route below and ensureWorktreeForTask's auto-proposal path. */
 async function createManagedWorktree(
   db: WorkspaceDatabase,
@@ -14,6 +44,9 @@ async function createManagedWorktree(
   project: ProjectRecord,
   proposal: WorktreeProposal,
 ): Promise<WorktreeRecord> {
+  const occupied = findWorktreeSlot(db, task.id, proposal.provider);
+  if (occupied) throw existingSlotError(occupied);
+
   const validated = await service.validateProposal(project.repositoryPath, project.worktreeRoot, proposal);
   const now = new Date().toISOString();
   const record: WorktreeRecord = {
@@ -21,7 +54,15 @@ async function createManagedWorktree(
     path: validated.path, branchName: validated.branchName, baseRef: validated.baseRef,
     status: "CREATING", lastError: null, createdAt: now, updatedAt: now,
   };
-  db.insert(worktrees).values(record).run();
+  try {
+    db.insert(worktrees).values(record).run();
+  } catch (error) {
+    // A genuine race: another request's insert landed between our check above and this one.
+    // Re-read the slot it created and report the same specific guidance rather than a raw
+    // UNIQUE-constraint message.
+    const raced = findWorktreeSlot(db, task.id, proposal.provider);
+    throw raced ? existingSlotError(raced) : error;
+  }
   try {
     const inspection = await service.create(project.repositoryPath, project.worktreeRoot, { ...proposal, path: validated.path });
     db.update(worktrees).set({ path: inspection.path, status: "ACTIVE", updatedAt: new Date().toISOString() }).where(eq(worktrees.id, record.id)).run();
@@ -46,13 +87,9 @@ export async function ensureWorktreeForTask(
   project: ProjectRecord,
   worktreeProvider: WorktreeProvider,
 ): Promise<WorktreeRecord> {
-  const existing = db.select().from(worktrees).where(and(
-    eq(worktrees.taskId, task.id), eq(worktrees.provider, worktreeProvider),
-  )).get();
+  const existing = findWorktreeSlot(db, task.id, worktreeProvider);
   if (existing) {
-    if (existing.status !== "ACTIVE") {
-      throw new WorktreeSafetyError(`The ${worktreeProvider} worktree for this task is not active (status: ${existing.status}).`, "WORKTREE_NOT_ACTIVE");
-    }
+    if (existing.status !== "ACTIVE") throw existingSlotError(existing);
     return existing;
   }
   const proposal = proposeWorktree(project.worktreeRoot, task.id, task.title, worktreeProvider, project.defaultBranch);
@@ -81,11 +118,11 @@ function provider(input: unknown): WorktreeProvider {
 export function safetyError(reply: FastifyReply, error: unknown) {
   if (error instanceof WorktreeSafetyError) {
     const conflict = error.code.includes("COLLISION")
+      || error.code.startsWith("WORKTREE_SLOT_")
       || error.code === "WORKTREE_IN_USE"
       || error.code === "WORKTREE_DIRTY"
       || error.code === "WORKTREE_LOCKED"
-      || error.code === "WORKTREE_PRUNABLE"
-      || error.code === "WORKTREE_NOT_ACTIVE";
+      || error.code === "WORKTREE_PRUNABLE";
     return reply.code(conflict ? 409 : 400).send({ message: error.message, code: error.code });
   }
   if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {

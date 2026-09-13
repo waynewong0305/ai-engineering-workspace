@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -140,6 +140,7 @@ describe("worktree routes", () => {
 
     const blockedRetry = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal });
     expect(blockedRetry.statusCode).toBe(409);
+    expect(blockedRetry.json().code).toBe("WORKTREE_SLOT_ACTIVE");
 
     const removal = await app.inject({
       method: "DELETE", url: `/api/worktrees/${created.id}`, payload: { confirm: true, deleteBranch: false },
@@ -162,5 +163,91 @@ describe("worktree routes", () => {
       payload: { ...claudeProposal, branchName: `${claudeProposal.branchName}-retry` },
     });
     expect(recreated.statusCode).toBe(201);
+  });
+
+  it("gives a specific, actionable conflict for a worktree slot that failed to create, and recovers it", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const fixture = await createRepository();
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects",
+      payload: { repositoryPath: fixture.repositoryPath, worktreeRoot: fixture.worktreeRoot },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Force a stuck worktree slot", problemStatement: "Recover a failed creation.",
+        type: "ARCHITECTURE", riskLevel: "MEDIUM", webAccessPermitted: false,
+      },
+    })).json();
+    const proposals = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees/preview` })).json().proposals;
+    const claudeProposal = proposals.find((proposal: { provider: string }) => proposal.provider === "CLAUDE");
+
+    // Force a real, post-validation creation failure: put a plain file exactly where the app's own
+    // deterministic naming scheme (<worktreeRoot>/TASK-<id>-<slug>/<role>) needs a directory, so
+    // WorktreeService.create()'s own mkdir fails after validateProposal has already passed.
+    const taskDirPath = dirname(claudeProposal.path);
+    await mkdir(fixture.worktreeRoot, { recursive: true });
+    await writeFile(taskDirPath, "not a directory", "utf8");
+
+    // The underlying failure is a raw filesystem error (not a WorktreeSafetyError), so it surfaces
+    // as an honest 500 rather than a fabricated 4xx — but the record is still correctly marked
+    // ERROR with the real cause, and the slot is recoverable exactly like any other failed creation.
+    const failedCreate = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal });
+    expect(failedCreate.statusCode).toBe(500);
+    const stuck = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees` })).json();
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0].status).toBe("ERROR");
+    expect(stuck[0].lastError).toBeTruthy();
+
+    // Retrying without cleaning up first gives a specific, actionable conflict — not the previous
+    // generic "already managed" database-constraint message — naming the stuck record and the fix.
+    const retryWithoutFix = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal });
+    expect(retryWithoutFix.statusCode).toBe(409);
+    expect(retryWithoutFix.json().code).toBe("WORKTREE_SLOT_FAILED");
+    expect(retryWithoutFix.json().message).toContain(stuck[0].id);
+
+    const removal = await app.inject({
+      method: "DELETE", url: `/api/worktrees/${stuck[0].id}`, payload: { confirm: true, deleteBranch: false },
+    });
+    expect(removal.statusCode).toBe(200);
+    expect(removal.json()).toMatchObject({ removed: false, forgotten: true });
+
+    await rm(taskDirPath, { force: true });
+    const recreated = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal });
+    expect(recreated.statusCode).toBe(201);
+  });
+
+  it("resolves a concurrent double-create race for the same task/provider slot with one winner and a clear conflict", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const fixture = await createRepository();
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects",
+      payload: { repositoryPath: fixture.repositoryPath, worktreeRoot: fixture.worktreeRoot },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Race two creates", problemStatement: "Prove the conflict is handled cleanly.",
+        type: "ARCHITECTURE", riskLevel: "MEDIUM", webAccessPermitted: false,
+      },
+    })).json();
+    const proposals = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees/preview` })).json().proposals;
+    const claudeProposal = proposals.find((proposal: { provider: string }) => proposal.provider === "CLAUDE");
+
+    const [first, second] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal }),
+      app.inject({ method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal }),
+    ]);
+    const statusCodes = [first.statusCode, second.statusCode].sort();
+    expect(statusCodes).toEqual([201, 409]);
+    const loser = first.statusCode === 409 ? first : second;
+    expect(loser.json().code).toMatch(/^WORKTREE_SLOT_/);
+
+    // Only one managed worktree, and one Git worktree beyond the source checkout, ever exist.
+    const managed = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees` })).json();
+    expect(managed).toHaveLength(1);
+    expect(managed[0].status).toBe("ACTIVE");
   });
 });
