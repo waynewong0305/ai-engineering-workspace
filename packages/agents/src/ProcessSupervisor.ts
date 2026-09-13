@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { PermissionProfile } from "./types.js";
 import { sanitizeEnvironment } from "./environment.js";
 
@@ -62,12 +62,20 @@ export class ProcessSupervisor {
 
   async *run(input: SupervisedProcessInput): AsyncIterable<SupervisedProcessEvent> {
     if (this.active.has(input.runId)) throw new Error(`Run ${input.runId} is already active.`);
-    if (input.permissionProfile !== "READ_ONLY") {
-      throw new Error("This release only permits READ_ONLY agent processes.");
-    }
     if (!isAbsolute(input.cwd)) throw new Error("Agent working directory must be absolute.");
     const directory = await stat(input.cwd).catch(() => null);
     if (!directory?.isDirectory()) throw new Error("Agent working directory must be a readable directory.");
+    if (input.permissionProfile === "WORKTREE_WRITE" || input.permissionProfile === "TEST_ONLY") {
+      // A worktree's .git is always a file (`gitdir: <path>`); a primary repository checkout's
+      // .git is a directory. This structural check keeps a write/test process from ever running
+      // against the developer's real checkout, independent of whether the caller got cwd wrong.
+      // It is not a substitute for an OS-level sandbox (each CLI's own permission/sandbox flags do
+      // that work) — a stronger sandbox here is a Phase 7 hardening candidate, not required now.
+      const gitEntry = await stat(join(input.cwd, ".git")).catch(() => null);
+      if (!gitEntry?.isFile()) {
+        throw new Error("WORKTREE_WRITE/TEST_ONLY may only run inside a Git worktree, not a primary repository checkout.");
+      }
+    }
     if (!Number.isFinite(input.timeoutMs) || input.timeoutMs < 1_000 || input.timeoutMs > 3_600_000) {
       throw new Error("Agent timeout must be between 1 second and 1 hour.");
     }

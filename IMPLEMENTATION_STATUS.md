@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, and a cross-cutting Claude/Codex usage-safety system. It does not yet run saved project commands or implement code-writing/review workflows (Phase 5).
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and a first Phase 5 slice: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, one-time diff capture, and a `READ_ONLY` reviewer run producing structured findings. It does not yet implement the finding-response/re-review loop, human-approved merge, guarded auto-cleanup, or the pre-PR report — see Phase 5 below.
 
 ## LLM agent policy
 
@@ -163,14 +163,100 @@ Completion record:
 
 ## Phase 5 — Build and review
 
-- [ ] Builder/reviewer selection
-- [ ] Validation execution
-- [ ] Diff viewer
-- [ ] Structured findings
+- [x] Builder/reviewer selection
+- [x] Validation execution
+- [x] Diff viewer
+- [x] Structured findings
 - [ ] Finding response
 - [ ] Re-review
 - [ ] Maximum three rounds
 - [ ] Pre-PR report
+
+### Phase 5, slice 1 completion record
+
+- Date: 2026-09-13
+- Scope: exactly the Phase 5 acceptance bar from `PROJECT_SPEC.md` §21 — a builder edits a real
+  repository inside its own worktree, validation runs and is recorded honestly, the diff is
+  captured once, and an independent reviewer (never given write access) returns structured
+  findings. Deliberately out of scope for this slice, tracked as unchecked above: the
+  finding-response/re-review loop (§23, max rounds), human-approved merge + guarded auto-cleanup
+  (§12), `Keep worktree after merge`, merged-branch deletion policy, and the pre-PR report (§25).
+- Schema: new `build_runs` (its own status column, separate from `tasks.status`, so
+  `BrainstormWorkflow` and the new `BuildReviewWorkflow` can never collide on the same
+  `CHECKPOINTED`/`FAILED` value — see `apps/server/src/db/schema.ts`), `validation_runs` (§24's
+  exact fields), and `review_findings` (§22's exact fields; `id`/`status` are always
+  server-assigned, a model's own values for either are discarded). Widened `agent_runs.role`
+  (`BUILD`/`REVIEW`) and `agent_runs.permissionProfile` (`WORKTREE_WRITE`) and `task_artifacts.kind`
+  (`REVIEW_FINDINGS`).
+- `packages/agents`: `ProcessSupervisor` now accepts `WORKTREE_WRITE`/`TEST_ONLY` but asserts
+  `<cwd>/.git` is a file (a worktree), never a directory (a primary checkout), before spawning —
+  independent of and in addition to each CLI's own write-scoping flags. `ClaudeAdapter`/
+  `CodexAdapter` branch their CLI-argument construction internally for `WORKTREE_WRITE` (Claude:
+  `--permission-mode acceptEdits`, tools add `Edit,Write` but never `Bash`; Codex: `-s
+  workspace-write`, `--ask-for-approval never`) — provider branching stays inside each adapter, per
+  policy. Known limitation: Codex's `WORKTREE_WRITE` flags (`-s workspace-write`,
+  `--ask-for-approval never`) are taken from the public Codex CLI flag set, not re-verified against
+  an installed binary — this development environment has no standalone `codex` executable on `PATH`
+  (only a copy bundled inside the ChatGPT app and a Codex plugin were found), so `codex exec --help`
+  could not be run. Claude's flags were verified against the installed CLI's own `--help` output.
+  Confirm the Codex flags before a real `WORKTREE_WRITE` Codex run.
+- New `apps/server/src/services/build-review-workflow.ts` (mirrors `BrainstormWorkflow`'s
+  state-machine/usage-safety-recheck shape) orchestrating builder → validation → diff → reviewer,
+  `apps/server/src/services/validation-runner.ts` (sequential, no shell — see known limitation
+  below), and `apps/server/src/routes/build-runs.ts`. `WorktreeUsageManager.acquire`/`release` is
+  now called from production code for the first time (one continuous lease per build, spanning
+  build+validate+review). Shared `extractJson`/`record`/`strings` JSON-parsing helpers were
+  extracted from `brainstorm-workflow.ts` into `apps/server/src/services/structured-output.ts` so
+  the new reviewer-findings parser reuses them instead of duplicating.
+- Known limitation: validation commands never use a shell (an explicit anti-injection stance, like
+  every other process this application spawns), so a stored command string is tokenized into a
+  plain argv with a minimal whitespace/quote-aware tokenizer — no pipes, `&&`/`||` chains,
+  redirects, or inline environment assignment.
+- New `WorktreeService.diffIncludingUntracked` (`packages/git`): plain `git diff` never shows a
+  brand-new untracked file's content, only changes to files Git already tracks, which would have
+  silently hidden a builder's newly created files from the reviewer. Temporarily stages everything
+  to compute one full diff, then resets the index back to HEAD so nothing stays staged — a snapshot
+  operation, not a persistent mutation. The pre-existing worktree diff route/UI (`04 — Worktrees`)
+  is unchanged and still uses the original `diff()`.
+- Pre-existing bug found and fixed while building this slice, unrelated to Phase 5 itself:
+  migrations 0002/0003 added `agent_runs.task_id`/`agent_runs.worktree_id` via `ALTER TABLE ... ADD
+  COLUMN ... REFERENCES ...`, which SQLite always creates as `ON DELETE NO ACTION` regardless of the
+  `onDelete: "cascade"`/`"set null"` already declared in `schema.ts` at the time — invisible until
+  something tried to delete a worktree or task while `agent_runs` rows referencing it needed to
+  survive (every prior code path only ever deleted the whole project, cascading through
+  `agent_runs.project_id` directly). Fixed with a hand-written migration
+  (`drizzle/0006_fix_agent_runs_worktree_fk.sql`) that rebuilds `agent_runs` with the FK actions
+  `schema.ts` already declared; `db:generate` reports "No schema changes" afterward, confirming the
+  fix matches declared intent. Verified against seeded sample data in an isolated database before
+  applying to the real local database; no data was lost (`PRAGMA foreign_key_check` clean
+  afterward).
+- Web-decision note: `BuildReviewWorkflow` does not check per-task web access at all — the builder
+  and reviewer runs reuse each task's existing `webAccessPolicy`/`webAccessPermitted` decision made
+  at task-draft time, the same way brainstorm runs do; no separate build-time web prompt exists.
+- UI: un-disabled nav item `06 — Build`; new `#build` section (task picker, builder/reviewer role
+  selects with mutual-exclusion, a validation-command checklist, start button, and a detail pane
+  with validation results, the reviewed diff, and structured findings). Deliberately does not
+  include `[Send Findings to Builder]`/`[Re-review]`/`[Mark Ready for Human Review]` controls (all
+  out of scope for this slice). Verified in the browser: task selection, mutual-exclusion between
+  builder/reviewer selects (confirmed via each `<select>`'s actual `disabled` option state), and no
+  console errors. A real build was deliberately not started against the browser-visible registered
+  project, to avoid spending real provider usage or writing to that real repository; correctness
+  was instead proven with fake adapters and temporary repositories in the automated test suite.
+- Tests executed: full workspace `npm test` (67 tests: 48 `apps/server` + 12 `packages/agents` + 7
+  `packages/git`, up from 40/5/6), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (reports the new migration only), `git diff --check` — all clean. New
+  coverage: `ProcessSupervisor` accepting `WORKTREE_WRITE`/`TEST_ONLY` only inside a real worktree;
+  `ClaudeAdapter`/`CodexAdapter` argument construction per permission profile (via an injectable
+  fake executable and a capturing `ProcessSupervisor` subclass, so no real CLI is spawned);
+  `ValidationRunner` recording `PASSED`/`FAILED`/`ERROR` without throwing; `WorktreeService.
+  diffIncludingUntracked`; a `build-runs.test.ts` integration suite (builder writes only inside its
+  own worktree, a failing validation command doesn't block review, the diff is a true snapshot, the
+  reviewer's run leaves the worktree unchanged, an unparseable reviewer response still retains its
+  raw output and fails the build, same-provider builder/reviewer is rejected, and
+  `WorktreeUsageManager.isInUse` is true during the run and false after); and an extension of
+  `end-to-end-workflow.test.ts` (per its own prior note) adding a build/review pass that reuses an
+  already-created worktree, asserts findings are reachable via the API, and confirms the builder's
+  leftover uncommitted change correctly blocks worktree removal until committed.
 
 ## Phase 6 — Planning and ADRs
 

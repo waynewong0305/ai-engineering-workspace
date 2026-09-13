@@ -146,6 +146,59 @@ type ManagedWorktree = {
   inspectionError: string | null;
 };
 
+type BuildRunStatus = "BUILDING" | "VALIDATING" | "REVIEWING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
+type ValidationRunStatus = "PASSED" | "FAILED" | "ERROR";
+type FindingSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+type FindingCategory =
+  | "CORRECTNESS" | "RACE_CONDITION" | "SECURITY" | "DATA_INTEGRITY" | "PERFORMANCE"
+  | "TESTING" | "MAINTAINABILITY" | "MIGRATION" | "COMPATIBILITY";
+type FindingConfidence = "LOW" | "MEDIUM" | "HIGH";
+type ValidationRunRow = {
+  id: string;
+  commandId: string;
+  commandLabel: string;
+  command: string;
+  durationMs: number;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  status: ValidationRunStatus;
+};
+type ReviewFinding = {
+  id: string;
+  ordinal: number;
+  severity: FindingSeverity;
+  category: FindingCategory;
+  file: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  title: string;
+  description: string;
+  evidence: string;
+  impact: string;
+  suggestedFix: string | null;
+  suggestedTest: string | null;
+  confidence: FindingConfidence;
+  status: "OPEN";
+};
+type BuildRun = {
+  id: string;
+  taskId: string;
+  builderProvider: AgentProvider;
+  reviewerProvider: AgentProvider;
+  worktreeId: string | null;
+  status: BuildRunStatus;
+  diffUnstaged: string | null;
+  diffStaged: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  builderRun: AgentRun | null;
+  reviewerRun: AgentRun | null;
+  validationRuns: ValidationRunRow[];
+  findings: ReviewFinding[];
+  reviewArtifact: { rawOutput: string; parseError: string | null } | null;
+};
+
 type UsageStatus = "SAFE" | "WARNING" | "CHECKPOINT_REQUIRED" | "EXHAUSTED" | "UNAVAILABLE" | "STALE";
 type UsageWindowView = {
   provider: AgentProvider;
@@ -244,6 +297,18 @@ const worktreeDrafts = reactive<Record<AgentProvider, { path: string; branchName
   CLAUDE: { path: "", branchName: "", baseRef: "" },
   CODEX: { path: "", branchName: "", baseRef: "" },
 });
+
+const selectedBuildTaskId = ref("");
+const buildBuilderProvider = ref<AgentProvider>("CLAUDE");
+const buildReviewerProvider = ref<AgentProvider>("CODEX");
+const buildValidationSelection = reactive<Record<string, boolean>>({});
+const builds = ref<BuildRun[]>([]);
+const buildsLoading = ref(false);
+const buildError = ref("");
+const buildMessage = ref("");
+const startingBuild = ref(false);
+const selectedBuild = ref<BuildRun | null>(null);
+let buildPollTimer: number | null = null;
 
 const usage = ref<Record<AgentProvider, UsageWindowView[]>>({ CLAUDE: [], CODEX: [] });
 const usagePolicy = ref<UsagePolicy | null>(null);
@@ -650,6 +715,98 @@ async function releaseUsage(usageId: string) {
   }
 }
 
+function projectForTask(taskId: string) {
+  const task = tasks.value.find((item) => item.id === taskId);
+  return task ? projects.value.find((project) => project.id === task.projectId) ?? null : null;
+}
+
+const buildHasNonTerminalRun = computed(() => builds.value.some((build) => ["BUILDING", "VALIDATING", "REVIEWING", "CHECKPOINTED"].includes(build.status)));
+
+async function loadBuildsForTask() {
+  if (!selectedBuildTaskId.value) {
+    builds.value = [];
+    selectedBuild.value = null;
+    return;
+  }
+  buildsLoading.value = true;
+  buildError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedBuildTaskId.value}/builds`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not load builds for this task.");
+    builds.value = result;
+    for (const command of projectForTask(selectedBuildTaskId.value)?.validationCommands ?? []) {
+      if (!(command.id in buildValidationSelection)) buildValidationSelection[command.id] = true;
+    }
+    if (builds.value[0]) await selectBuild(builds.value[0].id);
+    else selectedBuild.value = null;
+  } catch (error) {
+    buildError.value = error instanceof Error ? error.message : "Could not load builds for this task.";
+  } finally {
+    buildsLoading.value = false;
+  }
+}
+
+async function selectBuild(buildRunId: string) {
+  const response = await fetch(`/api/builds/${buildRunId}`);
+  if (!response.ok) {
+    buildError.value = "Could not load the build.";
+    return;
+  }
+  selectedBuild.value = await response.json();
+  scheduleBuildRefresh();
+}
+
+function scheduleBuildRefresh() {
+  if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
+  if (!selectedBuild.value || !["BUILDING", "VALIDATING", "REVIEWING"].includes(selectedBuild.value.status)) return;
+  buildPollTimer = window.setTimeout(async () => {
+    if (selectedBuild.value) await selectBuild(selectedBuild.value.id);
+  }, 1500);
+}
+
+async function startBuild() {
+  if (!selectedBuildTaskId.value) return;
+  startingBuild.value = true;
+  buildError.value = "";
+  buildMessage.value = "";
+  try {
+    const validationCommandIds = Object.entries(buildValidationSelection).filter(([, checked]) => checked).map(([id]) => id);
+    const response = await fetch(`/api/tasks/${selectedBuildTaskId.value}/builds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        builderProvider: buildBuilderProvider.value,
+        reviewerProvider: buildReviewerProvider.value,
+        validationCommandIds,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not start the build.");
+    buildMessage.value = "The build is starting: the builder will edit its worktree, then validation and review follow automatically.";
+    await loadBuildsForTask();
+  } catch (error) {
+    buildError.value = error instanceof Error ? error.message : "Could not start the build.";
+  } finally {
+    startingBuild.value = false;
+  }
+}
+
+async function cancelBuild() {
+  if (!selectedBuild.value) return;
+  buildError.value = "";
+  const response = await fetch(`/api/builds/${selectedBuild.value.id}/cancel`, { method: "POST" });
+  const result = await response.json();
+  if (!response.ok) buildError.value = result.message ?? "Could not cancel the build.";
+  else await selectBuild(selectedBuild.value.id);
+}
+
+function findingSeverityCounts(build: BuildRun) {
+  const counts: Record<FindingSeverity, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+  for (const finding of build.findings) counts[finding.severity] += 1;
+  return counts;
+}
+
 async function selectTask(taskId: string) {
   taskError.value = "";
   const response = await fetch(`/api/tasks/${taskId}`);
@@ -1023,6 +1180,7 @@ onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), lo
 onUnmounted(() => {
   eventSource?.close();
   if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
+  if (buildPollTimer !== null) window.clearTimeout(buildPollTimer);
 });
 </script>
 
@@ -1044,7 +1202,7 @@ onUnmounted(() => {
         <a class="nav-item" href="#brainstorm"><span>03</span>Brainstorm</a>
         <a class="nav-item" href="#worktrees"><span>04</span>Worktrees</a>
         <a class="nav-item" href="#usage-safety"><span>05</span>Usage safety</a>
-        <a class="nav-item disabled" href="#build" aria-disabled="true"><span>06</span>Build</a>
+        <a class="nav-item" href="#build"><span>06</span>Build</a>
         <a class="nav-item disabled" href="#reviews" aria-disabled="true"><span>07</span>Reviews</a>
         <a class="nav-item disabled" href="#decisions" aria-disabled="true"><span>08</span>Decisions</a>
       </nav>
@@ -1801,6 +1959,139 @@ onUnmounted(() => {
           </div>
           <button class="ghost-button" type="submit">Update thresholds</button>
         </form>
+      </section>
+
+      <section id="build" class="project-panel worktree-panel" aria-labelledby="build-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">06 — BUILD AND REVIEW</p>
+            <h2 id="build-heading">Let Claude build, and Codex review, without editing each other's work.</h2>
+            <p>Choose independent builder and reviewer roles. The reviewer never touches the builder's worktree.</p>
+          </div>
+          <span class="safety-badge">WORKTREE-SCOPED WRITE · ONE REVIEW ROUND</span>
+        </div>
+
+        <div class="worktree-task-picker">
+          <label>
+            <span>Task</span>
+            <select v-model="selectedBuildTaskId" :disabled="buildsLoading" @change="loadBuildsForTask">
+              <option disabled value="">Select a task</option>
+              <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.title }}</option>
+            </select>
+          </label>
+          <div class="worktree-safety-note">
+            <strong>Builder edits, reviewer only reads</strong>
+            <span>Validation commands run inside the builder's own worktree, never the registered repository.</span>
+          </div>
+        </div>
+
+        <p v-if="buildError" class="form-message error-text" role="alert">{{ buildError }}</p>
+        <p v-if="buildMessage" class="form-message success-text" role="status">{{ buildMessage }}</p>
+
+        <div v-if="selectedBuildTaskId" class="worktree-proposals">
+          <article class="worktree-proposal-card">
+            <header>
+              <div><span>ROLES</span><strong>Independent by provider</strong></div>
+            </header>
+            <label>
+              <span>Builder</span>
+              <select v-model="buildBuilderProvider" :disabled="buildHasNonTerminalRun">
+                <option value="CLAUDE" :disabled="buildReviewerProvider === 'CLAUDE'">Claude Code</option>
+                <option value="CODEX" :disabled="buildReviewerProvider === 'CODEX'">Codex</option>
+              </select>
+            </label>
+            <label>
+              <span>Reviewer</span>
+              <select v-model="buildReviewerProvider" :disabled="buildHasNonTerminalRun">
+                <option value="CLAUDE" :disabled="buildBuilderProvider === 'CLAUDE'">Claude Code</option>
+                <option value="CODEX" :disabled="buildBuilderProvider === 'CODEX'">Codex</option>
+              </select>
+            </label>
+            <div v-if="(projectForTask(selectedBuildTaskId)?.validationCommands.length ?? 0) > 0" class="check-row-group">
+              <span>Validation commands</span>
+              <label v-for="command in projectForTask(selectedBuildTaskId)?.validationCommands" :key="command.id" class="check-row">
+                <input v-model="buildValidationSelection[command.id]" type="checkbox" />{{ command.label }}
+              </label>
+            </div>
+            <p v-else class="form-hint">This project has no saved validation commands; the build will skip straight to review.</p>
+            <button class="primary-button" type="button" :disabled="startingBuild || buildHasNonTerminalRun" @click="startBuild">
+              {{ startingBuild ? "Starting…" : buildHasNonTerminalRun ? "A build is already running" : "Start build" }}
+            </button>
+          </article>
+        </div>
+
+        <p v-if="buildsLoading" class="worktree-loading">Loading builds…</p>
+
+        <div v-if="builds.length" class="worktree-task-picker">
+          <label>
+            <span>Build run</span>
+            <select :value="selectedBuild?.id" @change="selectBuild(($event.target as HTMLSelectElement).value)">
+              <option v-for="build in builds" :key="build.id" :value="build.id">
+                {{ new Date(build.createdAt).toLocaleString() }} — {{ build.status }}
+              </option>
+            </select>
+          </label>
+        </div>
+
+        <div v-if="selectedBuild" class="worktree-inspector">
+          <div class="worktree-inspector-heading">
+            <div>
+              <span>{{ selectedBuild.builderProvider }} BUILDS · {{ selectedBuild.reviewerProvider }} REVIEWS</span>
+              <h3>{{ selectedBuild.status }}</h3>
+            </div>
+            <button
+              v-if="['BUILDING', 'VALIDATING', 'REVIEWING', 'CHECKPOINTED'].includes(selectedBuild.status)"
+              class="danger-outline-button" type="button" @click="cancelBuild"
+            >Cancel</button>
+          </div>
+          <p v-if="selectedBuild.errorMessage" class="error-text" role="alert">{{ selectedBuild.errorMessage }}</p>
+
+          <div class="worktree-usages">
+            <div class="subsection-heading"><span>VALIDATION RESULTS</span></div>
+            <p v-if="!selectedBuild.validationRuns.length" class="form-hint">No validation commands ran for this build.</p>
+            <ul v-else>
+              <li v-for="run in selectedBuild.validationRuns" :key="run.id">
+                <span>{{ run.status === 'PASSED' ? '✓' : '✗' }} {{ run.commandLabel }} · exit {{ run.exitCode ?? 'n/a' }} · {{ run.durationMs }}ms</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="worktree-diff">
+            <div class="subsection-heading"><span>DIFF REVIEWED</span></div>
+            <div class="diff-grid">
+              <article><strong>Unstaged</strong><pre>{{ selectedBuild.diffUnstaged || 'None.' }}</pre></article>
+              <article><strong>Staged</strong><pre>{{ selectedBuild.diffStaged || 'None.' }}</pre></article>
+            </div>
+          </div>
+
+          <div class="worktree-usages">
+            <div class="subsection-heading">
+              <span>STRUCTURED FINDINGS</span>
+              <strong>
+                <template v-for="(count, severity) in findingSeverityCounts(selectedBuild)" :key="severity">
+                  <span v-if="count > 0">{{ severity }} {{ count }} </span>
+                </template>
+              </strong>
+            </div>
+            <p v-if="selectedBuild.reviewArtifact?.parseError" class="error-text" role="alert">
+              The reviewer's response could not be parsed: {{ selectedBuild.reviewArtifact.parseError }}
+            </p>
+            <p v-else-if="!selectedBuild.findings.length && selectedBuild.status === 'COMPLETED'" class="form-hint">The reviewer found nothing to flag.</p>
+            <ul v-else class="finding-list">
+              <li v-for="finding in selectedBuild.findings" :key="finding.id" :class="['finding-item', finding.severity.toLowerCase()]">
+                <header>
+                  <span>{{ finding.severity }} · {{ finding.category }}</span>
+                  <strong>{{ finding.title }}</strong>
+                  <span v-if="finding.file">{{ finding.file }}<template v-if="finding.startLine">:{{ finding.startLine }}</template></span>
+                </header>
+                <p>{{ finding.description }}</p>
+                <p class="form-hint">Evidence: {{ finding.evidence }}</p>
+                <p class="form-hint">Impact: {{ finding.impact }}</p>
+                <p v-if="finding.suggestedFix" class="form-hint">Suggested fix: {{ finding.suggestedFix }}</p>
+              </li>
+            </ul>
+          </div>
+        </div>
       </section>
     </main>
   </div>

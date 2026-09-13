@@ -200,6 +200,26 @@ export class WorktreeService {
     return { unstaged: unstaged.stdout, staged: staged.stdout };
   }
 
+  /**
+   * Like diff(), but also captures brand-new untracked files — plain `git diff` never shows an
+   * untracked file's content, only changes to files Git already tracks. Used for one-time snapshots
+   * (e.g. what a build/review reviewer actually saw) where missing a newly created file would be a
+   * real gap, not just a display nicety. Temporarily stages everything to compute a single full diff,
+   * then resets the index back to HEAD so nothing stays staged afterward — the worktree's on-disk
+   * files and untracked/modified status are unaffected. Callers that need a specific pre-existing
+   * staged/unstaged split should use diff() instead; this is meant for a one-time full-change
+   * snapshot where the worktree is expected to start clean (e.g. right after a fresh builder run).
+   */
+  async diffIncludingUntracked(worktreePath: string) {
+    await git(worktreePath, ["add", "-A"]);
+    try {
+      const full = await git(worktreePath, ["diff", "--cached", "--no-ext-diff", "--"]);
+      return { unstaged: "", staged: full.stdout };
+    } finally {
+      await git(worktreePath, ["reset"]).catch(() => undefined);
+    }
+  }
+
   async move(repositoryPath: string, worktreeRoot: string, oldPath: string, newPath: string, inUse: boolean) {
     if (inUse) throw new WorktreeSafetyError("An active process is using this worktree.", "WORKTREE_IN_USE");
     const current = await this.inspect(repositoryPath, oldPath);

@@ -1,10 +1,63 @@
 import { randomUUID } from "node:crypto";
-import { WorktreeSafetyError, WorktreeService, proposeWorktree, type WorktreeProvider } from "@aiew/git";
+import { WorktreeSafetyError, WorktreeService, proposeWorktree, type WorktreeProposal, type WorktreeProvider } from "@aiew/git";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { and, asc, eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
-import { projects, tasks, worktrees, type WorktreeRecord } from "../db/schema.js";
+import { projects, tasks, worktrees, type ProjectRecord, type TaskRecord, type WorktreeRecord } from "../db/schema.js";
 import { WorktreeUsageManager } from "../services/worktree-usage-manager.js";
+
+/** Shared by the explicit-proposal POST route below and ensureWorktreeForTask's auto-proposal path. */
+async function createManagedWorktree(
+  db: WorkspaceDatabase,
+  service: WorktreeService,
+  task: TaskRecord,
+  project: ProjectRecord,
+  proposal: WorktreeProposal,
+): Promise<WorktreeRecord> {
+  const validated = await service.validateProposal(project.repositoryPath, project.worktreeRoot, proposal);
+  const now = new Date().toISOString();
+  const record: WorktreeRecord = {
+    id: randomUUID(), taskId: task.id, projectId: project.id, provider: proposal.provider,
+    path: validated.path, branchName: validated.branchName, baseRef: validated.baseRef,
+    status: "CREATING", lastError: null, createdAt: now, updatedAt: now,
+  };
+  db.insert(worktrees).values(record).run();
+  try {
+    const inspection = await service.create(project.repositoryPath, project.worktreeRoot, { ...proposal, path: validated.path });
+    db.update(worktrees).set({ path: inspection.path, status: "ACTIVE", updatedAt: new Date().toISOString() }).where(eq(worktrees.id, record.id)).run();
+    return { ...record, path: inspection.path, status: "ACTIVE" };
+  } catch (error) {
+    db.update(worktrees).set({ status: "ERROR", lastError: error instanceof Error ? error.message : "Creation failed.", updatedAt: new Date().toISOString() })
+      .where(eq(worktrees.id, record.id)).run();
+    throw error;
+  }
+}
+
+/**
+ * Reuse an existing ACTIVE worktree for (task, provider), or auto-propose and create one. Used by
+ * the build-runs route so starting a build never requires the human to first visit the Worktrees
+ * section — mirrors the same proposeWorktree + createManagedWorktree path this file's own POST
+ * route uses for an explicit, human-edited proposal.
+ */
+export async function ensureWorktreeForTask(
+  db: WorkspaceDatabase,
+  service: WorktreeService,
+  task: TaskRecord,
+  project: ProjectRecord,
+  worktreeProvider: WorktreeProvider,
+): Promise<WorktreeRecord> {
+  const existing = db.select().from(worktrees).where(and(
+    eq(worktrees.taskId, task.id), eq(worktrees.provider, worktreeProvider),
+  )).get();
+  if (existing) {
+    if (existing.status !== "ACTIVE") {
+      throw new WorktreeSafetyError(`The ${worktreeProvider} worktree for this task is not active (status: ${existing.status}).`, "WORKTREE_NOT_ACTIVE");
+    }
+    return existing;
+  }
+  const proposal = proposeWorktree(project.worktreeRoot, task.id, task.title, worktreeProvider, project.defaultBranch);
+  return createManagedWorktree(db, service, task, project, proposal);
+}
 
 type CreateWorktreeBody = {
   provider?: unknown;
@@ -25,13 +78,14 @@ function provider(input: unknown): WorktreeProvider {
   return input;
 }
 
-function safetyError(reply: FastifyReply, error: unknown) {
+export function safetyError(reply: FastifyReply, error: unknown) {
   if (error instanceof WorktreeSafetyError) {
     const conflict = error.code.includes("COLLISION")
       || error.code === "WORKTREE_IN_USE"
       || error.code === "WORKTREE_DIRTY"
       || error.code === "WORKTREE_LOCKED"
-      || error.code === "WORKTREE_PRUNABLE";
+      || error.code === "WORKTREE_PRUNABLE"
+      || error.code === "WORKTREE_NOT_ACTIVE";
     return reply.code(conflict ? 409 : 400).send({ message: error.message, code: error.code });
   }
   if (error instanceof Error && error.message.includes("UNIQUE constraint failed")) {
@@ -40,10 +94,12 @@ function safetyError(reply: FastifyReply, error: unknown) {
   return reply.code(500).send({ message: "Worktree operation failed." });
 }
 
-export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDatabase) {
-  const service = new WorktreeService();
-  const usage = new WorktreeUsageManager(db);
-
+export function registerWorktreeRoutes(
+  app: FastifyInstance,
+  db: WorkspaceDatabase,
+  service: WorktreeService = new WorktreeService(),
+  usage: WorktreeUsageManager = new WorktreeUsageManager(db),
+) {
   const contextFor = (record: WorktreeRecord) => {
     const project = db.select().from(projects).where(eq(projects.id, record.projectId)).get();
     if (!project) throw new WorktreeSafetyError("The owning project no longer exists.", "PROJECT_NOT_FOUND");
@@ -132,7 +188,6 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDataba
   });
 
   app.post<{ Params: { id: string }; Body: CreateWorktreeBody }>("/api/tasks/:id/worktrees", async (request, reply) => {
-    let recordId: string | null = null;
     try {
       const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
       if (!task) return reply.code(404).send({ message: "Task not found." });
@@ -144,23 +199,9 @@ export function registerWorktreeRoutes(app: FastifyInstance, db: WorkspaceDataba
         branchName: value(request.body?.branchName, "Branch name", 255),
         baseRef: value(request.body?.baseRef ?? project.defaultBranch, "Base ref", 255),
       };
-      const validated = await service.validateProposal(project.repositoryPath, project.worktreeRoot, proposal);
-      const now = new Date().toISOString();
-      const record = {
-        id: randomUUID(), taskId: task.id, projectId: project.id, provider: proposal.provider,
-        path: validated.path, branchName: validated.branchName, baseRef: validated.baseRef,
-        status: "CREATING" as const, lastError: null, createdAt: now, updatedAt: now,
-      };
-      recordId = record.id;
-      db.insert(worktrees).values(record).run();
-      const inspection = await service.create(project.repositoryPath, project.worktreeRoot, { ...proposal, path: validated.path });
-      db.update(worktrees).set({ path: inspection.path, status: "ACTIVE", updatedAt: new Date().toISOString() }).where(eq(worktrees.id, record.id)).run();
-      return reply.code(201).send(await detailFor({ ...record, path: inspection.path, status: "ACTIVE" }));
+      const record = await createManagedWorktree(db, service, task, project, proposal);
+      return reply.code(201).send(await detailFor(record));
     } catch (error) {
-      if (recordId) {
-        db.update(worktrees).set({ status: "ERROR", lastError: error instanceof Error ? error.message : "Creation failed.", updatedAt: new Date().toISOString() })
-          .where(eq(worktrees.id, recordId)).run();
-      }
       return safetyError(reply, error);
     }
   });

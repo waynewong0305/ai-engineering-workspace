@@ -66,6 +66,26 @@ describe("WorktreeService", () => {
     await expect(service.deleteMergedBranch(repositoryPath, renamedBranch, "main")).resolves.toBeUndefined();
   });
 
+  it("diffIncludingUntracked captures brand-new files that plain diff() would miss, then leaves the index clean", async () => {
+    const { repositoryPath, worktreeRoot } = await createRepository();
+    const service = new WorktreeService();
+    const proposal = proposeWorktree(worktreeRoot, "305-abcd", "Untracked diff", "CLAUDE", "main");
+    await service.create(repositoryPath, worktreeRoot, proposal);
+    await writeFile(join(proposal.path, "feature.txt"), "brand new file\n", "utf8");
+
+    const plain = await service.diff(proposal.path);
+    expect(plain.unstaged).toBe("");
+    expect(plain.staged).toBe("");
+
+    const full = await service.diffIncludingUntracked(proposal.path);
+    expect(full.staged).toContain("feature.txt");
+    expect(full.staged).toContain("brand new file");
+
+    // The index is reset back to HEAD afterward: nothing stays staged, and the file is untracked again.
+    const status = (await execFileAsync("git", ["-C", proposal.path, "status", "--porcelain=v1", "--untracked-files=all"])).stdout;
+    expect(status.trim()).toBe("?? feature.txt");
+  });
+
   it("rejects path traversal, invalid refs, and collisions before creation", async () => {
     const { repositoryPath, worktreeRoot } = await createRepository();
     const service = new WorktreeService();

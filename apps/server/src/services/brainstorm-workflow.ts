@@ -19,13 +19,11 @@ import {
   type TaskRecord,
 } from "../db/schema.js";
 import { AgentRunManager } from "./agent-run-manager.js";
+import { extractJson, MAX_ITEM_CHARS, record, strings } from "./structured-output.js";
 import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
 
 const ANALYSIS_VERSION = "brainstorm-analysis:v1";
 const REVIEW_VERSION = "cross-review:v1";
-const MAX_STRUCTURED_RESPONSE_CHARS = 160_000;
-const MAX_LIST_ITEMS = 100;
-const MAX_ITEM_CHARS = 5_000;
 const promptRoot = fileURLToPath(new URL("../../../../prompts/", import.meta.url));
 const analysisTemplate = readFileSync(`${promptRoot}brainstorm-analysis.md`, "utf8");
 const reviewTemplate = readFileSync(`${promptRoot}cross-review.md`, "utf8");
@@ -38,53 +36,6 @@ type WorkflowOptions = {
 
 function replace(template: string, values: Record<string, string>) {
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (placeholder, key: string) => values[key] ?? placeholder);
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function strings(value: unknown): string[] | null {
-  if (
-    !Array.isArray(value)
-    || value.length > MAX_LIST_ITEMS
-    || value.some((item) => typeof item !== "string" || item.length > MAX_ITEM_CHARS)
-  ) return null;
-  return value.map((item) => item.trim()).filter(Boolean);
-}
-
-function extractJson(text: string): unknown {
-  if (text.length > MAX_STRUCTURED_RESPONSE_CHARS) {
-    throw new Error(`The structured response exceeds ${MAX_STRUCTURED_RESPONSE_CHARS.toLocaleString()} characters.`);
-  }
-  const candidates = [text.trim()];
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
-  if (fenced) candidates.push(fenced);
-  let start = -1;
-  let depth = 0;
-  let quoted = false;
-  let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (escaped) { escaped = false; continue; }
-    if (quoted && character === "\\") { escaped = true; continue; }
-    if (character === '"') { quoted = !quoted; continue; }
-    if (quoted) continue;
-    if (character === "{") {
-      if (depth === 0) start = index;
-      depth += 1;
-    } else if (character === "}" && depth > 0) {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        candidates.push(text.slice(start, index + 1));
-        break;
-      }
-    }
-  }
-  for (const candidate of candidates) {
-    try { return JSON.parse(candidate); } catch { /* Try the next candidate. */ }
-  }
-  throw new Error("The agent did not return a parseable JSON object.");
 }
 
 function parseAnalysis(text: string): BrainstormAnalysis {

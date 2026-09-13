@@ -52,7 +52,9 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
-    if (input.permissionProfile !== "READ_ONLY") throw new Error("CodexAdapter currently supports READ_ONLY runs only.");
+    if (input.permissionProfile !== "READ_ONLY" && input.permissionProfile !== "WORKTREE_WRITE") {
+      throw new Error("CodexAdapter supports READ_ONLY and WORKTREE_WRITE runs only.");
+    }
     if (input.webAccess.permitted === null) throw new Error("A web-access decision is required before starting an agent run.");
     if (input.model.effort) throw new Error("The installed Codex CLI does not expose a supported effort flag.");
 
@@ -61,11 +63,22 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error(health.message ?? "Codex CLI is not ready.");
     }
 
+    // WORKTREE_WRITE switches the sandbox to workspace-write (Codex's own OS-level write
+    // confinement to the working directory, stronger than anything this adapter can enforce) and
+    // disables interactive approval prompts since no human is present to answer them.
+    // NOTE: `-s workspace-write` and `--ask-for-approval never` are taken from the public Codex CLI
+    // flag set, not re-verified against the installed binary — this environment has no standalone
+    // `codex` executable on PATH to run `codex exec --help` against (only a copy bundled inside the
+    // ChatGPT app and a Codex plugin were found). Confirm these exact flag/value spellings against
+    // a real `codex exec --help` before relying on this in production, the same way Phase 2 originally
+    // verified its READ_ONLY flag set.
+    const sandbox = input.permissionProfile === "WORKTREE_WRITE" ? "workspace-write" : "read-only";
     const args = [
       "exec", "--json", "--color", "never", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-      "-C", input.cwd, "-s", "read-only",
+      "-C", input.cwd, "-s", sandbox,
       "--disable", "computer_use", "--disable", "apps", "--disable", "plugins",
     ];
+    if (input.permissionProfile === "WORKTREE_WRITE") args.push("--ask-for-approval", "never");
     if (!input.webAccess.permitted) args.push("--disable", "browser_use", "--disable", "browser_use_external");
     if (input.model.requested && input.model.requested !== "(provider default)") {
       args.push("-m", input.model.requested);

@@ -57,17 +57,27 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
-    if (input.permissionProfile !== "READ_ONLY") throw new Error("ClaudeAdapter currently supports READ_ONLY runs only.");
+    if (input.permissionProfile !== "READ_ONLY" && input.permissionProfile !== "WORKTREE_WRITE") {
+      throw new Error("ClaudeAdapter supports READ_ONLY and WORKTREE_WRITE runs only.");
+    }
     if (input.webAccess.permitted === null) throw new Error("A web-access decision is required before starting an agent run.");
     const health = await this.healthCheck();
     if (!health.available || !health.authenticated || !health.cliVersion) {
       throw new Error(health.message ?? "Claude Code is not ready.");
     }
 
-    const tools = input.webAccess.permitted ? "Read,Glob,Grep,WebSearch,WebFetch" : "Read,Glob,Grep";
+    // WORKTREE_WRITE adds Edit/Write so the builder can change files, but deliberately never Bash —
+    // the builder edits files; running commands is the separate, controlled TEST_ONLY validation
+    // step (see ValidationRunner). `--restricted` (kept unconditional) already confines the file
+    // tools to input.cwd, and `--permission-mode acceptEdits` auto-approves those edits since no
+    // human is present to answer a prompt; `--permission-prompts none` still denies anything else
+    // that would need a prompt (e.g. writes to git/settings/tool-configuration files).
+    const baseTools = input.permissionProfile === "WORKTREE_WRITE" ? "Read,Glob,Grep,Edit,Write" : "Read,Glob,Grep";
+    const tools = input.webAccess.permitted ? `${baseTools},WebSearch,WebFetch` : baseTools;
+    const permissionMode = input.permissionProfile === "WORKTREE_WRITE" ? "acceptEdits" : "plan";
     const args = [
       "-p", input.prompt, "--output-format", "stream-json", "--verbose", "--restricted",
-      "--tools", tools, "--permission-mode", "plan", "--permission-prompts", "none",
+      "--tools", tools, "--permission-mode", permissionMode, "--permission-prompts", "none",
       "--strict-mcp-config", "--mcp-config", "{}", "--setting-sources", "", "--disable-slash-commands", "--no-chrome",
     ];
     if (input.sessionId) args.push("--resume", input.sessionId);

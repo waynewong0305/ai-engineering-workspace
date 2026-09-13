@@ -83,14 +83,14 @@ export const agentRuns = sqliteTable("agent_runs", {
   taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
   worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW"] }).notNull().default("REPOSITORY_EXPLANATION"),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW"] }).notNull().default("REPOSITORY_EXPLANATION"),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   prompt: text("prompt").notNull(),
   promptVersion: text("prompt_version").notNull(),
   requestedModel: text("requested_model").notNull(),
   actualModel: text("actual_model"),
   effort: text("effort"),
-  permissionProfile: text("permission_profile", { enum: ["READ_ONLY"] }).notNull(),
+  permissionProfile: text("permission_profile", { enum: ["READ_ONLY", "WORKTREE_WRITE"] }).notNull(),
   webAccessPolicy: text("web_access_policy", { enum: ["DISABLED", "ENABLED_FOR_TASK"] }).notNull(),
   webAccessPermitted: integer("web_access_permitted", { mode: "boolean" }).notNull(),
   status: text("status", { enum: ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"] }).notNull(),
@@ -153,14 +153,45 @@ export type CrossReview = {
   recommendedExperiments: string[];
 };
 
+export type FindingSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
+export type FindingCategory =
+  | "CORRECTNESS"
+  | "RACE_CONDITION"
+  | "SECURITY"
+  | "DATA_INTEGRITY"
+  | "PERFORMANCE"
+  | "TESTING"
+  | "MAINTAINABILITY"
+  | "MIGRATION"
+  | "COMPATIBILITY";
+export type FindingConfidence = "LOW" | "MEDIUM" | "HIGH";
+export type FindingStatus = "OPEN";
+
+export type ParsedFinding = {
+  severity: FindingSeverity;
+  category: FindingCategory;
+  file: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  title: string;
+  description: string;
+  evidence: string;
+  impact: string;
+  suggestedFix: string | null;
+  suggestedTest: string | null;
+  confidence: FindingConfidence;
+};
+
+export type ReviewFindingsArtifact = { findings: ParsedFinding[] };
+
 export const taskArtifacts = sqliteTable("task_artifacts", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
-  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW"] }).notNull(),
+  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS"] }).notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
-  structuredData: text("structured_data", { mode: "json" }).$type<BrainstormAnalysis | CrossReview>(),
+  structuredData: text("structured_data", { mode: "json" }).$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact>(),
   rawOutput: text("raw_output").notNull(),
   parseError: text("parse_error"),
   createdAt: text("created_at").notNull(),
@@ -253,3 +284,100 @@ export const usageSafetyAudit = sqliteTable("usage_safety_audit", {
 }, (table) => [index("usage_safety_audit_provider_created_idx").on(table.provider, table.createdAt)]);
 
 export type UsageSafetyAuditRecord = typeof usageSafetyAudit.$inferSelect;
+
+export type BuildRunStatus =
+  | "BUILDING"
+  | "VALIDATING"
+  | "REVIEWING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED"
+  | "CHECKPOINTED";
+
+/**
+ * One build/review attempt for a task. Deliberately its own status column rather than folded into
+ * tasks.status: BrainstormWorkflow and BuildReviewWorkflow would otherwise collide on the same
+ * CHECKPOINTED/FAILED values with no way to tell whose checkpoint it is.
+ */
+export const buildRuns = sqliteTable("build_runs", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+  builderProvider: text("builder_provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  reviewerProvider: text("reviewer_provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
+  builderRunId: text("builder_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  reviewerRunId: text("reviewer_run_id").references(() => agentRuns.id, { onDelete: "set null" }),
+  status: text("status", { enum: ["BUILDING", "VALIDATING", "REVIEWING", "COMPLETED", "FAILED", "CANCELLED", "CHECKPOINTED"] }).notNull(),
+  // Captured once, right after validation, so the UI always shows exactly what the reviewer saw
+  // rather than a live re-diff that could drift if the worktree is touched afterward.
+  diffUnstaged: text("diff_unstaged"),
+  diffStaged: text("diff_staged"),
+  errorMessage: text("error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("build_runs_task_created_idx").on(table.taskId, table.createdAt)]);
+
+export type BuildRunRecord = typeof buildRuns.$inferSelect;
+
+export type ValidationRunStatus = "PASSED" | "FAILED" | "ERROR";
+
+export const validationRuns = sqliteTable("validation_runs", {
+  id: text("id").primaryKey(),
+  buildRunId: text("build_run_id").notNull().references(() => buildRuns.id, { onDelete: "cascade" }),
+  worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
+  commandId: text("command_id").notNull(),
+  commandLabel: text("command_label").notNull(),
+  command: text("command").notNull(),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at").notNull(),
+  durationMs: integer("duration_ms").notNull(),
+  exitCode: integer("exit_code"),
+  stdout: text("stdout").notNull(),
+  stderr: text("stderr").notNull(),
+  status: text("status", { enum: ["PASSED", "FAILED", "ERROR"] }).notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("validation_runs_build_created_idx").on(table.buildRunId, table.createdAt)]);
+
+export type ValidationRunRecord = typeof validationRuns.$inferSelect;
+
+/**
+ * One row per structured finding a reviewer returned (see ParsedFinding above for the same shape).
+ * `id` and `status` are always server-assigned; a model's own id/status in its JSON output is
+ * discarded, never trusted, since the only legitimate future writer of status is a human/builder
+ * response (a later slice).
+ */
+export const reviewFindings = sqliteTable("review_findings", {
+  id: text("id").primaryKey(),
+  buildRunId: text("build_run_id").notNull().references(() => buildRuns.id, { onDelete: "cascade" }),
+  reviewerRunId: text("reviewer_run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  ordinal: integer("ordinal").notNull(),
+  severity: text("severity", { enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] }).notNull(),
+  category: text("category", {
+    enum: [
+      "CORRECTNESS",
+      "RACE_CONDITION",
+      "SECURITY",
+      "DATA_INTEGRITY",
+      "PERFORMANCE",
+      "TESTING",
+      "MAINTAINABILITY",
+      "MIGRATION",
+      "COMPATIBILITY",
+    ],
+  }).notNull(),
+  file: text("file"),
+  startLine: integer("start_line"),
+  endLine: integer("end_line"),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  evidence: text("evidence").notNull(),
+  impact: text("impact").notNull(),
+  suggestedFix: text("suggested_fix"),
+  suggestedTest: text("suggested_test"),
+  confidence: text("confidence", { enum: ["LOW", "MEDIUM", "HIGH"] }).notNull(),
+  status: text("status", { enum: ["OPEN"] }).notNull().default("OPEN"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("review_findings_build_idx").on(table.buildRunId, table.ordinal)]);
+
+export type ReviewFindingRecord = typeof reviewFindings.$inferSelect;

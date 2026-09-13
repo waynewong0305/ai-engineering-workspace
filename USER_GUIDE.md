@@ -25,9 +25,10 @@ The current implementation can:
 - add or correct facts, assumptions, questions, decisions, and experiment results on a persistent evidence board;
 - preview, edit, and create isolated Claude and Codex worktrees per task, without ever switching or modifying the active project checkout;
 - inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation; and
-- check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement.
+- check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement; and
+- run one bounded build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings.
 
-Implementation/review loops, ADRs, and reports are planned but not enabled yet. Brainstorming, architecture comparison, and worktree isolation are available now.
+Sending findings back to the builder, an automatic re-review loop, a human-approved merge, and a pre-PR report are planned but not enabled yet. Brainstorming, architecture comparison, worktree isolation, and a single build/review pass are available now.
 
 ## Installation
 
@@ -185,7 +186,7 @@ PHP tests   php artisan test
 Frontend    npm run prod
 ```
 
-These commands are stored only. A later validation workflow will show the exact command and working directory before it runs, then record start time, duration, exit code, stdout, stderr, and final status.
+These commands are stored per project and can be selected when starting a build (see "Build and review" below), which runs each one inside the builder's own worktree and records its start time, duration, exit code, stdout, stderr, and final status. Since validation processes never use a shell, a command is limited to a plain program and arguments — pipes, `&&`/`||` chains, redirects, and inline environment assignment are not supported.
 
 ### Run a read-only repository explanation
 
@@ -288,26 +289,26 @@ Use brainstorm to widen and challenge the problem. Use architecture to compare s
 
 The links matter: a future reviewer should be able to move from a code task back to the plan, ADR, experiment, and original problem.
 
-## Bug fixing — planned
+## Bug fixing — partially planned
 
 The intended bug workflow is:
 
 ```text
 bug report
 → investigation
-→ isolated builder worktree
-→ implementation
-→ tests
-→ independent review
-→ findings
-→ fixes or evidence-backed rejection
-→ re-review
+→ isolated builder worktree       )
+→ implementation                  )  available now — see "Build and review" above
+→ tests                           )
+→ independent review              )
+→ findings                        )
+→ fixes or evidence-backed rejection  — planned
+→ re-review                           — planned
 → human review
 ```
 
-You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, confidence, and status.
+You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, and confidence — this part already works today.
 
-The builder responds **Accepted**, **Rejected**, or **Partially accepted**, with evidence. The reviewer rechecks fixed or disputed findings. After three automated rounds, unresolved findings stop and go to you. The system never loops indefinitely.
+Sending a finding back to the builder for an **Accepted**, **Rejected**, or **Partially accepted** response with evidence, and the reviewer rechecking fixed or disputed findings, are not implemented yet. When they are, the number of automatic re-review rounds will be a configurable setting rather than a fixed number, so it can be tuned per project instead of hardcoded; unresolved findings will stop after that limit and go to you. The system will never loop indefinitely.
 
 ## Choosing models — planned
 
@@ -366,7 +367,27 @@ AI Engineering Workspace uses separate task worktrees so a builder cannot overwr
 
 If a worktree creation is interrupted (for example, a Claude or Codex worktree that failed partway through), the record is not deleted or discarded automatically. If Git no longer lists a live worktree at its path, requesting removal recovers the record — clearing the stale entry so the task/provider slot is free again — without ever discarding real work: a real, live worktree with uncommitted, staged, locked, prunable, or in-use state is still refused.
 
-An active usage lease (recorded when a future build workflow uses a worktree) that outlives its process is labeled **STALE** after 6 hours and can be released explicitly from the inspector; nothing is released automatically.
+An active usage lease that outlives its process is labeled **STALE** after 6 hours and can be released explicitly from the inspector; nothing is released automatically.
+
+## Build and review
+
+In **06 — Build**, choose independent builder and reviewer roles for a task and run one bounded build/review pass:
+
+1. Select a task.
+2. Choose which provider builds and which reviews. The two must differ — one engineer is never asked to review its own work.
+3. Select which saved validation commands to run for this build; all are selected by default. A project with no saved validation commands skips straight to review.
+4. Select **Start build**.
+
+What happens automatically:
+
+1. The builder gets write access scoped to its own Git worktree only — reusing an existing worktree for that task/provider if one already exists, or creating one. It can edit files directly, but it is not given a general command-execution tool: running your project's own commands is the separate, controlled validation step below.
+2. Each selected validation command then runs inside that worktree and is recorded honestly — exit code, duration, and full stdout/stderr — including a failing command, which does not block the review that follows; the workflow never claims a command passed when it did not.
+3. The full diff, including brand-new files (not just changes to files Git already tracked), is captured once as a snapshot of exactly what the reviewer will see.
+4. The reviewer receives that diff with read-only access — it may read the worktree for surrounding context, but it is never given write access — and returns structured findings: severity, category, file/line, title, description, evidence, impact, a suggested fix and test, and its confidence.
+
+The build detail pane shows validation results, the diff that was reviewed, and every finding the reviewer raised. If the reviewer's response cannot be parsed into structured findings, the build is marked failed and the raw response is retained — nothing the reviewer said is silently dropped.
+
+This is one bounded pass. Sending findings back to the builder, an automatic re-review loop (capped at a configurable number of rounds), a human-approved merge with guarded automatic cleanup, and a pre-PR report are not implemented yet — see "Bug fixing — planned" below.
 
 ## Usage safety
 

@@ -36,6 +36,20 @@
       "when": 1789273168228,
       "tag": "0004_sparkling_vargas",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789279703933,
+      "tag": "0005_dark_clea",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789280405930,
+      "tag": "0006_fix_agent_runs_worktree_fk",
+      "breakpoints": true
     }
   ]
 }
