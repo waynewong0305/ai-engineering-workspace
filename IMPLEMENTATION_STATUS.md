@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and Phase 5's builder/validate/review loop through its third slice: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, and now a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds). It does not yet implement the pre-PR report — see Phase 5 below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. Phase 6 (planning/ADRs) and Phase 7 (hardening) remain unimplemented — see below.
 
 ## LLM agent policy
 
@@ -173,7 +173,7 @@ Completion record:
 - [x] Human-approved merge into the target branch
 - [x] Post-merge validation before cleanup
 - [x] Guarded automatic worktree removal / `Keep worktree after merge` / merged-branch deletion policy
-- [ ] Pre-PR report
+- [x] Pre-PR report
 
 ### Phase 5, slice 1 completion record
 
@@ -415,6 +415,44 @@ Completion record:
   database well after that test's own app had closed it — an intermittent `Unhandled Rejection`
   that vitest treats as a hard failure (exit code 1) even though every assertion passed. Both now
   explicitly drain the delayed run to a terminal state before returning.
+
+### Phase 5, slice 4 completion record — Phase 5 complete
+
+- Date: 2026-09-13
+- Scope: `PROJECT_SPEC.md` §25 (pre-PR report), the last unchecked Phase 5 item. With this, every
+  Phase 5 roadmap item is implemented.
+- New `apps/server/src/services/pre-pr-report.ts` (`buildPrePrReport`, pure/read-only — no new
+  schema, computed on demand from existing `build_runs`/`review_findings`/`validation_runs`/
+  `agent_runs` rows) and `GET /api/builds/:id/report`. Deliberately adapted rather than copied
+  verbatim from §25: that section's "Claude Findings"/"Codex Findings" split assumed the dual
+  independent-review shape from the brainstorm workflow; a Phase 5 build has exactly one fixed
+  reviewer, so findings are grouped by disposition instead (accepted/rejected/unresolved, derived
+  from each finding's `builderVerdict` and `status`). "Architecture Decisions" is always reported as
+  unavailable — ADRs (Phase 6) don't exist yet — never fabricated, matching this project's standing
+  rule against inventing data a phase hasn't built yet. "Human Review Required" is always `true`
+  (§25: "AI approval is never equivalent to human approval") — not derived from any build state.
+- `parseChangedFiles` extracts changed file paths from the stored unified-diff text (via the
+  conventional `diff --git a/... b/...` and `+++ b/...` header lines) since the diff is stored as
+  text, not as a structured file list, and nothing else in the schema already tracks it separately.
+  Tolerant by design: an unrecognized line is skipped rather than failing report generation, since
+  this is a human-facing summary, not something anything else depends on being byte-exact.
+- UI (`apps/web/src/App.vue`): a "PRE-PR REPORT" subsection on the build detail pane with a
+  "Generate report" button (the report is computed on demand, not auto-generated on every build
+  view, since it re-reads all of a build's findings/tests each time) rendering problem statement,
+  implementation summary, files changed, a findings breakdown, test results, merge state,
+  architecture-decisions availability, and the recommended next action. Verified in the browser: no
+  console errors; a real report was not generated against the browser-visible registered project's
+  task (no build existed for it) — the full report shape is instead proven end-to-end with fake
+  adapters in the automated test suite.
+- Tests executed: full workspace `npm test` (91 tests: 68 `apps/server` + 12 `packages/agents` + 11
+  `packages/git`, up from 85), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (confirms no schema drift — this slice added no columns), `git diff --check`
+  — all clean. New coverage: `pre-pr-report.test.ts` (4 tests) unit-testing `parseChangedFiles`
+  directly (a changed-file header, a brand-new file with no `a/` side, dedupe/sort across multiple
+  files while ignoring unrelated diff lines, and an empty diff); a `build-runs.test.ts` integration
+  test that responds to a finding, merges, then fetches the report and checks every field including
+  the findings breakdown and the always-true human-review-required flag; and a 404 test for a
+  nonexistent build.
 
 ## Phase 6 — Planning and ADRs
 

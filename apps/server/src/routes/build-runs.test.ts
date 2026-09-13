@@ -555,3 +555,51 @@ describe("build merge", () => {
     expect(secondAttempt.json().message).toContain("already been merged");
   });
 });
+
+describe("pre-PR report", () => {
+  it("summarizes the task, implementation, findings, tests, and merge state, and always requires human review", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [
+        new FakeBuildAdapter("CLAUDE"),
+        new FakeBuildAdapter("CODEX", { recheckOutput: VALID_RECHECK_REOPENED_WITH_NEW_FINDING }),
+      ],
+    });
+    apps.push(app);
+    const build = await startCompletedBuild(app);
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/respond` });
+    await pollUntilTerminal(app, build.id);
+    await app.inject({ method: "POST", url: `/api/builds/${build.id}/merge` });
+    await pollUntilMerged(app, build.id);
+
+    const response = await app.inject({ method: "GET", url: `/api/builds/${build.id}/report` });
+    expect(response.statusCode).toBe(200);
+    const report = response.json();
+
+    expect(report.taskId).toBe(build.task.id);
+    expect(report.taskTitle).toBe(build.task.title);
+    expect(report.builderProvider).toBe("CLAUDE");
+    expect(report.reviewerProvider).toBe("CODEX");
+    expect(report.reviewRound).toBe(2);
+    expect(report.implementationSummary).toContain("docstring");
+    expect(report.filesChanged).toEqual(["feature.txt"]);
+    // One finding accepted-and-then-reopened (still open), one brand-new finding from the recheck.
+    expect(report.findings.total).toBe(2);
+    expect(report.findings.accepted).toHaveLength(1);
+    expect(report.findings.rejected).toHaveLength(0);
+    expect(report.findings.unresolved).toHaveLength(2);
+    expect(report.merge.status).toBe("MERGED");
+    expect(report.merge.targetBranch).toBe("main");
+    expect(report.architectureDecisions).toContain("not implemented yet");
+    expect(report.humanReviewRequired).toBe(true);
+    expect(typeof report.recommendedNextAction).toBe("string");
+    expect(report.recommendedNextAction.length).toBeGreaterThan(0);
+  });
+
+  it("404s for a build that doesn't exist", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeBuildAdapter("CLAUDE"), new FakeBuildAdapter("CODEX")] });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/api/builds/does-not-exist/report" });
+    expect(response.statusCode).toBe(404);
+  });
+});

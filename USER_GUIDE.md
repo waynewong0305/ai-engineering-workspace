@@ -27,10 +27,11 @@ The current implementation can:
 - inspect, move, rename, diff, and safely clean up managed worktrees, including recovering a record left behind by an interrupted or failed creation; and
 - check Claude and Codex usage safety before any provider-consuming action, checkpoint a workflow at a configurable threshold without losing completed work, and record a manual usage snapshot or an explicit acknowledgement; and
 - run a build/review pass per task: a chosen builder edits files inside its own worktree, selected validation commands run and are recorded honestly (including a failure), the full diff is captured, and an independent reviewer (never given write access) returns structured findings;
-- send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3); and
-- merge a completed build's worktree into a target branch once you explicitly approve it, re-run validation against the merged result, and automatically clean up the worktree and (optionally) its branch only when every safety condition holds.
+- send open findings back to the builder for an explicit response, then have the reviewer recheck them and raise any new findings, for up to a per-build configurable number of rounds (default 3);
+- merge a completed build's worktree into a target branch once you explicitly approve it, re-run validation against the merged result, and automatically clean up the worktree and (optionally) its branch only when every safety condition holds; and
+- generate a pre-PR report for a build on demand, summarizing the problem, implementation, files changed, findings by disposition, tests, and merge state, always marking human review as required.
 
-A pre-PR report is planned but not enabled yet. Brainstorming, architecture comparison, worktree isolation, and the full build/review/response/merge loop are available now.
+Brainstorming, architecture comparison, worktree isolation, and the full build/review/response/merge/report loop are all available now.
 
 ## Installation
 
@@ -296,8 +297,8 @@ The links matter: a future reviewer should be able to move from a code task back
 The intended bug workflow is:
 
 ```text
-bug report
-→ investigation
+bug report          — not yet its own tracked concept; use a brainstorm/architecture task
+→ investigation     — not yet its own tracked concept
 → isolated builder worktree       )
 → implementation                  )
 → tests                           )
@@ -306,14 +307,15 @@ bug report
 → fixes or evidence-backed rejection  )
 → re-review                           )
 → human-approved merge                )
-→ human review                    — pre-PR report planned
+→ pre-PR report                       )
+→ human review
 ```
 
 You choose the builder and reviewer. The reviewer cannot modify the builder worktree. Each finding records severity, category, location, evidence, impact, suggested fix, suggested test, and confidence.
 
 Sending a finding back to the builder for an **Accepted**, **Rejected**, or **Partially accepted** response with evidence, and the reviewer rechecking fixed or disputed findings, both work today — see "Sending findings back to the builder" under "Build and review" above. The number of automatic re-review rounds is a configurable per-build setting (default 3) rather than a fixed number, so it can be tuned per build instead of hardcoded; unresolved findings stop once that limit is reached and the workflow tells you to resolve them directly. The system never loops indefinitely on its own.
 
-Once you're satisfied, merging into a target branch and the guarded worktree/branch cleanup that follows also work today — see "Merging into a target branch" under "Build and review" above. What's still planned is the pre-PR report that would summarize the whole task (implementation, findings, responses, tests, risks) for your final human review before this goes through your normal pull-request process.
+Once you're satisfied, merging into a target branch and the guarded worktree/branch cleanup that follows also work today — see "Merging into a target branch" under "Build and review" above. So does generating a pre-PR report that summarizes the whole build (implementation, files changed, findings, tests, merge state) for your final human review — see "Pre-PR report" under "Build and review" above. This application still has no dedicated concept of a "bug report" or a separate "investigation" phase; use a brainstorm or architecture task to capture and think through the problem first, then start a build from it.
 
 ## Choosing models — planned
 
@@ -421,7 +423,19 @@ What happens automatically:
 
 **A note about your own checkout.** Landing a merge only ever moves the target branch's pointer (`git update-ref`) — it never checks anything out and never touches any working directory other than the throwaway one it created for the merge itself. If the target branch happens to already be checked out somewhere (most commonly your own primary working copy on that branch), that checkout's index will look stale relative to its own branch until you refresh it yourself (`git status`, then `git reset --hard` or similar). This is not file corruption — your working files are untouched — it's the same thing that happens with any tool that moves a ref out from under a checkout without touching it. The detail pane tells you explicitly when this applies, and names where.
 
-A pre-PR report is not implemented yet — see "Bug fixing — planned" below.
+### Pre-PR report
+
+The **PRE-PR REPORT** section on a build's detail pane generates a summary on demand (select **Generate report**) rather than automatically, since it re-reads everything about the build each time. It includes:
+
+- the task's problem statement and risk level;
+- an implementation summary (the latest builder run's own closing text);
+- the files changed, parsed from the captured diff;
+- a findings breakdown: how many were accepted, rejected, or are still unresolved;
+- every validation command's result, labeled by whether it ran before or after the merge;
+- the merge's current state and target branch; and
+- architecture decisions — reported as unavailable, since ADRs are not implemented yet (never fabricated).
+
+The report always states **Human review required: YES** and a recommended next action. It is a summary to help you review, not a substitute for your own judgment — see "Reviews and human responsibility" below.
 
 ## Usage safety
 
@@ -445,11 +459,11 @@ If usage crosses the checkpoint threshold while a brainstorm task is already run
 
 Adjust **Warning threshold %** and **Checkpoint threshold %** under Safety thresholds; both apply to Claude and Codex together. The defaults are 75% and 90%.
 
-## Reviews and human responsibility — planned
+## Reviews and human responsibility
 
 AI agreement does not mean the code is automatically correct. Two models may share the same blind spot, rely on the same false assumption, or miss behavior that only appears in production conditions.
 
-The pre-PR report will summarize implementation, changed files, findings, responses, tests, risks, decisions, and unresolved issues. It always marks human review as required. You should inspect the diff, verify important assumptions, consider production constraints, and decide whether the work is ready for your normal pull-request process.
+The pre-PR report (see "Pre-PR report" under "Build and review" above) summarizes implementation, changed files, findings, tests, and merge state, and always marks human review as required. You should still inspect the diff yourself, verify important assumptions, consider production constraints, and decide whether the work is ready for your normal pull-request process — an AI-approved merge is never equivalent to your own review.
 
 ## Troubleshooting
 
@@ -495,7 +509,7 @@ The agent continues with local evidence when possible. If external information i
 
 ### Review loop reached its maximum rounds
 
-Once `reviewRound` reaches a build's configured `maxReviewRounds`, **Send findings to builder** is replaced with a note asking you to resolve the remaining findings directly — the workflow never starts another round on its own. Read the still-open findings' descriptions, evidence, and (if a round was attempted) the builder's and reviewer's own notes on them. You can accept the risk, fix it yourself, or start a fresh build with a higher `maxReviewRounds` if you want to allow more automatic back-and-forth. A pre-PR report summarizing unresolved findings for this decision is not implemented yet — see "Bug fixing — planned" above.
+Once `reviewRound` reaches a build's configured `maxReviewRounds`, **Send findings to builder** is replaced with a note asking you to resolve the remaining findings directly — the workflow never starts another round on its own. Read the still-open findings' descriptions, evidence, and (if a round was attempted) the builder's and reviewer's own notes on them. You can accept the risk, fix it yourself, or start a fresh build with a higher `maxReviewRounds` if you want to allow more automatic back-and-forth. Generate a pre-PR report (see "Pre-PR report" under "Build and review" above) to see the unresolved findings summarized alongside everything else about the build before you decide.
 
 ### Merge conflict
 

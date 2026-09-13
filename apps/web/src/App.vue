@@ -218,6 +218,26 @@ type BuildRun = {
   reviewArtifact: { rawOutput: string; parseError: string | null } | null;
 };
 
+type PrePrReport = {
+  generatedAt: string;
+  taskId: string;
+  taskTitle: string;
+  problemStatement: string;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  buildRunId: string;
+  builderProvider: AgentProvider;
+  reviewerProvider: AgentProvider;
+  reviewRound: number;
+  implementationSummary: string | null;
+  filesChanged: string[];
+  findings: { total: number; accepted: ReviewFinding[]; rejected: ReviewFinding[]; unresolved: ReviewFinding[] };
+  tests: { commandLabel: string; status: ValidationRunStatus; exitCode: number | null; phase: "BUILD" | "POST_MERGE" }[];
+  merge: { status: BuildMergeStatus; targetBranch: string | null; commitSha: string | null; mergedAt: string | null };
+  architectureDecisions: string;
+  humanReviewRequired: true;
+  recommendedNextAction: string;
+};
+
 type UsageStatus = "SAFE" | "WARNING" | "CHECKPOINT_REQUIRED" | "EXHAUSTED" | "UNAVAILABLE" | "STALE";
 type UsageWindowView = {
   provider: AgentProvider;
@@ -334,6 +354,9 @@ const mergeCommitMessage = ref("");
 const keepWorktreeAfterMerge = ref(false);
 const deleteBranchAfterMerge = ref(false);
 const selectedBuild = ref<BuildRun | null>(null);
+const prePrReport = ref<PrePrReport | null>(null);
+const loadingReport = ref(false);
+const reportError = ref("");
 let buildPollTimer: number | null = null;
 
 const usage = ref<Record<AgentProvider, UsageWindowView[]>>({ CLAUDE: [], CODEX: [] });
@@ -780,6 +803,8 @@ async function selectBuild(buildRunId: string) {
     return;
   }
   selectedBuild.value = await response.json();
+  prePrReport.value = null;
+  reportError.value = "";
   scheduleBuildRefresh();
 }
 
@@ -892,6 +917,22 @@ async function mergeBuild() {
     buildError.value = error instanceof Error ? error.message : "Could not start the merge.";
   } finally {
     merging.value = false;
+  }
+}
+
+async function loadPrePrReport() {
+  if (!selectedBuild.value) return;
+  loadingReport.value = true;
+  reportError.value = "";
+  try {
+    const response = await fetch(`/api/builds/${selectedBuild.value.id}/report`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not generate the report.");
+    prePrReport.value = result;
+  } catch (error) {
+    reportError.value = error instanceof Error ? error.message : "Could not generate the report.";
+  } finally {
+    loadingReport.value = false;
   }
 }
 
@@ -2226,6 +2267,31 @@ onUnmounted(() => {
                 {{ merging || selectedBuild.mergeStatus === 'MERGING' ? "Merging…" : "Approve & merge" }}
               </button>
             </template>
+          </div>
+
+          <div class="worktree-usages">
+            <div class="subsection-heading"><span>PRE-PR REPORT</span></div>
+            <p v-if="reportError" class="error-text" role="alert">{{ reportError }}</p>
+            <button class="ghost-button" type="button" :disabled="loadingReport" @click="loadPrePrReport">
+              {{ loadingReport ? "Generating…" : "Generate report" }}
+            </button>
+            <div v-if="prePrReport" class="pre-pr-report">
+              <p class="form-hint">Generated {{ new Date(prePrReport.generatedAt).toLocaleString() }} · risk {{ prePrReport.riskLevel }} · round {{ prePrReport.reviewRound }}</p>
+              <p><strong>Problem</strong><br />{{ prePrReport.problemStatement }}</p>
+              <p><strong>Implementation summary</strong><br />{{ prePrReport.implementationSummary || "Unavailable." }}</p>
+              <p><strong>Files changed</strong><br /><template v-if="prePrReport.filesChanged.length">{{ prePrReport.filesChanged.join(", ") }}</template><template v-else>None.</template></p>
+              <p><strong>Findings</strong> — {{ prePrReport.findings.total }} total, {{ prePrReport.findings.accepted.length }} accepted, {{ prePrReport.findings.rejected.length }} rejected, {{ prePrReport.findings.unresolved.length }} unresolved</p>
+              <p><strong>Tests</strong><br />
+                <template v-for="run in prePrReport.tests" :key="run.commandLabel + run.phase">
+                  {{ run.status === 'PASSED' ? '✓' : '✗' }} {{ run.commandLabel }} ({{ run.phase }})<br />
+                </template>
+                <template v-if="!prePrReport.tests.length">No validation commands ran.</template>
+              </p>
+              <p><strong>Merge</strong><br />{{ prePrReport.merge.status }}<template v-if="prePrReport.merge.targetBranch"> into {{ prePrReport.merge.targetBranch }}</template></p>
+              <p><strong>Architecture decisions</strong><br />{{ prePrReport.architectureDecisions }}</p>
+              <p><strong>Human review required</strong><br />YES — AI approval is never equivalent to human approval.</p>
+              <p><strong>Recommended next action</strong><br />{{ prePrReport.recommendedNextAction }}</p>
+            </div>
           </div>
         </div>
       </section>

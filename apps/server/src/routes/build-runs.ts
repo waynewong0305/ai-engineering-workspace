@@ -16,6 +16,7 @@ import {
 } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
 import { BuildReviewWorkflow } from "../services/build-review-workflow.js";
+import { buildPrePrReport } from "../services/pre-pr-report.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
 import { WorktreeUsageManager } from "../services/worktree-usage-manager.js";
 import { ensureWorktreeForTask, safetyError } from "./worktrees.js";
@@ -204,6 +205,12 @@ export function registerBuildRoutes(
       return reply.code(404).send({ message: "Build not found." });
     }
     return db.select().from(reviewFindings).where(eq(reviewFindings.buildRunId, request.params.id)).orderBy(asc(reviewFindings.ordinal)).all();
+  });
+
+  app.get<{ Params: { id: string } }>("/api/builds/:id/report", async (request, reply) => {
+    const report = buildPrePrReport(db, request.params.id);
+    if (!report) return reply.code(404).send({ message: "Build not found." });
+    return report;
   });
 
   app.post<{ Params: { id: string }; Body: RespondBody }>("/api/builds/:id/respond", async (request, reply) => {
