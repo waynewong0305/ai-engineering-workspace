@@ -292,6 +292,14 @@ text contains no secret-shaped strings or a literal, soon-stale usage percentage
 fails, do not "fix" it by duplicating content into two files — restore the symlink
 (`ln -sf AGENTS.md CLAUDE.md`) and edit `AGENTS.md` only.
 
+The check's core logic is exported as `checkAgentPolicy(root)` (pure, no `process.exit`) so
+`scripts/check-agent-policy.test.mjs` can exercise every failure mode — missing file, a duplicated
+regular file instead of a symlink, a wrong symlink target, a secret-shaped string, a stale usage
+percentage — against disposable fixture directories under the OS temp dir, never against this
+repository's real `AGENTS.md`/`CLAUDE.md`. Run it directly with `node --test
+scripts/check-agent-policy.test.mjs`, or via `npm run test:scripts`; both run automatically as part
+of `pretest` before every `npm test`.
+
 ## Change protocol
 
 For every phase:

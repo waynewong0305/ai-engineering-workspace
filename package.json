@@ -14,8 +14,9 @@
     "dev": "node scripts/dev.mjs",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "pretest": "npm run check:agent-policy",
+    "pretest": "npm run check:agent-policy && npm run test:scripts",
     "test": "npm run test --workspaces --if-present",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "check:agent-policy": "node scripts/check-agent-policy.mjs",
     "db:generate": "npm run db:generate --workspace @aiew/server",
     "db:migrate": "npm run db:migrate --workspace @aiew/server"
