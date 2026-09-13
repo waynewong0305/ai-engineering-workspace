@@ -280,13 +280,25 @@ Real Claude/Codex calls are manual acceptance tests. Automated tests must not re
 
 The Phase 3 integration test uses paired fake Claude/Codex adapters and synchronization barriers to prove independent analyses and reciprocal reviews start in parallel, then verifies prompt versions, raw/structured artifacts, comparison, evidence, and the explicit web decision. Automated tests never spend provider credits.
 
+## Agent policy synchronization
+
+`AGENTS.md` is the canonical policy for any LLM coding agent working in this repository; `CLAUDE.md`
+is a relative symbolic link to it (`CLAUDE.md -> AGENTS.md`), so both paths always return identical
+bytes and there is exactly one copy to edit. `npm run check:agent-policy`
+(`scripts/check-agent-policy.mjs`) verifies this on every `npm test` run (wired via the `pretest`
+script): `AGENTS.md` is a regular file, `CLAUDE.md` is a symlink whose target is exactly
+`"AGENTS.md"`, both resolve to the same canonical file, their bytes are identical, and the policy
+text contains no secret-shaped strings or a literal, soon-stale usage percentage. If this check ever
+fails, do not "fix" it by duplicating content into two files — restore the symlink
+(`ln -sf AGENTS.md CLAUDE.md`) and edit `AGENTS.md` only.
+
 ## Change protocol
 
 For every phase:
 
 - keep the change within the declared phase boundary;
 - generate and inspect database migrations;
-- run tests, type checks, and a production build;
+- run tests, type checks, a production build, and `npm run check:agent-policy`;
 - exercise the user-visible flow locally;
 - update `IMPLEMENTATION_STATUS.md`;
 - update `USER_GUIDE.md` for behavior changes; and

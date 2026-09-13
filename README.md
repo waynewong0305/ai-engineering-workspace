@@ -25,3 +25,9 @@ npm run build
 ```
 
 See [USER_GUIDE.md](./USER_GUIDE.md) for product usage, [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) for internals, and [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for current scope.
+
+## For LLM coding agents
+
+Start at [AGENTS.md](./AGENTS.md) (also reachable as `CLAUDE.md`, a symlink to the same file — the
+two always contain identical bytes; run `npm run check:agent-policy` to verify). It has the
+concrete entry points, runtime requirements, safety rules, and a continuation checklist.

@@ -4,7 +4,11 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, and isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work. It does not yet run saved project commands or implement code-writing/review workflows (Phase 5).
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, and a cross-cutting Claude/Codex usage-safety system. It does not yet run saved project commands or implement code-writing/review workflows (Phase 5).
+
+## LLM agent policy
+
+`AGENTS.md` (canonical) and `CLAUDE.md` (a relative symlink to it) carry the standing policy for any LLM coding agent working in this repository — product purpose, entry points, runtime/verification commands, worktree and usage-safety rules, and a continuation checklist. `npm run check:agent-policy` verifies the pair stays a single canonical file plus a symlink (never two independently editable copies) and runs automatically before `npm test`. See `DEVELOPER_GUIDE.md`'s "Agent policy synchronization" section for how the check works.
 
 ## Phase 0 — Bootstrap
 
