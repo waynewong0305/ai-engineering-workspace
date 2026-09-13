@@ -128,12 +128,12 @@ Goal: permit scoped modifications without touching the developer's active checko
 - [x] Keep worktree directory names and branch names independently manageable
 - [x] Create, inspect, diff, and list worktrees
 - [x] Worktree ownership and process-use tracking, including stale-lease detection and explicit release
-- [ ] Refuse project deregistration until its managed worktrees are safely cleaned up (not yet implemented; see `IMPLEMENTATION_STATUS.md`)
+- [x] Refuse project deregistration until its managed worktrees are safely cleaned up
 - [x] Dirty/locked/prunable-worktree protection before removal
 - [x] Recoverable cleanup workflow with explicit human confirmation, including recovery from an interrupted or failed creation
 - [x] Temporary-repository integration tests
 
-Exit gate: task-specific Claude and Codex worktrees can coexist, generated names are editable and renameable without silently renaming branches, and cleanup refuses to discard uncommitted or in-use work. Met, with one known gap: deregistration does not yet block on linked managed worktrees (tracked for a Phase 5-adjacent follow-up).
+Exit gate: task-specific Claude and Codex worktrees can coexist, generated names are editable and renameable without silently renaming branches, and cleanup refuses to discard uncommitted or in-use work. Met — including deregistration refusing to proceed while managed worktrees remain linked.
 
 ## Provider usage safety (cross-cutting, added 2026-09-13)
 

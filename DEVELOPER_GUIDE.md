@@ -169,7 +169,7 @@ The current inspector uses `execFile` with an argument array and a timeout. It n
 
 `WorktreeUsageManager` (`apps/server/src/services/worktree-usage-manager.ts`) tracks which run/validation/system process currently owns a worktree (`worktreeUsages`, keyed by worktree + owner). `listActive` flags a lease `stale` once it has been open longer than a configurable threshold (default 6 hours), and `releaseById` gives a human an explicit recovery path (`DELETE /api/worktrees/:id/usages/:usageId`) for a lease a crashed process never released. No production code calls `acquire`/`release` yet — that begins with the Phase 5 worktree-scoped builder run — so `isInUse` is always `false` today; this is expected, not a bug.
 
-Git push, force push, hard reset, branch deletion outside the explicit merged-branch-deletion flow, deployment, and production migration are outside the automated workflow. Project deregistration does not yet check for linked managed worktrees; that is a known Phase 4 gap (see `IMPLEMENTATION_STATUS.md`).
+Git push, force push, hard reset, branch deletion outside the explicit merged-branch-deletion flow, deployment, and production migration are outside the automated workflow. Project deregistration (`DELETE /api/projects/:id`) is refused with 409 `WORKTREES_LINKED` while any `worktrees` row still references the project — clean up each managed worktree first.
 
 ### Worktree HTTP API
 

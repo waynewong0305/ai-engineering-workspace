@@ -133,4 +133,39 @@ describe("project routes", () => {
     const status = await execFileAsync("git", ["-C", repositoryPath, "status", "--porcelain=v1"]);
     expect(status.stdout).toBe("");
   });
+
+  it("refuses to deregister a project while it still has a managed worktree, and succeeds once it is cleaned up", async () => {
+    const repositoryPath = await createTestRepository();
+    const app = buildApp({ databasePath: ":memory:" });
+    apps.push(app);
+    const worktreeRoot = join(await realpath(tmpdir()), `aiew-project-worktrees-${Date.now()}`);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { name: "Linked worktree project", repositoryPath, worktreeRoot },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Deregistration guard", problemStatement: "Prove cleanup is required first.",
+        type: "ARCHITECTURE", riskLevel: "LOW", webAccessPermitted: false,
+      },
+    })).json();
+    const preview = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees/preview` })).json();
+    const claudeProposal = preview.proposals.find((proposal: { provider: string }) => proposal.provider === "CLAUDE");
+    const worktree = (await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: claudeProposal,
+    })).json();
+
+    const blocked = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ code: "WORKTREES_LINKED" });
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}` })).statusCode).toBe(200);
+
+    const removal = await app.inject({
+      method: "DELETE", url: `/api/worktrees/${worktree.id}`, payload: { confirm: true, deleteBranch: false },
+    });
+    expect(removal.statusCode).toBe(200);
+
+    const allowed = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(allowed.statusCode).toBe(204);
+  });
 });

@@ -3,7 +3,7 @@ import { isAbsolute } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
-import { agentRuns, projects, type ValidationCommand } from "../db/schema.js";
+import { agentRuns, projects, worktrees, type ValidationCommand } from "../db/schema.js";
 import { inspectRepository, RepositoryInspectionError } from "../services/repository-inspector.js";
 
 type CreateProjectBody = {
@@ -154,6 +154,16 @@ export function registerProjectRoutes(app: FastifyInstance, db: WorkspaceDatabas
       .get();
     if (activeRun) {
       return reply.code(409).send({ message: "Cancel or wait for active agent runs before deregistering this project." });
+    }
+    const linkedWorktree = db.select({ id: worktrees.id })
+      .from(worktrees)
+      .where(eq(worktrees.projectId, project.id))
+      .get();
+    if (linkedWorktree) {
+      return reply.code(409).send({
+        message: "Remove this project's managed worktrees before deregistering it. Clean up each worktree from the Worktrees screen, then try again.",
+        code: "WORKTREES_LINKED",
+      });
     }
     db.delete(projects).where(eq(projects.id, project.id)).run();
     return reply.code(204).send();

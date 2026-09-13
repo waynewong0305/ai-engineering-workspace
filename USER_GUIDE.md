@@ -151,7 +151,7 @@ Each registered project provides these controls:
 
 - **Recheck Git** refreshes the checked-out branch and clean/dirty state.
 - **Edit** changes the registration settings. Saving re-inspects the repository path read-only and rejects invalid or duplicate repositories.
-- **Deregister** removes the project from AI Engineering Workspace after confirmation. It never deletes or modifies the Git repository, but it does remove that project's local tasks, agent-run history, comparisons, and evidence. Deregistration is refused while an agent run for the project is queued or running. Once managed worktrees are enabled, they will require safe cleanup before deregistration.
+- **Deregister** removes the project from AI Engineering Workspace after confirmation. It never deletes or modifies the Git repository, but it does remove that project's local tasks, agent-run history, comparisons, and evidence. Deregistration is refused while an agent run for the project is queued or running, and refused while any managed worktree is still linked to the project — clean up each worktree from the Worktrees screen first.
 
 ### Choose the default branch
 
