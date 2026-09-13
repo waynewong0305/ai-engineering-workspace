@@ -41,6 +41,41 @@ class FakeCodexAdapter implements AgentAdapter {
   async cancel() {}
 }
 
+class UsageReportingCodexAdapter extends FakeCodexAdapter {
+  override async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+    const occurredAt = new Date().toISOString();
+    yield { type: "started", runId: input.runId, occurredAt };
+    // Shapes confirmed live against the installed Codex CLI's real session logs (Phase 8 Step 0).
+    yield {
+      type: "structured_output", runId: input.runId, occurredAt,
+      value: {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            primary: { used_percent: 80, window_minutes: 300, resets_at: 1789322400 },
+            secondary: { used_percent: 33, window_minutes: 10_080, resets_at: 1789581600 },
+          },
+        },
+      },
+    };
+    yield {
+      type: "structured_output", runId: input.runId, occurredAt,
+      value: {
+        type: "token_usage_record",
+        payload: { usage: { input_tokens: 1204, cached_input_tokens: 890, cache_write_input_tokens: 0, output_tokens: 312, reasoning_output_tokens: 0, total_tokens: 1516 } },
+      },
+    };
+    yield {
+      type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+      metadata: {
+        provider: "CODEX", requestedModel: input.model.requested, actualModel: "fixture-model",
+        effort: null, cliVersion: "fake-codex 1.0", promptVersion: input.promptVersion, webAccessPermitted: input.webAccess.permitted === true,
+      },
+    };
+  }
+}
+
 class FailingCodexAdapter extends FakeCodexAdapter {
   constructor(private readonly detail: string) {
     super();
@@ -204,6 +239,69 @@ describe("agent run routes", () => {
       type: "failed",
       payload: { failureKind: "MODEL_SUBSTITUTED", actualModel: "substitute-model" },
     });
+  });
+
+  it("captures real-shaped usage/rate-limit data into a usage record and a provider usage reading", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new UsageReportingCodexAdapter()] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const created = (await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: { projectId: project.id, provider: "CODEX", prompt: "Explain this repository." },
+    })).json();
+    const run = await waitForTerminalRun(app, created.id);
+
+    expect(run.usage).toMatchObject({
+      runId: run.id, provider: "CODEX", billingMode: "subscription", usageSource: "provider_reported",
+      modelActual: "fixture-model",
+      inputTokens: 1204, cachedInputTokens: 890, cacheCreationTokens: 0, outputTokens: 312, totalTokens: 1516,
+    });
+
+    const usageView = (await app.inject({ method: "GET", url: "/api/usage/CODEX" })).json();
+    const fiveHour = usageView.find((window: { windowId: string }) => window.windowId === "5H");
+    expect(fiveHour).toMatchObject({ usedPercent: 80, source: "CLI_REPORTED", sourceConfidence: "EXACT", status: "WARNING" });
+  });
+
+  it("still records exactly one usage record, marked unavailable, when a run reports nothing recoverable", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeCodexAdapter()] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const created = (await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: { projectId: project.id, provider: "CODEX", prompt: "Explain this repository." },
+    })).json();
+    const run = await waitForTerminalRun(app, created.id);
+
+    expect(run.usage).toMatchObject({
+      runId: run.id, usageSource: "unavailable", billingMode: "unknown",
+      inputTokens: null, outputTokens: null, totalTokens: null,
+    });
+  });
+
+  it("still records a usage record for a failed run", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FailingCodexAdapter("Authentication required: token expired")],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const created = (await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: { projectId: project.id, provider: "CODEX", prompt: "Explain this repository." },
+    })).json();
+    const run = await waitForTerminalRun(app, created.id);
+
+    expect(run.status).toBe("FAILED");
+    expect(run.usage).toMatchObject({ runId: run.id, usageSource: "unavailable" });
   });
 
   it("rejects an unregistered project", async () => {

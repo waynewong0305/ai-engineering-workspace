@@ -924,19 +924,110 @@ Completion record:
 
 ## Phase 8 — Usage, token, and cost monitoring
 
-Not started. Queued behind Phase 7; Phases 5 and 6 are complete. See
-`IMPLEMENTATION_ROADMAP.md`'s Phase 8 entry and the full spec at `USAGE_MONITORING_SPEC.md`. Do not
-start without an explicit human instruction to pull it forward, and re-verify installed Claude/Codex
-CLI usage-telemetry capabilities at that time rather than trusting this record.
+Started 2026-09-13, first slice complete (per an explicit human instruction to pull the CLI
+re-verification step forward). Full spec at `USAGE_MONITORING_SPEC.md`; the checklist below reflects
+what this first slice actually covers, deliberately smaller than the full spec.
 
-- [ ] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
-- [ ] `UsageRecord` data model and migration
+- [x] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
+- [x] `UsageRecord` data model and migration (per-run token capture only — no cost fields yet)
 - [ ] Pricing registry and API-equivalent cost calculation
 - [ ] Workspace/project/task/run usage dashboard
 - [ ] Cross-review cost breakdown
 - [ ] Task usage budgets integrated with the max-review-round cap
-- [ ] Historical backfill with a backfill report
+- [x] Historical backfill with a backfill report
 - [ ] Usage & Cost settings
+- [x] *(Not originally scoped as a Phase 8 checklist item, but discovered during Step 0 and folded in
+  by explicit human instruction)* Real-time automatic usage-safety readings from both CLIs' own
+  structured output, replacing the previous permanent `UNAVAILABLE` status
+
+### Phase 8 first-slice completion record — real-time usage-safety data and per-run token capture
+
+- Date: 2026-09-13
+- **Step 0 finding, bigger than Phase 8 itself:** re-investigating CLI capabilities (as the spec
+  requires before writing any code) found that both installed CLIs report exact, real-time
+  subscription-plan usage percentages in their own structured output — not just per-run token
+  counts. That directly overturned the standing assumption in `usage-safety.ts`/`AGENTS.md` ("no
+  supported local CLI/API surface reports exact usage percentages today"), which was true when
+  written and is no longer true for Claude Code 2.1.269 or the installed Codex CLI. Confirmed live:
+  a real minimal Claude prompt's `stream-json` output includes a `rate_limit_event` message
+  (`rate_limit_info.unifiedWindows.{five_hour,seven_day}.utilization`, exact and current); Codex's
+  real local session logs (`~/.codex/sessions/**` — read only enough of each line to see event
+  *shapes*, never full prompt/response content, since that's the user's own real work) show a
+  `token_count` event carrying an equivalent `rate_limits.{primary,secondary}.used_percent`. Given
+  this changes something bigger than the original Phase 8 scope, the human was asked directly
+  whether to fold a real-time usage-safety upgrade in alongside the original per-run token-capture
+  work — they said yes, so both are part of this slice.
+- **Real-time usage-safety** (`packages/agents/src/usage-extraction.ts`, new — `extractRateLimitReadings`/
+  `extractTokenUsage`, provider-neutral, pure, own test file with the real captured shapes above):
+  wired into `AgentRunManager.applyEvent`'s `structured_output` handling, which calls the new
+  `UsageSafetyService.recordCliReportedUsage()`. That method writes to the *existing*
+  `provider_usage_readings` table using its `"CLI_REPORTED"` source value — which had been sitting
+  in the schema's enum, reserved but never once written by any code, since before this session.
+  Both providers' windows (`five_hour`/`seven_day`, and Codex's `primary` 300-minute /`secondary`
+  10,080-minute windows) map directly onto `UsageSafetyService`'s own pre-existing `"5H"`/`"WEEKLY"`
+  windowId vocabulary, so none of its threshold/status/staleness/checkpoint logic needed to change
+  — only a new way to feed it real readings. Updated two now-inaccurate hardcoded strings this
+  uncovered: `refresh()`'s "no supported automatic usage source" message, and the Usage Safety
+  panel's "Source" tooltip in `App.vue`.
+- **Per-run token capture** (`usage_records` table, migration `0014`): one row per run, always —
+  `usageSource: "unavailable"` with every token field `null` when nothing was recoverable, so
+  "exactly one usage record per run" is a reliable invariant for later aggregation work rather than
+  "sometimes there's one." Captured in the same `AgentRunManager` pass (an in-memory
+  `latestTokenUsage`/`sawRateLimitReading` map per run, cleared once the terminal `usage_records` row
+  is written) for `completed`/`failed`/`cancelled` runs alike. `billingMode` is only ever inferred,
+  never guessed: a run that surfaced a real rate-limit reading is on a subscription-style plan by
+  definition (API billing has no such concept), so it's marked `subscription`; otherwise `unknown`.
+  `GET /api/agent-runs/:id` now returns a `usage` field; the run-detail view in `App.vue` shows one
+  compact "Tokens: in N · out N · cached N · EXACT" (or "unavailable") line.
+- **Historical backfill** (`apps/server/src/services/usage-backfill.ts`, `POST
+  /api/usage-records/backfill`): every historical run's raw structured output was *already* being
+  persisted verbatim in `agent_run_events` from the very start, long before anything extracted usage
+  from it — so this is a real, working backfill in this same slice, not deferred. Walks every
+  `agent_runs` row without a `usage_records` row yet, re-derives one from its stored events,
+  idempotent (never reprocesses an already-backfilled or live-captured run). Report shape:
+  `{ scanned, exact, unavailable, backfilled }`.
+- **A real, pre-existing bug found and fixed along the way, unrelated to Phase 8 itself:**
+  `ClaudeAdapter.ts` passed `--mcp-config "{}"`, which the currently-installed Claude CLI (2.1.269)
+  now rejects ("Invalid MCP configuration: mcpServers: Invalid input") — every real Claude run
+  through this app was failing before ever reaching the model. Fixed to `'{"mcpServers":{}}'`, with
+  a new regression test (`ClaudeAdapter.test.ts`) asserting the exact flag value, matching this
+  project's own precedent (Phase 7 slice 1 did the same kind of "re-verify, then fix" for Codex's
+  approval flag). Discovered only because the real-CLI verification step below caught it.
+- **Real-CLI verification performed** (small, deliberate, browser disabled, through the actual
+  running app — not a one-off manual CLI call): one minimal Claude prompt via `POST
+  /api/agent-runs` against the real registered Boostorder Cloud project. Confirmed end to end: the
+  run completed, `GET /api/agent-runs/:id` returned a `usage` record with real token counts
+  (`inputTokens: 2, cachedInputTokens: 6271, cacheCreationTokens: 3555, outputTokens: 15,
+  billingMode: "subscription", usageSource: "provider_reported"`), and `GET /api/usage/CLAUDE`
+  showed both windows as `CLI_REPORTED`/`EXACT` (5-hour: 80% `WARNING`, weekly: 35% `SAFE`) —
+  visible live in the Usage Safety panel. Backfill was also run for real against the local database
+  (`scanned: 0` — every existing run already had a usage record, either from this same
+  verification or captured live, confirming the idempotency guarantee holds in practice, not just
+  in tests).
+- **Known, current-environment limitation, honestly not worked around:** Codex's real usage limit
+  was genuinely exhausted during this session (resets ~11 PM the same day), so the equivalent
+  real-CLI check could not be run for Codex — its token/rate-limit *data shapes* were confirmed from
+  real historical session logs, but the exact event wrapping inside `codex exec --json` specifically
+  (the invocation path `CodexAdapter` actually drives) remains unconfirmed; the live exec stream
+  observed during this investigation used different top-level event naming
+  (`thread.started`/`turn.started`/`turn.failed`) than the session-log format the data shapes were
+  read from. `usage-extraction.ts`'s Codex-side parsing is deliberately shape-based (searches for
+  the recognizable data rather than requiring one exact wrapper) specifically to tolerate this, but
+  should be reconfirmed for certain against a real successful `codex exec --json` completion once
+  Codex's usage limit resets, before being fully trusted in production.
+- Explicitly deferred to a later slice: the pricing registry and any *labeled* cost figure (Claude's
+  `total_cost_usd` is captured verbatim in `rawUsageMetadata` but not surfaced as a labeled field —
+  correctly labeling it `actualCostUsd` vs `apiEquivalentCostUsd` needs billing-mode inference this
+  slice doesn't build), the workspace/task dashboards, cross-review cost breakdown, token-efficiency
+  metrics, task usage budgets, and the Usage & Cost settings page.
+- Tests added: `packages/agents/src/usage-extraction.test.ts` (12), `ClaudeAdapter.test.ts` (+1
+  regression test), `usage-safety.test.ts` (+2), `agent-runs.test.ts` (+3), `usage-backfill.test.ts`
+  (3) — 21 new tests.
+- Full verification: `npm test` (194 workspace tests: 115 server + 48 agents + 31 `packages/git`,
+  plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (migration `0014` adds `usage_records`, no further drift), and
+  `git diff --check` — all passed under Node 22.23.2, plus the real-CLI verification and live
+  browser check described above.
 
 ## End-to-end workflow verification (cross-cutting)
 

@@ -34,6 +34,21 @@ The installed Codex CLI exposes a suitable non-interactive foundation:
 
 Claude Code 2.1.269 exposes non-interactive `--print`, `stream-json`, restricted mode, explicit tool selection, permission modes, effort controls, and session resume. `claude auth status` reports an authenticated local session; credentials remain outside the application database.
 
+**Phase 8 Step 0 re-investigation (2026-09-13) found two more things, both fixed/used in that phase:**
+
+- `--mcp-config "{}"` is now rejected by this same installed version ("Invalid MCP configuration:
+  mcpServers: Invalid input") — it requires the full `'{"mcpServers":{}}'` shape even for "no
+  servers". `ClaudeAdapter.ts` was passing the bare form; every real Claude run through this app was
+  failing before reaching the model until this was fixed. A reminder that "re-verify before trusting
+  a prior finding" applies to *already-shipped* invocation code, not only new phases.
+- Both Claude Code and the installed Codex CLI report exact, real-time subscription-plan usage
+  percentages in their own structured output (Claude: a `rate_limit_event` message; Codex: a
+  `token_count` event's `rate_limits` object, confirmed from real local session logs since its usage
+  limit was exhausted mid-investigation) — see `IMPLEMENTATION_STATUS.md`'s Phase 8 completion
+  record for the full detail. This means an earlier finding in this same document and in
+  `usage-safety.ts` ("no supported local CLI/API surface reports exact usage percentages") no longer
+  holds and has been corrected rather than left stale.
+
 ## Architecture guardrails
 
 1. The browser UI never invokes Git or an AI CLI directly; the Fastify server owns those processes.
@@ -218,30 +233,37 @@ Goal: make normal failure safe and understandable.
 
 Exit gate: documented failure drills preserve source code, history, and user control.
 
-## Phase 8 — Usage, token, and cost monitoring (queued, added 2026-09-13)
+## Phase 8 — Usage, token, and cost monitoring (started 2026-09-13)
 
 Goal: make Claude/Codex token usage, billing mode, and API-equivalent cost visible from workspace
 level down to an individual run, without ever presenting an estimate as an exact figure.
 
-Queued behind Phase 7: Phases 5 and 6 are complete, but do not start Phase 8 until hardening is
-complete unless explicitly pulled forward by the user.
-Full spec, data model, UI surfaces, budget behavior, backfill rules, and testing/reporting
-requirements: `USAGE_MONITORING_SPEC.md`. Re-investigate installed Claude/Codex CLI capabilities at
-execution time — do not assume this roadmap's or that spec's CLI findings still hold.
+Pulled forward by explicit human instruction on 2026-09-13 for its Step 0 re-verification; the
+first slice (below) came out of what that investigation found. Full spec, data model, UI surfaces,
+budget behavior, backfill rules, and testing/reporting requirements: `USAGE_MONITORING_SPEC.md`.
+See `IMPLEMENTATION_STATUS.md`'s completion record for the full first-slice detail, including a
+real, pre-existing `ClaudeAdapter` bug this investigation found and fixed along the way, and a
+known Codex real-CLI verification gap (its usage limit was genuinely exhausted mid-session).
 
-- [ ] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
-- [ ] `UsageRecord` data model and migration, linked to run/task/project
+- [x] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability —
+      found both CLIs already report exact, real-time plan-usage percentages, not just per-run
+      tokens; folded a real-time usage-safety upgrade into this phase as a result (by explicit
+      human instruction, since it wasn't part of the original Phase 8 scope)
+- [x] `UsageRecord` data model and migration, linked to run/task/project — per-run token counts
+      only in this slice; no cost fields yet (see the deferred items below)
 - [ ] Centralized, versioned pricing registry and auditable API-equivalent cost calculation
 - [ ] Workspace/project/task/run usage dashboard and drill-down UI, each value labeled with its
       usage-source reliability (`EXACT`/`CALCULATED`/`ESTIMATED`/`UNAVAILABLE`)
 - [ ] Cross-review cost breakdown by role/workflow
 - [ ] Task usage budgets (presets + custom) integrated with the existing max-review-round cap
-- [ ] Historical backfill from recoverable provider-reported data only, with a backfill report
+- [x] Historical backfill from recoverable provider-reported data only, with a backfill report
 - [ ] Usage & Cost settings
 
-Exit gate: a small real Claude run and a small real Codex run each produce a usage record with
-correctly labeled billing mode and usage-source reliability, the dashboard reflects both, and no
-historical or current value is fabricated.
+Exit gate (unmet, tracks the remaining unchecked items above): a small real Claude run and a small
+real Codex run each produce a usage record with correctly labeled billing mode and usage-source
+reliability, the dashboard reflects both, and no historical or current value is fabricated. The
+Claude half of this is now met (see the completion record); Codex's is blocked on its usage limit
+resetting, and the dashboard itself doesn't exist yet.
 
 ## End-to-end workflow verification (cross-cutting, added 2026-09-13)
 

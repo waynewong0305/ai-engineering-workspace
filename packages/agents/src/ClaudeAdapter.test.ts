@@ -83,6 +83,19 @@ describe("ClaudeAdapter", () => {
     expect(args).toContain("--restricted");
   });
 
+  it("passes a full mcpServers shape, not a bare object, to --mcp-config", async () => {
+    // Re-verified against the installed CLI (2.1.269) during Phase 8: a bare "{}" is rejected
+    // ("Invalid MCP configuration: mcpServers: Invalid input") — regression test for that fix.
+    const executable = await createFakeClaudeExecutable();
+    const supervisor = new CapturingSupervisor();
+    const adapter = new ClaudeAdapter(supervisor, executable);
+    const events = [];
+    for await (const event of adapter.run({ ...baseInput, permissionProfile: "READ_ONLY" })) events.push(event);
+
+    const args = supervisor.lastInput!.args;
+    expect(args[args.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
+  });
+
   it("refuses a TEST_ONLY run", async () => {
     const executable = await createFakeClaudeExecutable();
     const supervisor = new CapturingSupervisor();

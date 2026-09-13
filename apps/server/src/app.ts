@@ -10,6 +10,7 @@ import { registerFrontendReviewApprovalRoutes } from "./routes/frontend-review-a
 import { registerMaintenanceRoutes } from "./routes/maintenance.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerUsageRecordRoutes } from "./routes/usage-records.js";
 import { registerUsageSafetyRoutes } from "./routes/usage-safety.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { AgentRunManager } from "./services/agent-run-manager.js";
@@ -49,6 +50,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   registerWorktreeRoutes(app, db, worktreeService, worktreeUsageManager);
   registerBuildRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
   registerUsageSafetyRoutes(app, usageSafety);
+  registerUsageRecordRoutes(app, db);
   registerAdrRoutes(app, db);
   registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
   registerMaintenanceRoutes(app, db, sqlite, databasePath);

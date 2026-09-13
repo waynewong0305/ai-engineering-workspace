@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { RateLimitWindowReading } from "@aiew/agents";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
@@ -16,11 +17,12 @@ import {
 } from "../db/schema.js";
 
 /**
- * Default safety policy. There is no supported local CLI or API surface that exposes exact Claude
- * Code / Codex CLI usage percentages today (see IMPLEMENTATION_ROADMAP.md's CLI capability
- * findings), and this project's safety rules forbid probing further or calling an undocumented
- * endpoint to find one. Thresholds are therefore deliberately configurable rather than tuned
- * against a real provider response shape.
+ * Default safety policy. As of the Phase 8 Step 0 investigation (2026-09-13), both installed CLIs
+ * do report exact usage percentages in their own structured output (see `recordCliReportedUsage`
+ * and `packages/agents/src/usage-extraction.ts`) — an earlier assumption here that no such surface
+ * existed is now outdated and was corrected rather than left stale. Thresholds remain deliberately
+ * configurable rather than tuned against one specific provider response shape, since CLI output
+ * still drifts between versions and must be re-verified before being trusted, not assumed forever.
  */
 export const DEFAULT_USAGE_POLICY = {
   warningThresholdPercent: 75,
@@ -235,15 +237,17 @@ export class UsageSafetyService {
   }
 
   /**
-   * There is no supported automatic usage source today (see the module docstring). This method
-   * exists so the API/UI has one explicit, honest "Refresh" action rather than silently doing
-   * nothing; it never fabricates a percentage and never contacts an undocumented endpoint.
+   * There is no on-demand poll/refresh endpoint either CLI exposes — usage updates automatically
+   * whenever a run actually happens (`recordCliReportedUsage`, fed by that run's own structured
+   * output), not on request. This method exists so the API/UI has one explicit, honest action
+   * rather than silently doing nothing; it never fabricates a percentage and never contacts an
+   * undocumented endpoint.
    */
   refresh(provider: UsageProvider) {
     return {
       provider,
       updated: false,
-      message: "No supported automatic usage source is available for this provider yet. Submit a manual snapshot, or wait for a rate-limit response to be recorded automatically.",
+      message: "There is no on-demand refresh — usage updates automatically after each run completes. Submit a manual snapshot for a reading right now, or start a run to get a fresh automatic one.",
     };
   }
 
@@ -290,6 +294,29 @@ export class UsageSafetyService {
     };
     this.db.insert(providerUsageReadings).values(reading).run();
     return reading;
+  }
+
+  /**
+   * Both installed CLIs report exact, real-time plan-usage utilization directly in their own
+   * structured output (Claude's `rate_limit_event`, Codex's `token_count` event's `rate_limits`) —
+   * confirmed live during Phase 8 Step 0 investigation (2026-09-13). `CLI_REPORTED` was already a
+   * reserved value in this table's `source` enum before anything wrote it; this is that writer.
+   * Called once per structured_output event that yields readings (see `AgentRunManager`), so this
+   * can be invoked far more often than a human's manual snapshot or a rate-limit error — that's
+   * fine, `getProviderUsage`'s "latest per (provider, windowId)" logic already handles a stream of
+   * readings, not just an occasional one.
+   */
+  recordCliReportedUsage(provider: UsageProvider, readings: RateLimitWindowReading[]): ProviderUsageReadingRecord[] {
+    const now = new Date().toISOString();
+    return readings.map((reading) => {
+      const record: ProviderUsageReadingRecord = {
+        id: randomUUID(), provider, windowId: reading.windowId, windowLabel: reading.windowLabel,
+        windowDurationMs: null, usedPercent: reading.usedPercent, resetAt: reading.resetAt,
+        source: "CLI_REPORTED", sourceConfidence: "EXACT", recordedAt: now, createdAt: now,
+      };
+      this.db.insert(providerUsageReadings).values(record).run();
+      return record;
+    });
   }
 
   recordAcknowledgement(input: Record<string, unknown>): UsageSafetyAuditRecord {

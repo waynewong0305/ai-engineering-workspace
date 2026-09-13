@@ -114,6 +114,34 @@ describe("UsageSafetyService", () => {
     expect(view.sourceConfidence).toBe("EXACT");
   });
 
+  it("records CLI-reported readings and picks them up through the normal evaluate/status pipeline with no special-casing", () => {
+    const usage = service();
+    const recorded = usage.recordCliReportedUsage("CLAUDE", [
+      { windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 80, resetAt: "2026-09-14T02:00:00.000Z" },
+      { windowId: "WEEKLY", windowLabel: "weekly usage window", usedPercent: 33, resetAt: "2026-09-15T02:00:00.000Z" },
+    ]);
+    expect(recorded).toHaveLength(2);
+
+    const views = usage.getProviderUsage("CLAUDE");
+    const fiveHour = views.find((view) => view.windowId === "5H")!;
+    expect(fiveHour).toMatchObject({ usedPercent: 80, status: "WARNING", source: "CLI_REPORTED", sourceConfidence: "EXACT" });
+    const weekly = views.find((view) => view.windowId === "WEEKLY")!;
+    expect(weekly).toMatchObject({ usedPercent: 33, status: "SAFE", source: "CLI_REPORTED", sourceConfidence: "EXACT" });
+
+    const decision = usage.evaluate("CLAUDE", { combined: false });
+    expect(decision.allowed).toBe(true);
+    expect(decision.status).toBe("WARNING");
+  });
+
+  it("a later CLI-reported reading for the same window supersedes an earlier one, same as any other source", () => {
+    const usage = service();
+    usage.recordCliReportedUsage("CODEX", [{ windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 10, resetAt: null }]);
+    usage.recordCliReportedUsage("CODEX", [{ windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 95, resetAt: null }]);
+    const view = usage.getProviderUsage("CODEX").find((entry) => entry.windowId === "5H")!;
+    expect(view.usedPercent).toBe(95);
+    expect(view.status).toBe("CHECKPOINT_REQUIRED");
+  });
+
   it("never confuses an API tokens/requests-per-minute throttle with the account usage window, even when it also says \"limit\"", () => {
     expect(parseRateLimitMessage("rate_limit_error: Number of request tokens has exceeded your per-minute rate limit.")).toBeNull();
     expect(parseRateLimitMessage("429 Too Many Requests: requests-per-minute limit exceeded, please slow down.")).toBeNull();

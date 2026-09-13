@@ -37,6 +37,9 @@ The current implementation can:
 - create integrity-checked local database backups, stage a restore for the next restart, recover
   records interrupted by a prior application process at startup, inspect cleanup warnings, and export audit
   metadata without exporting prompts or model output.
+- read exact Claude/Codex plan-usage percentages automatically from each provider's own output after
+  every run (no more manual-only tracking), and capture each run's own exact token counts (input,
+  output, cached), including recovering them for every run that already happened before this existed.
 
 Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
@@ -230,6 +233,8 @@ After registering a project, go to **02 — Read-only agent run**:
 6. Watch the streamed answer, or select **Cancel** while it is queued or running.
 
 These runs use a read-only repository profile and disable web access. They cannot edit repository files. Prompts, visible output, structured CLI events, process messages, timestamps, status, CLI version, requested model, and provider-reported actual model are stored in the local SQLite database. Output is capped at 5 MiB per channel.
+
+Once a run finishes, a **Tokens** line shows the exact input/output/cached token counts the provider itself reported for that run (labeled **EXACT**), or **unavailable** if it didn't report them. This is per-run detail, separate from the plan-usage percentages on the Usage safety screen below.
 
 Claude Code may be installed but show **Authentication required**. Run `claude auth login` yourself in a terminal, then select **Recheck tools**. The application never asks for or stores the provider credential.
 
@@ -578,11 +583,11 @@ The report always states **Human review required: YES** and a recommended next a
 
 **05 — Usage safety** tracks Claude's and Codex's own provider allowance separately from everything else in this workspace. This is not the same thing as an API's tokens-per-minute rate limit: it is the Claude Code / ChatGPT plan allowance a run can exhaust (for example, Claude's rolling 5-hour window, or a weekly plan allowance), and it is checked before every provider-consuming action so you never spend it blind.
 
-Neither the inspected Claude Code CLI nor the inspected Codex CLI exposes a documented local command that reports exact usage percentages, so:
+Both Claude Code and Codex report exact, current plan usage automatically in their own output after every run — this workspace reads it directly and records it for you, labeled **CLI_REPORTED** and **EXACT**. You don't need to do anything for this; it just happens once you've run something.
 
-- **Refresh** always reports that no automatic reading is available. It never shows a fabricated number.
-- Use **Submit manual snapshot** to record what the provider's own interface (claude.ai, ChatGPT) shows you. Manual readings are always labeled **MANUAL** and **ESTIMATED**, with the time you entered them, so they are never confused with an automatic reading.
-- If a provider process itself reports a rate-limit refusal, the workspace makes a best-effort attempt to parse it and records that provider as exhausted automatically. This parsing is heuristic; treat it as a helpful signal, not a certainty, and re-check with a manual snapshot if in doubt.
+- **Refresh** doesn't poll on demand — there's no such command in either CLI — it just explains that usage updates automatically after each run. The label always tells you honestly whether that's happened yet.
+- Use **Submit manual snapshot** to record what the provider's own interface (claude.ai, ChatGPT) shows you before you've run anything yet, or for a provider that hasn't reported automatically for some other reason. Manual readings are always labeled **MANUAL** and **ESTIMATED**, with the time you entered them, so they are never confused with an automatic reading.
+- If a provider process itself reports a rate-limit refusal (rather than the usual automatic reading), the workspace makes a best-effort attempt to parse that error text and records that provider as exhausted. This parsing is heuristic; treat it as a helpful signal, not a certainty, and re-check with a manual snapshot if in doubt.
 - Automatic detection only catches wording it recognizes. If a run or brainstorm task fails, a **Mark as exhausted** button appears next to the failure so you can decide — the surrounding text above it names which provider it applies to. When the failure's own wording looks plausibly usage-related, the prompt is labeled **LOOKS LIKE A USAGE LIMIT** as a hint — this is only a suggestion to look closer, never an automatic conclusion; the button still does the same thing either way. Selecting it records the same kind of manual snapshot (100% used, labeled MANUAL) so the next provider call is blocked instead of failing the same way again.
 
 Each provider/window card shows used and remaining percentage, when it resets, its source, when it was last updated, and one of six states: **Safe**, **Warning**, **Checkpoint required**, **Exhausted**, **Unavailable**, or **Stale**. State is always shown as text, never color alone.

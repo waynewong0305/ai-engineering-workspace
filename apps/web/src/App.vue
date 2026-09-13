@@ -41,6 +41,13 @@ type AgentHealth = {
   message?: string;
   capabilities: { availableModels: string[] | null; availableEffortLevels: string[] | null };
 };
+type UsageRecord = {
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  usageSource: "provider_reported" | "unavailable";
+};
 type AgentRun = {
   id: string;
   projectId: string;
@@ -52,7 +59,18 @@ type AgentRun = {
   errorOutput: string;
   errorMessage: string | null;
   durationMs: number | null;
+  usage: UsageRecord | null;
 };
+
+function usageLine(usage: UsageRecord | null | undefined): string {
+  if (!usage || usage.usageSource === "unavailable") return "Tokens: unavailable";
+  const parts = [
+    usage.inputTokens !== null ? `in ${usage.inputTokens.toLocaleString()}` : null,
+    usage.outputTokens !== null ? `out ${usage.outputTokens.toLocaleString()}` : null,
+    usage.cachedInputTokens !== null ? `cached ${usage.cachedInputTokens.toLocaleString()}` : null,
+  ].filter((part): part is string => part !== null);
+  return `Tokens: ${parts.join(" · ")} · EXACT`;
+}
 
 type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 type BrainstormAnalysis = {
@@ -1973,6 +1991,7 @@ onUnmounted(() => {
           <p v-if="currentRun.errorMessage" class="error-text">{{ currentRun.errorMessage }}</p>
           <details v-if="currentRun.errorOutput"><summary>Process messages</summary><pre>{{ currentRun.errorOutput }}</pre></details>
           <small v-if="currentRun.durationMs !== null">Completed in {{ (currentRun.durationMs / 1000).toFixed(1) }}s</small>
+          <small v-if="['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentRun.status)" title="Token counts this specific run actually reported, straight from the provider — never estimated. Unavailable means the CLI didn't report them for this run.">{{ usageLine(currentRun.usage) }}</small>
           <div
             v-if="currentRun.status === 'FAILED' && worstUsageStatus(currentRun.provider) !== 'EXHAUSTED'"
             :class="['exhausted-hint', { likely: currentRunUsageHint }]"
@@ -2504,8 +2523,9 @@ onUnmounted(() => {
             <p>
               A provider subscription allowance (what this page tracks) is not the same thing as an API token rate
               limit: this is about the Claude Code / ChatGPT plan allowance a run can exhaust, not per-request
-              tokens-per-minute limits. No supported local command reports exact usage today, so automatic refresh
-              honestly reports unavailable; use a manual snapshot to record what the provider's own interface shows you.
+              tokens-per-minute limits. Both CLIs report this automatically after each run finishes (labeled
+              CLI_REPORTED · EXACT below); before your first run, or for a provider that doesn't report it, use a
+              manual snapshot to record what the provider's own interface shows you.
             </p>
           </div>
           <span class="safety-badge" title="Before the app spends any of your Claude/Codex usage, it checks how much is left — every single time, not just once.">CHECK BEFORE EVERY CALL</span>
@@ -2519,7 +2539,7 @@ onUnmounted(() => {
           <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="usage-card">
             <header>
               <strong>{{ providerLabel(provider) }}</strong>
-              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" title="Try again to automatically read this provider's usage. Note: there's currently no reliable way to read exact numbers automatically, so this will often still come back Unavailable — a manual snapshot below is the trustworthy option.">
+              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" title="There's no on-demand check — usage updates automatically right after each run finishes. This just explains that, or you can enter a manual snapshot below.">
                 {{ refreshingProvider === provider ? "Refreshing…" : "Refresh" }}
               </button>
             </header>
@@ -2538,7 +2558,7 @@ onUnmounted(() => {
                 <div><dt title="How much of this time window's allowance has been spent.">Used</dt><dd>{{ window.usedPercent === null ? "Unknown" : `${window.usedPercent}%` }}</dd></div>
                 <div><dt title="How much of this time window's allowance is still left to spend.">Remaining</dt><dd>{{ window.remainingPercent === null ? "Unknown" : `${window.remainingPercent}%` }}</dd></div>
                 <div><dt title="How long until this usage window refills back to 100%.">Resets</dt><dd>{{ window.timeUntilReset ? `in ${window.timeUntilReset}` : "Unknown" }}</dd></div>
-                <div><dt title="Where this reading came from: a manual entry you typed in, or text picked up from a rate-limit error message.">Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
+                <div><dt title="Where this reading came from: automatically captured from the AI's own output after a run, a manual entry you typed in, or text picked up from a rate-limit error message.">Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
                 <div><dt title="When this reading was last refreshed.">Last updated</dt><dd>{{ window.lastRefreshedAt ? new Date(window.lastRefreshedAt).toLocaleString() : "Never" }}</dd></div>
                 <div><dt title="Whether this reading is recent enough to trust (FRESH) or too old to rely on (STALE).">Freshness</dt><dd>{{ window.freshness }}</dd></div>
               </dl>

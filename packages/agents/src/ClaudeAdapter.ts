@@ -78,7 +78,10 @@ export class ClaudeAdapter implements AgentAdapter {
     const args = [
       "-p", input.prompt, "--output-format", "stream-json", "--verbose", "--restricted",
       "--tools", tools, "--permission-mode", permissionMode, "--permission-prompts", "none",
-      "--strict-mcp-config", "--mcp-config", "{}", "--setting-sources", "", "--disable-slash-commands", "--no-chrome",
+      // Re-verified against the installed CLI (2.1.269) during Phase 8: a bare "{}" is now rejected
+      // ("Invalid MCP configuration: mcpServers: Invalid input") — the flag requires the full
+      // top-level shape even for "no servers".
+      "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "", "--disable-slash-commands", "--no-chrome",
     ];
     if (input.sessionId) args.push("--resume", input.sessionId);
     else args.push("--no-session-persistence");

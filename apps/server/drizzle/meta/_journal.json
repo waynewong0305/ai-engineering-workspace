@@ -99,6 +99,13 @@
       "when": 1789306872268,
       "tag": "0013_free_steel_serpent",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1789312081216,
+      "tag": "0014_smart_katie_power",
+      "breakpoints": true
     }
   ]
 }

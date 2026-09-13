@@ -134,6 +134,41 @@ export const agentRunEvents = sqliteTable("agent_run_events", {
 
 export type AgentRunEventRecord = typeof agentRunEvents.$inferSelect;
 
+/**
+ * Phase 8: one row per agent run, always — even when nothing was recoverable (`usageSource:
+ * "unavailable"`, every token field `null`), so "exactly one usage record per run" is an invariant
+ * later aggregation can rely on rather than "sometimes there's one." Deliberately smaller than
+ * USAGE_MONITORING_SPEC.md's full `UsageRecord`: no cost fields yet (no pricing registry exists),
+ * and `role` reuses `agentRuns.role`'s own enum instead of the spec's example vocabulary — this
+ * app's actual workflow roles already serve as workflowType, so there's no separate field for it.
+ */
+export const usageRecords = sqliteTable("usage_records", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  taskId: text("task_id"),
+  projectId: text("project_id").notNull(),
+  provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW"] }).notNull(),
+  modelRequested: text("model_requested"),
+  modelActual: text("model_actual"),
+  inputTokens: integer("input_tokens"),
+  cachedInputTokens: integer("cached_input_tokens"),
+  cacheCreationTokens: integer("cache_creation_tokens"),
+  outputTokens: integer("output_tokens"),
+  reasoningOutputTokens: integer("reasoning_output_tokens"),
+  totalTokens: integer("total_tokens"),
+  billingMode: text("billing_mode", { enum: ["subscription", "api", "credits", "unknown"] }).notNull().default("unknown"),
+  usageSource: text("usage_source", { enum: ["provider_reported", "unavailable"] }).notNull(),
+  rawUsageMetadata: text("raw_usage_metadata", { mode: "json" }).$type<Record<string, unknown> | null>(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("usage_records_run_idx").on(table.runId),
+  index("usage_records_project_created_idx").on(table.projectId, table.createdAt),
+  index("usage_records_task_created_idx").on(table.taskId, table.createdAt),
+]);
+
+export type UsageRecordRecord = typeof usageRecords.$inferSelect;
+
 export type BrainstormAnalysis = {
   summary: string;
   facts: string[];

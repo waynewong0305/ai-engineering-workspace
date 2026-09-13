@@ -3,7 +3,7 @@ import type { AgentAdapter, AgentProvider } from "@aiew/agents";
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
-import { agentRuns, projects } from "../db/schema.js";
+import { agentRuns, projects, usageRecords } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
 import { UsageCheckpointError, UsageSafetyService } from "../services/usage-safety.js";
 
@@ -44,7 +44,8 @@ export function registerAgentRunRoutes(
   app.get<{ Params: { id: string } }>("/api/agent-runs/:id", async (request, reply) => {
     const run = db.select().from(agentRuns).where(eq(agentRuns.id, request.params.id)).get();
     if (!run) return reply.code(404).send({ message: "Agent run not found." });
-    return { ...run, events: manager.listEvents(run.id) };
+    const usage = db.select().from(usageRecords).where(eq(usageRecords.runId, run.id)).get() ?? null;
+    return { ...run, events: manager.listEvents(run.id), usage };
   });
 
   app.post<{ Body: CreateRunBody }>("/api/agent-runs", async (request, reply) => {

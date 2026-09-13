@@ -28,9 +28,12 @@ supervised frontend verification runner itself (the browser-automation piece the
 protects, and the UI it will drive) was evaluated in detail and deliberately deferred, not left
 unstarted by oversight — see `IMPLEMENTATION_STATUS.md`'s record before reconsidering it. Recovery,
 database backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost
-monitoring (Phase 8, spec in
-`USAGE_MONITORING_SPEC.md`) is queued behind Phase 7 — do not start it early without an explicit
-human instruction.
+monitoring (Phase 8, spec in `USAGE_MONITORING_SPEC.md`) was pulled forward by explicit human
+instruction and has its first slice done: real-time usage-safety readings from both CLIs' own
+structured output (not just Claude's — Codex too), and per-run token capture with historical
+backfill. The pricing registry, cost figures, dashboards, cross-review breakdown, budgets, and
+settings UI remain — see `IMPLEMENTATION_STATUS.md`'s record for what's actually built versus still
+open, including a known Codex real-CLI verification gap.
 
 ## Source-of-truth specifications
 

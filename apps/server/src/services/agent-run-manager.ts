@@ -2,14 +2,17 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   classifyAgentFailure,
+  extractRateLimitReadings,
+  extractTokenUsage,
   modelSubstitutionFailure,
   type AgentAdapter,
   type AgentEvent,
   type AgentRunInput,
+  type TokenUsage,
 } from "@aiew/agents";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
-import { agentRunEvents, agentRuns, type AgentRunEventRecord, type AgentRunRecord } from "../db/schema.js";
+import { agentRunEvents, agentRuns, usageRecords, type AgentRunEventRecord, type AgentRunRecord } from "../db/schema.js";
 import type { UsageSafetyService } from "./usage-safety.js";
 
 const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "CANCELLED"] as const;
@@ -40,6 +43,8 @@ export class AgentRunManager {
   private readonly emitter = new EventEmitter();
   private readonly cancellationRequested = new Set<string>();
   private readonly sequenceByRun = new Map<string, number>();
+  private readonly latestTokenUsage = new Map<string, TokenUsage>();
+  private readonly sawRateLimitReading = new Set<string>();
 
   constructor(private readonly db: WorkspaceDatabase, private readonly usageSafety?: UsageSafetyService) {
     this.emitter.setMaxListeners(100);
@@ -142,6 +147,13 @@ export class AgentRunManager {
       this.usageSafety?.recordRateLimitError(current.provider, event.chunk);
     } else if (event.type === "structured_output") {
       this.db.update(agentRuns).set({ rawOutput: appendBounded(current.rawOutput, `${JSON.stringify(event.value)}\n`), updatedAt }).where(eq(agentRuns.id, runId)).run();
+      const readings = extractRateLimitReadings(current.provider, event.value);
+      if (readings.length) {
+        this.sawRateLimitReading.add(runId);
+        this.usageSafety?.recordCliReportedUsage(current.provider, readings);
+      }
+      const tokenUsage = extractTokenUsage(current.provider, event.value);
+      if (tokenUsage) this.latestTokenUsage.set(runId, tokenUsage);
     } else if (event.type === "completed") {
       this.db.update(agentRuns).set({
         status: "COMPLETED",
@@ -152,17 +164,50 @@ export class AgentRunManager {
         completedAt: event.occurredAt,
         updatedAt,
       }).where(eq(agentRuns.id, runId)).run();
+      this.recordUsage(runId, current, event.metadata.actualModel);
     } else if (event.type === "failed") {
+      const actualModel = event.actualModel === undefined ? current.actualModel : event.actualModel;
       this.db.update(agentRuns).set({
         status: "FAILED", errorMessage: event.message, exitCode: event.exitCode,
-        actualModel: event.actualModel === undefined ? current.actualModel : event.actualModel,
-        durationMs: Date.now() - started, completedAt: event.occurredAt, updatedAt,
+        actualModel, durationMs: Date.now() - started, completedAt: event.occurredAt, updatedAt,
       }).where(eq(agentRuns.id, runId)).run();
       this.usageSafety?.recordRateLimitError(current.provider, event.message);
+      this.recordUsage(runId, current, actualModel);
     } else if (event.type === "cancelled") {
       this.db.update(agentRuns).set({
         status: "CANCELLED", durationMs: Date.now() - started, completedAt: event.occurredAt, updatedAt,
       }).where(eq(agentRuns.id, runId)).run();
+      this.recordUsage(runId, current, current.actualModel);
     }
+  }
+
+  /**
+   * Phase 8: exactly one `usage_records` row per run, always — `unavailable` when nothing was
+   * recoverable, so later aggregation can rely on "one row per run" rather than "sometimes one."
+   * `billingMode` is only ever inferred, never guessed at random: a run that surfaced a real
+   * rate-limit/plan-usage reading is on a subscription-style plan by definition (API billing has no
+   * such concept), so it's marked `subscription`; otherwise `unknown`, never assumed `api`.
+   */
+  private recordUsage(runId: string, current: AgentRunRecord, actualModel: string | null) {
+    const tokenUsage = this.latestTokenUsage.get(runId) ?? null;
+    const billingMode = this.sawRateLimitReading.has(runId) ? "subscription" : "unknown";
+    this.latestTokenUsage.delete(runId);
+    this.sawRateLimitReading.delete(runId);
+    const record = {
+      id: randomUUID(), runId, taskId: current.taskId, projectId: current.projectId,
+      provider: current.provider, role: current.role,
+      modelRequested: current.requestedModel, modelActual: actualModel,
+      inputTokens: tokenUsage?.inputTokens ?? null,
+      cachedInputTokens: tokenUsage?.cachedInputTokens ?? null,
+      cacheCreationTokens: tokenUsage?.cacheCreationTokens ?? null,
+      outputTokens: tokenUsage?.outputTokens ?? null,
+      reasoningOutputTokens: tokenUsage?.reasoningOutputTokens ?? null,
+      totalTokens: tokenUsage?.totalTokens ?? null,
+      billingMode: billingMode as "subscription" | "unknown",
+      usageSource: (tokenUsage ? "provider_reported" : "unavailable") as "provider_reported" | "unavailable",
+      rawUsageMetadata: tokenUsage ? (tokenUsage as unknown as Record<string, unknown>) : null,
+      createdAt: new Date().toISOString(),
+    };
+    this.db.insert(usageRecords).values(record).run();
   }
 }
