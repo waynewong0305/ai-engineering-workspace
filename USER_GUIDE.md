@@ -32,7 +32,8 @@ The current implementation can:
 - merge a completed build's worktree into a target branch once you explicitly approve it, re-run validation against the merged result, and automatically clean up the worktree and (optionally) its branch only when every safety condition holds; and
 - generate a pre-PR report for a build on demand, summarizing the problem, implementation, files changed, findings by disposition, tests, and merge state, always marking human review as required; and
 - create, edit, and reclassify architecture decision records (ADRs) for a task, numbered sequentially per project, stored locally and never exported into your repository automatically; and
-- run an isolated proof-of-concept experiment against a stated hypothesis, with an independent reviewer returning a proven/disproven/inconclusive verdict that's automatically recorded on the task's evidence board.
+- run an isolated proof-of-concept experiment against a stated hypothesis, with an independent reviewer returning a proven/disproven/inconclusive verdict that's automatically recorded on the task's evidence board; and
+- promote an ADR into one or more linked implementation tasks, each keeping a real link back to its ADR (and, transitively, to the originating architecture discussion and any related experiments).
 
 Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
@@ -299,18 +300,17 @@ The **BRAINSTORM PLAN REPORT** section on a task's detail pane generates a summa
 
 You can generate this report at any point in the workflow, not only once the task reaches READY — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed so far, never fabricating what hasn't happened yet. The report always states **Human decision required: YES**: it's a plan to review, not an approved decision — see "Reviews and human responsibility" below.
 
-## Feature planning — partially planned
+## Feature planning
 
 The planning path is:
 
 ```text
-idea → brainstorm → architecture → experiment → ADR   ) available now — see below
-→ implementation plan → coding tasks                  — planned
+idea → brainstorm → architecture → experiment → ADR → linked implementation tasks
 ```
 
-Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Run an experiment to test a specific technical hypothesis before committing to it. Create an Architecture Decision Record once you choose an option.
+Use brainstorm to widen and challenge the problem. Use architecture to compare system-level options and operational risks. Run an experiment to test a specific technical hypothesis before committing to it. Create an Architecture Decision Record once you choose an option, then promote it into one or more implementation tasks.
 
-Promoting an approved decision into implementation phases and linked coding tasks with explicit acceptance criteria is not implemented yet. The links that would matter — a future reviewer moving from a code task back to the plan, ADR, experiment, and original problem — are not yet tracked as a relationship; an ADR's `relatedTaskIds` field is a loose, human-curated list you fill in yourself, not an enforced link.
+A future reviewer moving from a code task back to the plan, ADR, experiment, and original problem: a promoted task keeps a real link to its ADR, and the ADR itself already carries the originating architecture task and any related experiments — see "Plan promotion" below. This is one link per task, not a full acceptance-criteria/sub-task breakdown structure; write acceptance criteria into the task's own problem statement.
 
 ### Architecture decisions
 
@@ -330,6 +330,24 @@ Each ADR is numbered sequentially within its project (`ADR-0001`, `ADR-0002`, ..
 ADRs are stored only in this application's local database. Nothing is ever written into your registered repository automatically — if you want an ADR committed as a Markdown file in the repo itself, that would be a separate, explicit, human-approved action, and is not implemented.
 
 A build's pre-PR report (see "Build and review" below) automatically surfaces any ADR that either originated from that build's task or names it in `relatedTaskIds`.
+
+### Plan promotion
+
+On an ADR's card, below its fields, is a small form to promote it into an implementation task:
+
+1. **New task title** — e.g. "Create shard registry schema".
+2. **Problem statement** for the new task.
+3. **Plan phase** (optional) — a free-text label like "Phase 1 — Shard Registry" so several tasks promoted from the same ADR can share a visible grouping.
+4. Choose a risk level (defaults to Medium).
+5. Select **+ Promote to implementation task**.
+
+This creates one new task per submission — call it again for each `TASK-20x` you want under the same ADR (and reuse the same plan phase label to group them). The new task:
+
+- keeps a real link back to the ADR it was promoted from (not the ADR's loose, human-curated `relatedTaskIds` — an actual field on the task itself, always set);
+- starts as a plain **DRAFT**, and is never started automatically; and
+- is created with type **IMPLEMENTATION** rather than Brainstorm or Architecture, since it's meant to skip independent-analysis brainstorming entirely — take it straight to **06 — Build** once you're ready.
+
+Since the ADR itself already records which architecture task it came from and any related experiments, this one link is enough to walk the whole chain back: implementation task → ADR → architecture discussion (and experiments). Each ADR's card shows everything already promoted from it (title, status, plan phase).
 
 ### Experiments
 

@@ -128,6 +128,13 @@ type Adr = {
   relatedTaskIds: string[];
   status: AdrStatus;
 };
+type PromotedTask = {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  planPhase: string | null;
+};
 type BrainstormTask = {
   id: string;
   projectId: string;
@@ -430,6 +437,9 @@ const adrForm = reactive({
   title: "", context: "", optionsConsidered: "", decision: "", reasons: "", consequences: "",
   risks: "", rejectedAlternatives: "", requiredFollowUp: "",
 });
+const promotedTasksByAdr = reactive<Record<string, PromotedTask[]>>({});
+const promoteForms = reactive<Record<string, { title: string; problemStatement: string; planPhase: string; riskLevel: string }>>({});
+const promotingAdrId = ref("");
 
 const usage = ref<Record<AgentProvider, UsageWindowView[]>>({ CLAUDE: [], CODEX: [] });
 const usagePolicy = ref<UsagePolicy | null>(null);
@@ -1020,6 +1030,38 @@ async function loadAdrsForTask() {
     return;
   }
   adrsForTask.value = await response.json();
+  await Promise.all(adrsForTask.value.map(async (adr) => {
+    if (!promoteForms[adr.id]) promoteForms[adr.id] = { title: "", problemStatement: "", planPhase: "", riskLevel: "MEDIUM" };
+    const promotedResponse = await fetch(`/api/adrs/${adr.id}/promoted-tasks`);
+    promotedTasksByAdr[adr.id] = promotedResponse.ok ? await promotedResponse.json() : [];
+  }));
+}
+
+async function promoteAdr(adr: Adr) {
+  const form = promoteForms[adr.id];
+  if (!form?.title.trim() || !form.problemStatement.trim()) return;
+  promotingAdrId.value = adr.id;
+  adrError.value = "";
+  try {
+    const response = await fetch(`/api/adrs/${adr.id}/promote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: form.title, problemStatement: form.problemStatement,
+        riskLevel: form.riskLevel, planPhase: form.planPhase || undefined,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not promote this ADR into a task.");
+    Object.assign(form, { title: "", problemStatement: "", planPhase: "" });
+    const promotedResponse = await fetch(`/api/adrs/${adr.id}/promoted-tasks`);
+    promotedTasksByAdr[adr.id] = promotedResponse.ok ? await promotedResponse.json() : [];
+    await loadTasks();
+  } catch (error) {
+    adrError.value = error instanceof Error ? error.message : "Could not promote this ADR into a task.";
+  } finally {
+    promotingAdrId.value = "";
+  }
 }
 
 async function createAdr() {
@@ -2649,6 +2691,29 @@ onUnmounted(() => {
           <p v-if="adr.rejectedAlternatives"><strong>Rejected alternatives</strong> {{ adr.rejectedAlternatives }}</p>
           <p v-if="adr.requiredFollowUp"><strong>Required follow-up</strong> {{ adr.requiredFollowUp }}</p>
           <small>Related tasks: {{ adr.relatedTaskIds.length || "none" }}</small>
+
+          <div class="promoted-tasks">
+            <p class="form-hint" v-if="promotedTasksByAdr[adr.id]?.length"><strong>Promoted to:</strong></p>
+            <ul v-if="promotedTasksByAdr[adr.id]?.length">
+              <li v-for="promoted in promotedTasksByAdr[adr.id]" :key="promoted.id">
+                {{ promoted.title }} — {{ promoted.status }}<template v-if="promoted.planPhase"> ({{ promoted.planPhase }})</template>
+              </li>
+            </ul>
+            <form v-if="promoteForms[adr.id]" class="promote-form" @submit.prevent="promoteAdr(adr)">
+              <input v-model="promoteForms[adr.id]!.title" placeholder="New task title (e.g. Create shard registry schema)" maxlength="300" required />
+              <input v-model="promoteForms[adr.id]!.problemStatement" placeholder="Problem statement for the new task" required />
+              <input v-model="promoteForms[adr.id]!.planPhase" placeholder="Plan phase (optional, e.g. Phase 1 — Shard Registry)" maxlength="300" />
+              <select v-model="promoteForms[adr.id]!.riskLevel">
+                <option value="LOW">Low</option>
+                <option value="MEDIUM">Medium</option>
+                <option value="HIGH">High</option>
+                <option value="CRITICAL">Critical</option>
+              </select>
+              <button class="text-button" type="submit" :disabled="promotingAdrId === adr.id">
+                {{ promotingAdrId === adr.id ? "Promoting…" : "+ Promote to implementation task" }}
+              </button>
+            </form>
+          </div>
         </div>
       </section>
     </main>

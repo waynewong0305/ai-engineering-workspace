@@ -24,7 +24,7 @@ export const projects = sqliteTable("projects", {
 
 export type ProjectRecord = typeof projects.$inferSelect;
 
-export type TaskType = "BRAINSTORM" | "ARCHITECTURE";
+export type TaskType = "BRAINSTORM" | "ARCHITECTURE" | "IMPLEMENTATION";
 export type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
@@ -33,13 +33,24 @@ export const tasks = sqliteTable("tasks", {
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   problemStatement: text("problem_statement").notNull(),
-  type: text("type", { enum: ["BRAINSTORM", "ARCHITECTURE"] }).notNull(),
+  type: text("type", { enum: ["BRAINSTORM", "ARCHITECTURE", "IMPLEMENTATION"] }).notNull(),
   status: text("status", { enum: ["DRAFT", "ANALYZING", "CROSS_REVIEW", "READY", "FAILED", "CANCELLED", "CHECKPOINTED"] }).notNull(),
   riskLevel: text("risk_level", { enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"] }).notNull(),
   webAccessPolicy: text("web_access_policy", { enum: ["DISABLED", "ENABLED_FOR_TASK"] }).notNull(),
   webAccessPermitted: integer("web_access_permitted", { mode: "boolean" }).notNull(),
   webAccessDecidedAt: text("web_access_decided_at").notNull(),
   webAccessDecidedBy: text("web_access_decided_by", { enum: ["USER"] }).notNull(),
+  // PROJECT_SPEC.md §20: a task promoted from an ADR keeps a link back to it (never inferred after
+  // the fact) — the ADR itself already carries the originating architecture task in `taskId` and
+  // any related experiments in `relatedTaskIds`, so this one link is enough to walk the whole
+  // chain. Not a `.references()` FK: `adrs` is defined later in this file and itself references
+  // `tasks`, and TypeScript cannot resolve that mutual cycle through Drizzle's lazy `() => table`
+  // reference thunks (a real compiler limitation, not a stylistic choice) — so, like
+  // `relatedTaskIds` on the other side, this is a loose, human/system-set id, not FK-enforced.
+  // planPhase is a free-text grouping label (e.g. "Phase 1 — Shard Registry") set at promotion
+  // time, not a separate relational "plan" entity — a deliberate scope reduction.
+  originAdrId: text("origin_adr_id"),
+  planPhase: text("plan_phase"),
   errorMessage: text("error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

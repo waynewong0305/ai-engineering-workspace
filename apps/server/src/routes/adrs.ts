@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { asc, eq, max } from "drizzle-orm";
+import { asc, desc, eq, max } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
-import { adrs, projects, tasks, type AdrRecord, type AdrStatus } from "../db/schema.js";
+import { adrs, projects, tasks, type AdrRecord, type AdrStatus, type RiskLevel, type TaskRecord } from "../db/schema.js";
 
 const ADR_STATUSES = new Set<AdrStatus>(["PROPOSED", "ACCEPTED", "REJECTED", "SUPERSEDED"]);
+const RISK_LEVELS = new Set<RiskLevel>(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
 const MAX_SHORT_FIELD = 300;
 const MAX_LONG_FIELD = 10_000;
+
+type PromoteBody = {
+  title?: unknown;
+  problemStatement?: unknown;
+  riskLevel?: unknown;
+  planPhase?: unknown;
+};
 
 type CreateAdrBody = {
   title?: unknown;
@@ -124,5 +132,49 @@ export function registerAdrRoutes(app: FastifyInstance, db: WorkspaceDatabase) {
       relatedTaskIds, status, updatedAt: new Date().toISOString(),
     }).where(eq(adrs.id, current.id)).run();
     return db.select().from(adrs).where(eq(adrs.id, current.id)).get();
+  });
+
+  /**
+   * PROJECT_SPEC.md §20: "Architecture decisions can become implementation tasks." Each call
+   * creates exactly one new task (call it once per TASK-20x in the example) linked back to this
+   * ADR via `originAdrId` — the ADR itself already carries the originating architecture task
+   * (`taskId`) and any related experiments (`relatedTaskIds`), so that one link is enough to walk
+   * the whole chain: task -> ADR -> architecture discussion + experiments. `planPhase` is a free-
+   * text grouping label so several promoted tasks can share a visible "Phase 1 — ..." heading.
+   * The new task starts as a plain `IMPLEMENTATION`-type `DRAFT` — it is never auto-started, and
+   * skips brainstorm analysis entirely: the human takes it straight to Build once ready.
+   */
+  app.post<{ Params: { id: string }; Body: PromoteBody }>("/api/adrs/:id/promote", async (request, reply) => {
+    const adr = db.select().from(adrs).where(eq(adrs.id, request.params.id)).get();
+    if (!adr) return reply.code(404).send({ message: "ADR not found." });
+
+    const title = text(request.body?.title, MAX_SHORT_FIELD);
+    const problemStatement = text(request.body?.problemStatement, MAX_LONG_FIELD * 2);
+    if (!title || !problemStatement) {
+      return reply.code(400).send({ message: "title and problemStatement are both required (300 and 20,000 characters respectively)." });
+    }
+    const riskLevel = request.body?.riskLevel === undefined ? "MEDIUM" : (typeof request.body.riskLevel === "string" && RISK_LEVELS.has(request.body.riskLevel as RiskLevel) ? request.body.riskLevel as RiskLevel : null);
+    if (riskLevel === null) return reply.code(400).send({ message: `riskLevel must be one of ${Array.from(RISK_LEVELS).join(", ")}.` });
+    const planPhase = optionalText(request.body?.planPhase, MAX_SHORT_FIELD);
+    if (planPhase === null && request.body?.planPhase !== undefined && request.body.planPhase !== null) {
+      return reply.code(400).send({ message: "planPhase must be a string of 300 characters or fewer." });
+    }
+
+    const now = new Date().toISOString();
+    const task: TaskRecord = {
+      id: randomUUID(), projectId: adr.projectId, title, problemStatement,
+      type: "IMPLEMENTATION", status: "DRAFT", riskLevel,
+      webAccessPolicy: "DISABLED", webAccessPermitted: false, webAccessDecidedAt: now, webAccessDecidedBy: "USER",
+      originAdrId: adr.id, planPhase: planPhase ?? null, errorMessage: null, createdAt: now, updatedAt: now,
+    };
+    db.insert(tasks).values(task).run();
+    return reply.code(201).send({ ...task, runs: [], artifacts: [], evidence: [], comparison: null, openQuestionCount: 0 });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/adrs/:id/promoted-tasks", async (request, reply) => {
+    if (!db.select({ id: adrs.id }).from(adrs).where(eq(adrs.id, request.params.id)).get()) {
+      return reply.code(404).send({ message: "ADR not found." });
+    }
+    return db.select().from(tasks).where(eq(tasks.originAdrId, request.params.id)).orderBy(desc(tasks.createdAt)).all();
   });
 }

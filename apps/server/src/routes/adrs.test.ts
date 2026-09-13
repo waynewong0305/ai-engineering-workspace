@@ -161,3 +161,64 @@ describe("ADR routes", () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
+describe("ADR plan promotion", () => {
+  it("promotes an ADR into a linked IMPLEMENTATION task, preserving the ADR/architecture-discussion chain", async () => {
+    const app = buildApp({ databasePath: ":memory:" });
+    apps.push(app);
+    const { task, project } = await createTaskAndProject(app);
+    const adr = (await app.inject({ method: "POST", url: `/api/tasks/${task.id}/adrs`, payload: validAdrPayload() })).json();
+
+    const response = await app.inject({
+      method: "POST", url: `/api/adrs/${adr.id}/promote`,
+      payload: { title: "Create shard registry schema", problemStatement: "Design and migrate the shard_registry table.", planPhase: "Phase 1 — Shard Registry" },
+    });
+    expect(response.statusCode).toBe(201);
+    const promoted = response.json();
+    expect(promoted.type).toBe("IMPLEMENTATION");
+    expect(promoted.status).toBe("DRAFT");
+    expect(promoted.originAdrId).toBe(adr.id);
+    expect(promoted.planPhase).toBe("Phase 1 — Shard Registry");
+    expect(promoted.projectId).toBe(project.id);
+    expect(promoted.riskLevel).toBe("MEDIUM");
+
+    // The full chain is walkable: promoted task -> ADR -> originating architecture task.
+    const adrAgain = (await app.inject({ method: "GET", url: `/api/adrs/${adr.id}` })).json();
+    expect(adrAgain.taskId).toBe(task.id);
+
+    const listed = (await app.inject({ method: "GET", url: `/api/adrs/${adr.id}/promoted-tasks` })).json();
+    expect(listed).toHaveLength(1);
+    expect(listed[0].id).toBe(promoted.id);
+  });
+
+  it("creates one task per promote call, so multiple TASK-20x tasks can share a plan phase", async () => {
+    const app = buildApp({ databasePath: ":memory:" });
+    apps.push(app);
+    const { task } = await createTaskAndProject(app);
+    const adr = (await app.inject({ method: "POST", url: `/api/tasks/${task.id}/adrs`, payload: validAdrPayload() })).json();
+
+    await app.inject({ method: "POST", url: `/api/adrs/${adr.id}/promote`, payload: { title: "TASK-201", problemStatement: "First.", planPhase: "Phase 1" } });
+    await app.inject({ method: "POST", url: `/api/adrs/${adr.id}/promote`, payload: { title: "TASK-202", problemStatement: "Second.", planPhase: "Phase 1" } });
+
+    const listed = (await app.inject({ method: "GET", url: `/api/adrs/${adr.id}/promoted-tasks` })).json();
+    expect(listed.map((t: { title: string }) => t.title).sort()).toEqual(["TASK-201", "TASK-202"]);
+  });
+
+  it("rejects promotion with a missing title or problem statement", async () => {
+    const app = buildApp({ databasePath: ":memory:" });
+    apps.push(app);
+    const { task } = await createTaskAndProject(app);
+    const adr = (await app.inject({ method: "POST", url: `/api/tasks/${task.id}/adrs`, payload: validAdrPayload() })).json();
+    const response = await app.inject({ method: "POST", url: `/api/adrs/${adr.id}/promote`, payload: { title: "Only a title" } });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("404s promoting an ADR that doesn't exist", async () => {
+    const app = buildApp({ databasePath: ":memory:" });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST", url: "/api/adrs/does-not-exist/promote", payload: { title: "T", problemStatement: "P" },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+});

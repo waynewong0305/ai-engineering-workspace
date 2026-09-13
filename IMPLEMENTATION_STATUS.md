@@ -4,7 +4,7 @@ Last updated: 2026-09-13
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. Phase 6 (planning and ADRs) is now underway: architecture decision records (create, list, edit, reclassify status) and isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item) are both implemented; plan promotion/linked-task creation is not yet. Phase 7 (hardening) remains unimplemented — see below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 (hardening) remains unimplemented — see below.
 
 ## LLM agent policy
 
@@ -467,8 +467,8 @@ Completion record:
       type reclassification both work today)
 - [x] ADRs
 - [x] Experiments
-- [ ] Plan promotion
-- [ ] Linked implementation tasks
+- [x] Plan promotion
+- [x] Linked implementation tasks
 
 ### Phase 6, slice 1 completion record — ADRs
 
@@ -585,6 +585,53 @@ Completion record:
   cleanly when the reviewer's verdict can't be parsed, and confirming no evidence item is created in
   that case; refusing a second concurrent experiment for the same task/provider; listing experiments
   for a task; and 404s for a nonexistent task/experiment.
+
+### Phase 6, slice 3 completion record — plan promotion and linked implementation tasks — Phase 6 complete
+
+- Date: 2026-09-13
+- Scope: `PROJECT_SPEC.md` §20 — the last unchecked Phase 6 item. An ADR can be promoted into one or
+  more implementation tasks (call the promote action once per `TASK-20x` in the spec's own example),
+  each keeping a real link back to it. With this, every Phase 6 roadmap item is implemented.
+- Relationship chain, deliberately kept to what's actually needed rather than a new relational
+  model: a promoted task's `originAdrId` links straight to its ADR; the ADR itself already carries
+  the originating architecture task (`taskId`) and any related experiments (`relatedTaskIds`), so
+  one link on the task is enough to walk the whole chain (`task -> ADR -> architecture discussion +
+  experiments`) the spec asks for. `planPhase` is a free-text grouping label (e.g. "Phase 1 — Shard
+  Registry") set at promotion time so several tasks can share a visible phase heading — not a
+  separate "plan" entity/table, a deliberate scope reduction given the size of everything else in
+  this phase.
+- Schema: `tasks` gained `type: "IMPLEMENTATION"` (a new task kind, distinct from `BRAINSTORM`/
+  `ARCHITECTURE`, for a task meant to skip straight to Phase 5's Build workflow rather than go
+  through independent-analysis brainstorming again), `originAdrId`, and `planPhase`. **Not** a
+  `.references()` foreign key on `originAdrId`, unlike most links in this schema: `adrs` is defined
+  later in `schema.ts` and itself references `tasks`, and TypeScript's inference through Drizzle's
+  lazy `() => table` reference thunks cannot resolve that mutual cycle (confirmed by trying it first
+  — `tsc` reported "implicitly has type 'any' because it... is referenced... in its own
+  initializer" on both tables) — a real compiler limitation, not a stylistic choice. So, like
+  `adrs.relatedTaskIds` on the other side of this same relationship, it's a loose, system-set id,
+  not FK-enforced. Both new `tasks` columns are additive `ALTER TABLE ... ADD COLUMN` with no
+  `REFERENCES` clause, so Phase 5's known SQLite FK-on-ALTER pitfall doesn't apply here regardless.
+- New `apps/server/src/routes/adrs.ts` routes: `POST /api/adrs/:id/promote` (title +
+  problemStatement required, riskLevel defaults to `MEDIUM`, planPhase optional — creates exactly
+  one new `DRAFT` `IMPLEMENTATION` task per call, never auto-started) and `GET
+  /api/adrs/:id/promoted-tasks`.
+- UI: each ADR card in `apps/web/src/App.vue`'s Decisions section now shows its already-promoted
+  tasks (title, status, plan phase) and an inline "+ Promote to implementation task" form. Verified
+  end-to-end in the browser against the real local database (this spends no provider usage — it's
+  pure bookkeeping, unlike starting a build or an experiment): promoted ADR-0001 into a real
+  `Create shard registry schema` task tagged "Phase 1 — Shard Registry", confirmed via a direct API
+  call that `originAdrId` and `planPhase` both persisted correctly, and confirmed the card's
+  "Promoted to:" list updated. One transient `Failed to fetch` console error appeared during this
+  session — traced to the local dev server restarting (`tsx watch` reacting to a concurrent editing
+  session's own file save) at the same moment as a background reload, not a bug in the promotion
+  logic itself, which had already completed successfully by then.
+- Tests executed: full workspace `npm test` (114 tests: 91 `apps/server` + 12 `packages/agents` + 11
+  `packages/git`, up from 110), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (reports only the two new `tasks` columns), `git diff --check` — all clean.
+  New coverage in `adrs.test.ts` (4 tests): promoting an ADR into a linked task and confirming the
+  full chain is walkable (promoted task -> ADR -> originating architecture task); creating multiple
+  tasks under the same plan phase from repeated promote calls; rejecting promotion with a missing
+  title or problem statement; and a 404 for promoting a nonexistent ADR.
 
 ## Phase 7 — Hardening
 
