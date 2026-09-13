@@ -68,6 +68,9 @@ Exit gate: `npm run dev` serves the client and API on localhost with a connected
 Goal: register a repository without changing it.
 
 - [x] Add and list projects
+- [x] Edit registered project metadata, repository path, worktree root, context, and validation commands
+- [x] Confirm and safely deregister projects without deleting repository files
+- [x] Refuse deregistration while a project has an active agent run
 - [x] Require an absolute, existing directory
 - [x] Verify a Git working tree
 - [x] Canonicalize the repository path
@@ -78,7 +81,7 @@ Goal: register a repository without changing it.
 - [x] Recheck Git status on demand
 - [x] Test that registration leaves a temporary repository unchanged
 
-Exit gate: a real repository can be registered and refreshed without writes to that repository. Do not register Boostorder automatically; the user chooses it in the UI.
+Exit gate: a real repository can be registered, edited, refreshed, and deregistered without writes to or deletion of that repository. Do not register Boostorder automatically; the user chooses it in the UI.
 
 ## Phase 2 — Agent adapters
 
@@ -125,6 +128,7 @@ Goal: permit scoped modifications without touching the developer's active checko
 - [ ] Keep worktree directory names and branch names independently manageable
 - [ ] Create, inspect, diff, and list worktrees
 - [ ] Worktree ownership and process-use tracking
+- [ ] Refuse project deregistration until its managed worktrees are safely cleaned up
 - [ ] Dirty-worktree protection before removal
 - [ ] Recoverable cleanup workflow with explicit human confirmation
 - [ ] Temporary-repository integration tests

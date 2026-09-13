@@ -1456,6 +1456,8 @@ Functions:
 
 ```text
 add project
+edit project registration
+deregister project without deleting repository files
 validate path
 detect Git repository
 read branch
@@ -1466,7 +1468,11 @@ configure validation commands
 
 Acceptance:
 
-Boostorder can be registered without modifying Boostorder.
+Boostorder can be registered, edited, re-inspected, and deregistered without
+modifying or deleting anything in the Boostorder repository. Deregistration
+requires confirmation, removes dependent local workspace history, and is refused
+while an agent run is active. Once managed worktrees are enabled, deregistration
+must also require their safe cleanup first.
 
 ---
 

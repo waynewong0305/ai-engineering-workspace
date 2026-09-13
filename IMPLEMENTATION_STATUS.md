@@ -31,6 +31,9 @@ Completion record:
 
 - [x] Add project
 - [x] List registered projects
+- [x] Edit registered project settings and repository path with read-only reinspection
+- [x] Confirm and deregister a project without deleting its repository
+- [x] Refuse deregistration while agent runs are active
 - [x] Validate absolute path
 - [x] Verify Git repository
 - [x] Resolve canonical path
@@ -48,8 +51,8 @@ Completion record:
 - Date: 2026-09-13
 - Decisions: registration is strictly read-only; Git is invoked with argument arrays; duplicate canonical paths are rejected.
 - Modules introduced: project schema, repository inspector, project routes, registration UI.
-- Tests executed: clean temporary repository registration, non-repository rejection, post-registration Git status check.
-- Known limitations: no project editing/removal UI; remote default-branch discovery is local-only and falls back to the checked-out branch; validation commands are stored but cannot yet run.
+- Tests executed: clean temporary repository registration, non-repository rejection, project update, safe deregistration, and post-operation Git status checks.
+- Known limitations: deregistration intentionally removes the project's local tasks, run history, and evidence after confirmation; remote default-branch discovery is local-only and falls back to the checked-out branch; validation commands are stored but cannot yet run.
 
 ## Phase 2 — Agent adapters
 
@@ -104,6 +107,7 @@ Current record:
 - [ ] Editable generated names and collision validation
 - [ ] Safe worktree rename with branch/path independence
 - [ ] Claude/Codex isolation
+- [ ] Refuse project deregistration while managed worktrees remain linked
 - [ ] Status and diff
 - [ ] Guarded automatic cleanup after approved merge and passing post-merge validation
 - [ ] Keep-after-merge override and separate merged-branch deletion policy

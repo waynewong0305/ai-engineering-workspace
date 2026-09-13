@@ -124,6 +124,11 @@ const projectsLoading = ref(true);
 const submitError = ref("");
 const successMessage = ref("");
 const submitting = ref(false);
+const editingProjectId = ref("");
+const savingProjectId = ref("");
+const deletingProjectId = ref("");
+const projectActionError = ref("");
+const projectActionMessage = ref("");
 const agentHealth = ref<Partial<Record<AgentProvider, AgentHealth>>>({});
 const selectedProjectId = ref("");
 const selectedProvider = ref<AgentProvider>("CODEX");
@@ -167,6 +172,14 @@ const form = reactive({
   tests: "",
   lint: "",
   build: "",
+});
+const editProjectForm = reactive({
+  name: "",
+  repositoryPath: "",
+  defaultBranch: "",
+  worktreeRoot: "",
+  projectContext: "",
+  validationCommands: [] as ValidationCommand[],
 });
 
 const connectedCount = computed(() => {
@@ -468,9 +481,94 @@ async function registerProject() {
 }
 
 async function recheckProject(project: Project) {
+  projectActionError.value = "";
+  projectActionMessage.value = "";
   const response = await fetch(`/api/projects/${project.id}/recheck`, { method: "POST" });
   const result = await response.json();
-  if (response.ok) Object.assign(project, result);
+  if (response.ok) {
+    Object.assign(project, result);
+    projectActionMessage.value = `${project.name} Git status was refreshed.`;
+  } else {
+    projectActionError.value = result.message ?? "Repository check failed.";
+  }
+}
+
+function editProject(project: Project) {
+  editingProjectId.value = project.id;
+  projectActionError.value = "";
+  projectActionMessage.value = "";
+  Object.assign(editProjectForm, {
+    name: project.name,
+    repositoryPath: project.repositoryPath,
+    defaultBranch: project.defaultBranch,
+    worktreeRoot: project.worktreeRoot,
+    projectContext: project.projectContext ?? "",
+    validationCommands: project.validationCommands.map((command) => ({ ...command })),
+  });
+}
+
+function cancelProjectEdit() {
+  editingProjectId.value = "";
+  projectActionError.value = "";
+}
+
+function addValidationCommand() {
+  editProjectForm.validationCommands.push({ id: crypto.randomUUID(), label: "", command: "" });
+}
+
+async function saveProject(project: Project) {
+  savingProjectId.value = project.id;
+  projectActionError.value = "";
+  projectActionMessage.value = "";
+  try {
+    const response = await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...editProjectForm,
+        validationCommands: editProjectForm.validationCommands.filter((item) => item.label.trim() || item.command.trim()),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Project update failed.");
+    Object.assign(project, result);
+    editingProjectId.value = "";
+    projectActionMessage.value = `${result.name} was updated without modifying the repository.`;
+  } catch (error) {
+    projectActionError.value = error instanceof Error ? error.message : "Project update failed.";
+  } finally {
+    savingProjectId.value = "";
+  }
+}
+
+async function deregisterProject(project: Project) {
+  const confirmed = window.confirm(
+    `Deregister ${project.name}? This removes its local tasks, run history, and evidence from AI Engineering Workspace. The Git repository and files will not be deleted.`,
+  );
+  if (!confirmed) return;
+
+  deletingProjectId.value = project.id;
+  projectActionError.value = "";
+  projectActionMessage.value = "";
+  try {
+    const response = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.message ?? "Could not deregister the project.");
+    }
+    projects.value = projects.value.filter((item) => item.id !== project.id);
+    tasks.value = tasks.value.filter((task) => task.projectId !== project.id);
+    if (selectedTask.value?.projectId === project.id) selectedTask.value = null;
+    if (currentRun.value?.projectId === project.id) currentRun.value = null;
+    if (selectedProjectId.value === project.id) selectedProjectId.value = projects.value[0]?.id ?? "";
+    if (taskForm.projectId === project.id) taskForm.projectId = projects.value[0]?.id ?? "";
+    if (editingProjectId.value === project.id) editingProjectId.value = "";
+    projectActionMessage.value = `${project.name} was deregistered. Its Git repository was not changed.`;
+  } catch (error) {
+    projectActionError.value = error instanceof Error ? error.message : "Could not deregister the project.";
+  } finally {
+    deletingProjectId.value = "";
+  }
 }
 
 onMounted(() => Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks()]));
@@ -612,6 +710,9 @@ onUnmounted(() => {
           <span>{{ projects.length }} total</span>
         </div>
 
+        <p v-if="projectActionMessage" class="form-message success-text project-list-message" role="status">{{ projectActionMessage }}</p>
+        <p v-if="projectActionError && !editingProjectId" class="form-message error-text project-list-message" role="alert">{{ projectActionError }}</p>
+
         <div v-if="projectsLoading" class="empty-state">Loading registered projects…</div>
         <div v-else-if="projects.length === 0" class="empty-state">
           <strong>No projects registered yet.</strong>
@@ -632,7 +733,46 @@ onUnmounted(() => {
               <div><dt>Default branch</dt><dd>{{ project.defaultBranch }}</dd></div>
               <div><dt>Checks saved</dt><dd>{{ project.validationCommands.length }}</dd></div>
             </dl>
-            <button class="ghost-button" type="button" @click="recheckProject(project)">Recheck Git</button>
+            <div class="project-actions">
+              <button class="ghost-button" type="button" @click="recheckProject(project)">Recheck Git</button>
+              <button class="ghost-button" type="button" @click="editProject(project)">{{ editingProjectId === project.id ? "Editing" : "Edit" }}</button>
+              <button class="text-button danger-button" type="button" :disabled="deletingProjectId === project.id" @click="deregisterProject(project)">
+                {{ deletingProjectId === project.id ? "Removing…" : "Deregister" }}
+              </button>
+            </div>
+
+            <form v-if="editingProjectId === project.id" class="project-edit-form" @submit.prevent="saveProject(project)">
+              <div class="field-row">
+                <label><span>Project name</span><input v-model="editProjectForm.name" required /></label>
+                <label><span>Repository path</span><input v-model="editProjectForm.repositoryPath" required autocomplete="off" /></label>
+              </div>
+              <div class="field-row">
+                <label><span>Default branch</span><input v-model="editProjectForm.defaultBranch" required autocomplete="off" /></label>
+                <label><span>Worktree root</span><input v-model="editProjectForm.worktreeRoot" required autocomplete="off" /></label>
+              </div>
+              <label><span>Project context</span><textarea v-model="editProjectForm.projectContext" rows="3"></textarea></label>
+              <fieldset>
+                <legend>Validation commands</legend>
+                <div class="validation-command-list">
+                  <div v-for="(command, index) in editProjectForm.validationCommands" :key="command.id" class="validation-command-row">
+                    <label><span>Label</span><input v-model="command.label" required placeholder="Tests" /></label>
+                    <label><span>Command</span><input v-model="command.command" required placeholder="npm test" /></label>
+                    <button class="text-button danger-button" type="button" @click="editProjectForm.validationCommands.splice(index, 1)">Remove</button>
+                  </div>
+                </div>
+                <button class="text-button" type="button" @click="addValidationCommand">+ Add command</button>
+              </fieldset>
+              <p v-if="projectActionError" class="form-message error-text" role="alert">{{ projectActionError }}</p>
+              <div class="form-actions">
+                <span>Saving re-inspects the repository but does not modify its files or Git state.</span>
+                <div class="project-edit-actions">
+                  <button class="ghost-button" type="button" @click="cancelProjectEdit">Cancel</button>
+                  <button class="primary-button" type="submit" :disabled="savingProjectId === project.id">
+                    {{ savingProjectId === project.id ? "Saving…" : "Save changes" }}
+                  </button>
+                </div>
+              </div>
+            </form>
           </article>
         </div>
       </section>

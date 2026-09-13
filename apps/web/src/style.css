@@ -178,6 +178,7 @@ legend small { margin-left: 8px; }
 .registered-heading { align-items: end; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .registered-heading h2 { margin-bottom: 0; font-size: clamp(24px, 3vw, 34px); }
 .registered-heading > span { color: #71849f; font: 500 12px/1.4 ui-monospace, monospace; }
+.project-list-message { margin: 16px 0 0; }
 .empty-state { min-height: 150px; display: grid; place-content: center; gap: 8px; border-bottom: 1px solid var(--line); text-align: center; color: #71849f; font-size: 14px; }
 .empty-state strong { color: #d6e2f1; font-size: 16px; }
 .project-list { display: grid; }
@@ -192,6 +193,15 @@ legend small { margin-left: 8px; }
 .project-row dl > div { display: flex; justify-content: space-between; gap: 18px; }
 .project-row dt { color: #667995; font-size: 12px; }
 .project-row dd { margin: 0; color: #d3deec; font: 500 12px/1.4 ui-monospace, monospace; }
+.project-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.project-edit-form { grid-column: 1 / -1; display: grid; gap: 18px; padding: 22px; border: 1px solid #334660; background: #080e19; }
+.project-edit-form label { display: grid; gap: 8px; color: #dbe7f6; font-size: 14px; }
+.project-edit-form label > span { color: #8295b0; font-size: 12px; }
+.validation-command-list { display: grid; gap: 10px; margin-bottom: 12px; }
+.validation-command-row { display: grid; grid-template-columns: 160px minmax(0, 1fr) auto; align-items: end; gap: 10px; }
+.project-edit-actions { display: flex; gap: 10px; }
+.danger-button { color: var(--danger); }
+.danger-button:hover { color: #ffc0c0; }
 .agent-panel { margin-top: 56px; }
 .agent-panel h2 { max-width: 680px; }
 .provider-readiness { display: flex; align-items: center; gap: 10px; padding: 13px 15px; border: 1px solid var(--line); background: #080e19; color: var(--muted); font-size: 13px; }
@@ -331,7 +341,8 @@ legend small { margin-left: 8px; }
   .tool-grid { grid-template-columns: 1fr; }
   .field-row, .command-grid, .choice-grid, .analysis-grid, .comparison-grid { grid-template-columns: 1fr; }
   .project-row { grid-template-columns: 1fr; gap: 16px; }
-  .project-row .ghost-button { justify-self: start; }
+  .project-actions { justify-content: flex-start; }
+  .validation-command-row { grid-template-columns: 1fr; align-items: stretch; }
   .task-workspace { grid-template-columns: 1fr; }
   .task-list { grid-template-columns: repeat(2, 1fr); }
   .task-list-heading, .task-list > p { grid-column: 1 / -1; }
@@ -345,6 +356,7 @@ legend small { margin-left: 8px; }
   .project-panel { padding: 22px; }
   .panel-heading, .form-actions { align-items: stretch; flex-direction: column; }
   .primary-button { width: 100%; }
+  .project-edit-actions { width: 100%; flex-direction: column-reverse; }
   .task-list { grid-template-columns: 1fr; }
   .stage-track { grid-template-columns: 1fr 1fr; }
   .stage-track > div:nth-child(2) { border-right: 0; }

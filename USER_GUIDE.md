@@ -10,6 +10,8 @@ The current implementation can:
 - report whether Git, Claude Code, and Codex are available;
 - report Codex's local authentication status;
 - register a local Git repository without modifying it;
+- edit a registered project's path, name, branches, worktree root, context, and validation commands;
+- deregister a project after confirmation without deleting its Git repository;
 - detect the current/default branch and clean/dirty status;
 - save a future worktree location, project context, and validation commands; and
 - recheck a registered repository's Git status;
@@ -139,6 +141,14 @@ In **Projects → Register a project**:
 7. Select **Inspect & register**.
 
 Registration reads Git metadata and writes only to AI Engineering Workspace's own SQLite database. It does not create the worktree directory, run your commands, stage files, create branches, or edit the repository.
+
+### Manage a registered repository
+
+Each registered project provides these controls:
+
+- **Recheck Git** refreshes the checked-out branch and clean/dirty state.
+- **Edit** changes the registration settings. Saving re-inspects the repository path read-only and rejects invalid or duplicate repositories.
+- **Deregister** removes the project from AI Engineering Workspace after confirmation. It never deletes or modifies the Git repository, but it does remove that project's local tasks, agent-run history, comparisons, and evidence. Deregistration is refused while an agent run for the project is queued or running. Once managed worktrees are enabled, they will require safe cleanup before deregistration.
 
 ### Choose the default branch
 
