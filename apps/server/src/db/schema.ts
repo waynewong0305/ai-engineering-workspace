@@ -134,13 +134,47 @@ export const agentRunEvents = sqliteTable("agent_run_events", {
 
 export type AgentRunEventRecord = typeof agentRunEvents.$inferSelect;
 
+export const pricingEntries = sqliteTable("pricing_entries", {
+  id: text("id").primaryKey(),
+  provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  model: text("model").notNull(),
+  inputPricePerMillion: real("input_price_per_million").notNull(),
+  cachedInputPricePerMillion: real("cached_input_price_per_million"),
+  cacheCreationInputPricePerMillion: real("cache_creation_input_price_per_million"),
+  outputPricePerMillion: real("output_price_per_million").notNull(),
+  reasoningPricePerMillion: real("reasoning_price_per_million"),
+  effectiveFrom: text("effective_from").notNull(),
+  source: text("source").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("pricing_entries_provider_model_effective_idx").on(table.provider, table.model, table.effectiveFrom),
+  index("pricing_entries_lookup_idx").on(table.provider, table.model, table.effectiveFrom),
+]);
+
+export type PricingEntryRecord = typeof pricingEntries.$inferSelect;
+
+export type UsageCostCategory = {
+  category: "INPUT" | "CACHED_INPUT" | "CACHE_CREATION_INPUT" | "OUTPUT" | "REASONING_OUTPUT";
+  tokens: number;
+  pricePerMillion: number;
+  subtotalUsd: number;
+};
+
+export type UsageCostBreakdown = {
+  model: string;
+  pricingEntryId: string;
+  pricingEffectiveFrom: string;
+  pricingSource: string;
+  categories: UsageCostCategory[];
+  totalUsd: number;
+};
+
 /**
  * Phase 8: one row per agent run, always — even when nothing was recoverable (`usageSource:
  * "unavailable"`, every token field `null`), so "exactly one usage record per run" is an invariant
- * later aggregation can rely on rather than "sometimes there's one." Deliberately smaller than
- * USAGE_MONITORING_SPEC.md's full `UsageRecord`: no cost fields yet (no pricing registry exists),
- * and `role` reuses `agentRuns.role`'s own enum instead of the spec's example vocabulary — this
- * app's actual workflow roles already serve as workflowType, so there's no separate field for it.
+ * later aggregation can rely on rather than "sometimes there's one." `role` reuses
+ * `agentRuns.role`'s own enum instead of the spec's example vocabulary — this app's actual workflow
+ * roles already serve as workflowType, so there's no separate field for it.
  */
 export const usageRecords = sqliteTable("usage_records", {
   id: text("id").primaryKey(),
@@ -157,6 +191,12 @@ export const usageRecords = sqliteTable("usage_records", {
   outputTokens: integer("output_tokens"),
   reasoningOutputTokens: integer("reasoning_output_tokens"),
   totalTokens: integer("total_tokens"),
+  actualCostUsd: real("actual_cost_usd"),
+  apiEquivalentCostUsd: real("api_equivalent_cost_usd"),
+  pricingEntryId: text("pricing_entry_id").references(() => pricingEntries.id),
+  costSource: text("cost_source", { enum: ["calculated", "unavailable"] }).notNull().default("unavailable"),
+  costBreakdown: text("cost_breakdown", { mode: "json" }).$type<UsageCostBreakdown | null>(),
+  costCalculatedAt: text("cost_calculated_at"),
   billingMode: text("billing_mode", { enum: ["subscription", "api", "credits", "unknown"] }).notNull().default("unknown"),
   usageSource: text("usage_source", { enum: ["provider_reported", "unavailable"] }).notNull(),
   rawUsageMetadata: text("raw_usage_metadata", { mode: "json" }).$type<Record<string, unknown> | null>(),

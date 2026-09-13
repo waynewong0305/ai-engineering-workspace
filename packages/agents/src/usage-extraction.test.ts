@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractRateLimitReadings, extractTokenUsage } from "./usage-extraction.js";
+import { billableUncachedInputTokens, extractRateLimitReadings, extractTokenUsage } from "./usage-extraction.js";
 
 // Real shapes captured from the installed CLIs during Phase 8 Step 0 investigation (2026-09-13):
 // Claude 2.1.269's actual `--output-format stream-json` output, Codex 0.154.0's real local session
@@ -169,5 +169,19 @@ describe("extractTokenUsage", () => {
     expect(extractTokenUsage("CLAUDE", null)).toBeNull();
     expect(extractTokenUsage("CODEX", "not an object")).toBeNull();
     expect(extractTokenUsage("CODEX", {})).toBeNull();
+  });
+});
+
+describe("billableUncachedInputTokens", () => {
+  it("keeps Claude ordinary input separate from its cache counters", () => {
+    expect(billableUncachedInputTokens("CLAUDE", {
+      inputTokens: 2, cachedInputTokens: 6_271, cacheCreationTokens: 3_555,
+    })).toBe(2);
+  });
+
+  it("subtracts Codex cached input from its inclusive input counter", () => {
+    expect(billableUncachedInputTokens("CODEX", {
+      inputTokens: 29_496, cachedInputTokens: 18_944, cacheCreationTokens: 0,
+    })).toBe(10_552);
   });
 });

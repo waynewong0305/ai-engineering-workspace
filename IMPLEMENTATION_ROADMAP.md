@@ -254,9 +254,11 @@ capture works fine for it, only the plan-usage-percentage half doesn't).
       per-run tokens; folded a real-time usage-safety upgrade into this phase as a result (by
       explicit human instruction, since it wasn't part of the original Phase 8 scope). Confirmed
       Codex's `exec --json` invocation path does not expose the equivalent — see above.
-- [x] `UsageRecord` data model and migration, linked to run/task/project — per-run token counts
-      only in this slice; no cost fields yet (see the deferred items below)
-- [ ] Centralized, versioned pricing registry and auditable API-equivalent cost calculation
+- [x] `UsageRecord` data model and migration, linked to run/task/project — exact token counts plus
+      immutable API-equivalent cost snapshots when a matching pricing version exists
+- [x] Centralized, versioned pricing registry and auditable API-equivalent cost calculation —
+      append-only pricing versions, exact token × rate category breakdown, and no partial total
+      when a required category or model price is unavailable
 - [ ] Workspace/project/task/run usage dashboard and drill-down UI, each value labeled with its
       usage-source reliability (`EXACT`/`CALCULATED`/`ESTIMATED`/`UNAVAILABLE`)
 - [ ] Cross-review cost breakdown by role/workflow
@@ -264,11 +266,11 @@ capture works fine for it, only the plan-usage-percentage half doesn't).
 - [x] Historical backfill from recoverable provider-reported data only, with a backfill report
 - [ ] Usage & Cost settings
 
-Exit gate (unmet, tracks the remaining unchecked items above): a small real Claude run and a small
-real Codex run each produce a usage record with correctly labeled billing mode and usage-source
-reliability, the dashboard reflects both, and no historical or current value is fabricated. The
-Claude half of this is now met (see the completion record); Codex's is blocked on its usage limit
-resetting, and the dashboard itself doesn't exist yet.
+Exit gate (unmet, tracks the remaining unchecked items above): small real Claude and Codex runs now
+both produce usage records with correctly labeled billing mode and usage-source reliability. The
+dashboard still does not exist, and API-equivalent figures remain unavailable until the append-only
+registry contains a verified price for the exact model ID; no vendor prices were guessed or silently
+seeded.
 
 ## End-to-end workflow verification (cross-cutting, added 2026-09-13)
 

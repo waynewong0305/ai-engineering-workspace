@@ -41,7 +41,9 @@ The current implementation can:
   more manual-only tracking — Codex doesn't expose this the same way, confirmed by testing it, so
   its card still relies on a manual snapshot), and capture each run's own exact token counts (input,
   output, cached) for both providers, including recovering them for every run that already happened
-  before this existed.
+  before this existed; and
+- calculate a run's clearly labeled API-equivalent cost when the registry has a verified price for
+  that exact model, with the complete token × rate breakdown preserved for audit.
 
 Brainstorming, architecture comparison, worktree isolation, the full build/review/response/merge/report loop, ADRs, and experiments are all available now.
 
@@ -602,6 +604,33 @@ Before **Start independent analyses**, the brainstorm screen shows both provider
 If usage crosses the checkpoint threshold while a brainstorm task is already running, the workflow pauses rather than continuing blind: the task shows status **CHECKPOINTED**, both completed independent analyses remain saved, and no further provider process starts. Resolve the checkpoint (acknowledge, wait for reset, or record a fresh safe reading), then select **Resume workflow**. Nothing already completed is re-run.
 
 Adjust **Warning threshold %** and **Checkpoint threshold %** under Safety thresholds; both apply to Claude and Codex together. The defaults are 75% and 90%.
+
+### Per-run tokens and API-equivalent cost
+
+After an agent run finishes, its detail pane shows the token counts the provider reported. These are
+labeled **EXACT**; if the CLI reported nothing recoverable, the pane says **Tokens: unavailable**.
+The counters are not interchangeable: input is the prompt/context processed, cached input is reused
+context, cache creation is context newly stored for reuse, output is generated tokens, and reasoning
+tokens are an optional subset/detail that some models do not report.
+
+The next line is always labeled **API-equivalent cost**. This applies a verified API price to exact
+token counters so you can compare workloads. It is not a claim that a subscription run charged that
+amount. Select **API-equivalent cost breakdown** to inspect the model, every token count, per-million
+rate, subtotal, total, effective date, and pricing source used.
+
+The versioned registry intentionally starts empty rather than guessing prices that can change. Until
+a verified entry exists for the run's exact model ID, the UI says **API-equivalent cost: unavailable**.
+The settings editor for this registry is still planned; the current local API is:
+
+```text
+GET  /api/usage/pricing
+POST /api/usage/pricing
+POST /api/usage-records/calculate-costs
+```
+
+Adding a pricing version never rewrites an old calculated amount. The explicit calculate-costs call
+fills only usage rows that have never received a cost snapshot. A token category with no configured
+rate makes the entire total unavailable—there is no hidden partial estimate.
 
 ## Reviews and human responsibility
 

@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { extractTokenUsage } from "@aiew/agents";
 import { asc, eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import { agentRunEvents, agentRuns, usageRecords } from "../db/schema.js";
+import { usageRecordValues } from "./usage-cost.js";
 
 export type UsageBackfillReport = {
   scanned: number;
@@ -37,21 +37,7 @@ export function backfillUsageRecords(db: WorkspaceDatabase): UsageBackfillReport
       if (found) tokenUsage = found;
     }
 
-    db.insert(usageRecords).values({
-      id: randomUUID(), runId: run.id, taskId: run.taskId, projectId: run.projectId,
-      provider: run.provider, role: run.role,
-      modelRequested: run.requestedModel, modelActual: run.actualModel,
-      inputTokens: tokenUsage?.inputTokens ?? null,
-      cachedInputTokens: tokenUsage?.cachedInputTokens ?? null,
-      cacheCreationTokens: tokenUsage?.cacheCreationTokens ?? null,
-      outputTokens: tokenUsage?.outputTokens ?? null,
-      reasoningOutputTokens: tokenUsage?.reasoningOutputTokens ?? null,
-      totalTokens: tokenUsage?.totalTokens ?? null,
-      billingMode: "unknown",
-      usageSource: tokenUsage ? "provider_reported" : "unavailable",
-      rawUsageMetadata: tokenUsage ? (tokenUsage as unknown as Record<string, unknown>) : null,
-      createdAt: now,
-    }).run();
+    db.insert(usageRecords).values(usageRecordValues(db, run, tokenUsage, "unknown", run.actualModel, now)).run();
 
     report.backfilled += 1;
     if (tokenUsage) report.exact += 1;

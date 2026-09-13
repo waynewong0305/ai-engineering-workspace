@@ -14,6 +14,7 @@ import { and, asc, eq, notInArray } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import { agentRunEvents, agentRuns, usageRecords, type AgentRunEventRecord, type AgentRunRecord } from "../db/schema.js";
 import type { UsageSafetyService } from "./usage-safety.js";
+import { usageRecordValues } from "./usage-cost.js";
 
 const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "CANCELLED"] as const;
 const MAX_STORED_TEXT = 5 * 1024 * 1024;
@@ -193,21 +194,12 @@ export class AgentRunManager {
     const billingMode = this.sawRateLimitReading.has(runId) ? "subscription" : "unknown";
     this.latestTokenUsage.delete(runId);
     this.sawRateLimitReading.delete(runId);
-    const record = {
-      id: randomUUID(), runId, taskId: current.taskId, projectId: current.projectId,
-      provider: current.provider, role: current.role,
-      modelRequested: current.requestedModel, modelActual: actualModel,
-      inputTokens: tokenUsage?.inputTokens ?? null,
-      cachedInputTokens: tokenUsage?.cachedInputTokens ?? null,
-      cacheCreationTokens: tokenUsage?.cacheCreationTokens ?? null,
-      outputTokens: tokenUsage?.outputTokens ?? null,
-      reasoningOutputTokens: tokenUsage?.reasoningOutputTokens ?? null,
-      totalTokens: tokenUsage?.totalTokens ?? null,
-      billingMode: billingMode as "subscription" | "unknown",
-      usageSource: (tokenUsage ? "provider_reported" : "unavailable") as "provider_reported" | "unavailable",
-      rawUsageMetadata: tokenUsage ? (tokenUsage as unknown as Record<string, unknown>) : null,
-      createdAt: new Date().toISOString(),
-    };
-    this.db.insert(usageRecords).values(record).run();
+    this.db.insert(usageRecords).values(usageRecordValues(
+      this.db,
+      { ...current, id: runId },
+      tokenUsage,
+      billingMode,
+      actualModel,
+    )).run();
   }
 }

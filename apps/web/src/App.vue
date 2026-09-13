@@ -47,6 +47,21 @@ type UsageRecord = {
   outputTokens: number | null;
   totalTokens: number | null;
   usageSource: "provider_reported" | "unavailable";
+  actualCostUsd: number | null;
+  apiEquivalentCostUsd: number | null;
+  costSource: "calculated" | "unavailable";
+  costBreakdown: {
+    model: string;
+    pricingEffectiveFrom: string;
+    pricingSource: string;
+    categories: Array<{
+      category: "INPUT" | "CACHED_INPUT" | "CACHE_CREATION_INPUT" | "OUTPUT" | "REASONING_OUTPUT";
+      tokens: number;
+      pricePerMillion: number;
+      subtotalUsd: number;
+    }>;
+    totalUsd: number;
+  } | null;
 };
 type AgentRun = {
   id: string;
@@ -70,6 +85,25 @@ function usageLine(usage: UsageRecord | null | undefined): string {
     usage.cachedInputTokens !== null ? `cached ${usage.cachedInputTokens.toLocaleString()}` : null,
   ].filter((part): part is string => part !== null);
   return `Tokens: ${parts.join(" · ")} · EXACT`;
+}
+
+function formatUsd(value: number): string {
+  return value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8,
+  });
+}
+
+function costCategoryLabel(category: NonNullable<UsageRecord["costBreakdown"]>["categories"][number]["category"]): string {
+  return ({
+    INPUT: "Input",
+    CACHED_INPUT: "Cached input",
+    CACHE_CREATION_INPUT: "Cache creation input",
+    OUTPUT: "Output",
+    REASONING_OUTPUT: "Reasoning output",
+  })[category];
 }
 
 type TaskStatus = "DRAFT" | "ANALYZING" | "CROSS_REVIEW" | "READY" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
@@ -1992,6 +2026,27 @@ onUnmounted(() => {
           <details v-if="currentRun.errorOutput"><summary>Process messages</summary><pre>{{ currentRun.errorOutput }}</pre></details>
           <small v-if="currentRun.durationMs !== null">Completed in {{ (currentRun.durationMs / 1000).toFixed(1) }}s</small>
           <small v-if="['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentRun.status)" title="Token counts this specific run actually reported, straight from the provider — never estimated. Unavailable means the CLI didn't report them for this run.">{{ usageLine(currentRun.usage) }}</small>
+          <small
+            v-if="['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentRun.status)"
+            title="API-equivalent cost applies published per-token API prices to this run's exact token counts. It is not what a subscription run charged you."
+          >
+            API-equivalent cost: {{ currentRun.usage?.costSource === 'calculated' && currentRun.usage.apiEquivalentCostUsd !== null
+              ? `${formatUsd(currentRun.usage.apiEquivalentCostUsd)} · CALCULATED`
+              : 'unavailable' }}
+          </small>
+          <details v-if="currentRun.usage?.costBreakdown" class="usage-cost-breakdown">
+            <summary title="Show the token counts, price rates, and subtotals used to calculate this API-equivalent amount.">API-equivalent cost breakdown</summary>
+            <p><strong>Model:</strong> {{ currentRun.usage.costBreakdown.model }}</p>
+            <ul>
+              <li v-for="item in currentRun.usage.costBreakdown.categories" :key="item.category">
+                {{ costCategoryLabel(item.category) }}: {{ item.tokens.toLocaleString() }} tokens ×
+                {{ formatUsd(item.pricePerMillion) }}/million = {{ formatUsd(item.subtotalUsd) }}
+              </li>
+            </ul>
+            <p><strong>Total:</strong> {{ formatUsd(currentRun.usage.costBreakdown.totalUsd) }}</p>
+            <p><strong>Pricing version:</strong> effective {{ new Date(currentRun.usage.costBreakdown.pricingEffectiveFrom).toLocaleString() }}</p>
+            <p><strong>Source:</strong> {{ currentRun.usage.costBreakdown.pricingSource }}</p>
+          </details>
           <div
             v-if="currentRun.status === 'FAILED' && worstUsageStatus(currentRun.provider) !== 'EXHAUSTED'"
             :class="['exhausted-hint', { likely: currentRunUsageHint }]"
@@ -2523,9 +2578,10 @@ onUnmounted(() => {
             <p>
               A provider subscription allowance (what this page tracks) is not the same thing as an API token rate
               limit: this is about the Claude Code / ChatGPT plan allowance a run can exhaust, not per-request
-              tokens-per-minute limits. Both CLIs report this automatically after each run finishes (labeled
-              CLI_REPORTED · EXACT below); before your first run, or for a provider that doesn't report it, use a
-              manual snapshot to record what the provider's own interface shows you.
+              tokens-per-minute limits. Claude reports this automatically after a run (labeled CLI_REPORTED ·
+              EXACT below); Codex's non-interactive command does not currently expose it. Before your first run,
+              or whenever no automatic reading is available, use a manual snapshot to record what the provider's
+              own interface shows you.
             </p>
           </div>
           <span class="safety-badge" title="Before the app spends any of your Claude/Codex usage, it checks how much is left — every single time, not just once.">CHECK BEFORE EVERY CALL</span>
@@ -2539,7 +2595,7 @@ onUnmounted(() => {
           <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="usage-card">
             <header>
               <strong>{{ providerLabel(provider) }}</strong>
-              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" title="There's no on-demand check — usage updates automatically right after each run finishes. This just explains that, or you can enter a manual snapshot below.">
+              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" :title="provider === 'CLAUDE' ? 'There is no on-demand check. Claude usage updates automatically when a run reports it; this button explains that.' : 'Codex does not expose plan usage through its non-interactive command. Use a manual snapshot from the provider interface instead.'">
                 {{ refreshingProvider === provider ? "Refreshing…" : "Refresh" }}
               </button>
             </header>

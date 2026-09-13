@@ -1,9 +1,9 @@
 # Usage, Token, and Cost Monitoring — Phase 8 Spec
 
-Status: **QUEUED**. This phase is scoped and ready to hand to an agent, but must not be started
-until Phase 7 (hardening) in `IMPLEMENTATION_ROADMAP.md` is complete; Phases 5 and 6 are already
-complete. Do not begin implementation early without an explicit human instruction to pull it
-forward. This document is the authoritative, self-contained spec for that later work;
+Status: **IN PROGRESS**. The human explicitly pulled this phase forward on 2026-09-13; per-run
+token capture, historical backfill, automatic Claude plan-usage readings, and the centralized
+pricing/API-equivalent-cost slice are complete. The dashboard, cross-review breakdown, budgets,
+and Usage & Cost settings remain. This document is the authoritative, self-contained spec for that work;
 `IMPLEMENTATION_ROADMAP.md` and `IMPLEMENTATION_STATUS.md` only link here rather than duplicating it
 (per this repo's own documentation policy).
 

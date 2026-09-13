@@ -244,6 +244,15 @@ describe("agent run routes", () => {
   it("captures real-shaped usage/rate-limit data into a usage record and a provider usage reading", async () => {
     const app = buildApp({ databasePath: ":memory:", adapters: [new UsageReportingCodexAdapter()] });
     apps.push(app);
+    const pricing = await app.inject({
+      method: "POST", url: "/api/usage/pricing",
+      payload: {
+        provider: "CODEX", model: "fixture-model", inputPricePerMillion: 2,
+        cachedInputPricePerMillion: 0.5, outputPricePerMillion: 8,
+        source: "Fixture pricing",
+      },
+    });
+    expect(pricing.statusCode).toBe(201);
     const project = (await app.inject({
       method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
     })).json();
@@ -258,7 +267,9 @@ describe("agent run routes", () => {
       runId: run.id, provider: "CODEX", billingMode: "subscription", usageSource: "provider_reported",
       modelActual: "fixture-model",
       inputTokens: 1204, cachedInputTokens: 890, cacheCreationTokens: 0, outputTokens: 312, totalTokens: 1516,
+      apiEquivalentCostUsd: 0.003569, costSource: "calculated",
     });
+    expect(run.usage.costBreakdown).toMatchObject({ model: "fixture-model", pricingSource: "Fixture pricing" });
 
     const usageView = (await app.inject({ method: "GET", url: "/api/usage/CODEX" })).json();
     const fiveHour = usageView.find((window: { windowId: string }) => window.windowId === "5H");

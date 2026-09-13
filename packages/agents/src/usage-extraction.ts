@@ -17,6 +17,20 @@ export type TokenUsage = {
   totalCostUsd?: number;
 };
 
+/**
+ * Normalizes the installed CLIs' different input-counter semantics for pricing. Claude's
+ * `input_tokens` excludes its separately reported cache reads/writes; Codex's `input_tokens`
+ * includes its cached input and cache-write counters.
+ */
+export function billableUncachedInputTokens(provider: AgentProvider, usage: TokenUsage): number | null {
+  if (usage.inputTokens === undefined) return null;
+  if (provider === "CLAUDE") return usage.inputTokens;
+  return Math.max(
+    usage.inputTokens - (usage.cachedInputTokens ?? 0) - (usage.cacheCreationTokens ?? 0),
+    0,
+  );
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }

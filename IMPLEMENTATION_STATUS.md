@@ -1,10 +1,10 @@
 # Implementation Status
 
-Last updated: 2026-09-13
+Last updated: 2026-09-14
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is in progress — see below.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. Phase 8 is underway: automatic token capture/backfill, Claude plan-usage telemetry, and versioned API-equivalent cost calculation are implemented; aggregate dashboards, budgets, cross-review breakdown, and Usage & Cost settings remain.
 
 Documentation consistency maintenance (2026-09-13): reconciled `AGENTS.md`, this status record,
 `IMPLEMENTATION_ROADMAP.md`, `PROJECT_SPEC.md`, `DEVELOPER_GUIDE.md`, and
@@ -924,13 +924,12 @@ Completion record:
 
 ## Phase 8 — Usage, token, and cost monitoring
 
-Started 2026-09-13, first slice complete (per an explicit human instruction to pull the CLI
-re-verification step forward). Full spec at `USAGE_MONITORING_SPEC.md`; the checklist below reflects
-what this first slice actually covers, deliberately smaller than the full spec.
+Started 2026-09-13, with two slices complete after explicit human instructions to proceed. Full
+spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implementation boundary.
 
 - [x] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
-- [x] `UsageRecord` data model and migration (per-run token capture only — no cost fields yet)
-- [ ] Pricing registry and API-equivalent cost calculation
+- [x] `UsageRecord` data model and migrations (per-run token and immutable cost snapshots)
+- [x] Pricing registry and API-equivalent cost calculation
 - [ ] Workspace/project/task/run usage dashboard
 - [ ] Cross-review cost breakdown
 - [ ] Task usage budgets integrated with the max-review-round cap
@@ -1029,11 +1028,9 @@ what this first slice actually covers, deliberately smaller than the full spec.
   half. `extractRateLimitReadings`'s Codex branch is kept rather than removed (harmless, and ready
   if a future Codex version starts including this in `exec`'s own stream), with its doc comment and
   test suite updated to state this as a confirmed finding, not an open question.
-- Explicitly deferred to a later slice: the pricing registry and any *labeled* cost figure (Claude's
-  `total_cost_usd` is captured verbatim in `rawUsageMetadata` but not surfaced as a labeled field —
-  correctly labeling it `actualCostUsd` vs `apiEquivalentCostUsd` needs billing-mode inference this
-  slice doesn't build), the workspace/task dashboards, cross-review cost breakdown, token-efficiency
-  metrics, task usage budgets, and the Usage & Cost settings page.
+- Explicitly deferred from this first slice: the pricing registry and labeled cost figures (delivered
+  in the second slice below), the workspace/task dashboards, cross-review cost breakdown,
+  token-efficiency metrics, task usage budgets, and the Usage & Cost settings page.
 - Tests added: `packages/agents/src/usage-extraction.test.ts` (15, including the real
   `codex exec --json` shapes above), `ClaudeAdapter.test.ts` (+1 regression test),
   `usage-safety.test.ts` (+2), `agent-runs.test.ts` (+3), `usage-backfill.test.ts` (3) — 24 new
@@ -1044,6 +1041,50 @@ what this first slice actually covers, deliberately smaller than the full spec.
   `git diff --check` — all passed under Node 22.23.2, plus real-CLI verification against the actual
   running app for *both* providers (Claude at first pass, Codex once its usage limit reset the same
   session) and a live browser check of the Usage Safety panel and run-detail token line.
+
+### Phase 8 second-slice completion record — versioned pricing and API-equivalent cost
+
+- Date: 2026-09-14
+- Added an append-only `pricing_entries` registry (migration `0015`) keyed by provider, exact model
+  ID, and effective date. Each immutable version stores ordinary-input/output prices plus optional
+  cached-input, cache-creation, and separately priced reasoning rates, and the human-verifiable
+  source used. There is no update/delete route, so a pricing version referenced by history cannot
+  be silently changed out from under an old run.
+- `usage_records` now stores `actualCostUsd` separately from `apiEquivalentCostUsd`, the pricing
+  entry ID, `costSource` (`calculated`/`unavailable`), the calculation timestamp, and a complete
+  token × rate category breakdown. Provider-reported cost becomes `actualCostUsd` only when API
+  billing is reliably known; a subscription or unknown-billing run never presents it as money
+  charged. The comparison figure is always named **API-equivalent cost** in the UI.
+- Added `usage-cost.ts` as the single calculation path used by live run capture and token backfill.
+  A model without an exact registry match, a run without tokens, or any reported category missing
+  its required price yields no total rather than a partial estimate. Claude's exclusive input/cache
+  counters and Codex's inclusive input/cache counters are normalized in `packages/agents` before
+  pricing, so cached Codex input is not charged twice. Reasoning receives a separate subtotal only
+  when that pricing version declares a distinct rate; otherwise it remains inside output pricing.
+- New local APIs: `GET`/`POST /api/usage/pricing` list and append validated pricing versions;
+  `POST /api/usage-records/calculate-costs` explicitly calculates only usage rows that have never
+  received a cost snapshot. Existing calculated rows are skipped permanently, so later pricing
+  versions never silently re-price history.
+- The agent-run detail now shows **API-equivalent cost: unavailable** or a `CALCULATED` amount and
+  an expandable audit breakdown containing the exact model, token counts, per-million rates,
+  subtotals, total, effective date, and source. The separate aggregate dashboard and registry
+  settings editor remain later Phase 8 slices.
+- Known limitation, explicit rather than hidden: the registry starts empty. Vendor prices change,
+  and no external pricing source was consulted or guessed in this local-only slice; until a verified
+  exact-model version is added through the API, old and new runs honestly show API-equivalent cost
+  as unavailable. The forthcoming Usage & Cost settings UI will make adding those versions easier.
+- Tests added: `usage-cost.test.ts` (6 calculation/persistence cases), `pricing.test.ts` (3 route
+  cases), and 2 provider counter-normalization cases in `usage-extraction.test.ts`; the existing
+  live-shaped run-route test now also proves automatic cost persistence and source/breakdown return.
+- Full verification: `npm test` (208 workspace tests: 124 server + 53 agents + 31 `packages/git`,
+  plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run
+  check:agent-policy`, `npm run db:generate` (21 tables; migration `0015` adds
+  `pricing_entries` and the six usage-cost snapshot columns, with no further drift), and `git diff
+  --check`; all passed under Node 22.23.2. Applied the migration to the existing local database:
+  its 1 project, 4 agent runs, and 4 usage records were preserved and `PRAGMA
+  foreign_key_check` remained clean. Live browser verification confirmed the revised Claude/Codex
+  telemetry explanation and provider-specific Refresh tooltips render with no console warnings or
+  errors; no extra real provider run was spent merely to make the conditional cost row appear.
 
 ## End-to-end workflow verification (cross-cutting)
 
