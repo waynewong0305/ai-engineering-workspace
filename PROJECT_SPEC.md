@@ -1086,22 +1086,24 @@ These checks are validation processes, not agent runs, and may execute without s
 approval when their commands and scope were configured by the human. Browser execution must remain
 supervised, local, bounded, and isolated to the task worktree.
 
-Claude or Codex must not automatically inspect the rendered frontend or receive screenshots,
-rendered pages, DOM/accessibility output, or other browser evidence. Immediately before each such
-provider run, require an explicit human approval that displays:
+No model-backed agent, regardless of provider or adapter, may automatically inspect the rendered
+frontend or receive screenshots, rendered pages, DOM/accessibility output, or other browser
+evidence. Immediately before each such agent run, require an explicit human approval that displays:
 
 ```text
 why an agent UI/UX review is recommended
-which provider will run
+which provider and agent configuration will run
 which pages, scenarios, and evidence will be shared
 which automated failure or change triggered the recommendation
 that provider usage may be consumed
 ```
 
-This is a separate just-in-time decision. Approval to start a build, approval for ordinary code
-review, a web-access decision, or a usage-safety acknowledgement must not be reused as approval for
-frontend agent review. The approval applies only to the disclosed run and scope, and the workspace
-must persist the displayed reason, scope, provider, decision, and timestamp.
+This provider-neutral rule applies equally to current and future adapters; Claude and Codex are only
+the initially supported examples. It is a separate just-in-time decision. Approval to start a
+build, approval for ordinary code review, a web-access decision, or a usage-safety acknowledgement
+must not be reused as approval for frontend agent review. The approval applies only to the disclosed
+run and scope, and the workspace must persist the displayed reason, scope, provider, agent
+configuration, decision, and timestamp.
 
 If the human declines, the workflow continues only as far as deterministic evidence permits and
 must report `UI_REVIEW_SKIPPED` or `HUMAN_REVIEW_REQUIRED`; it must never claim `UI_VERIFIED`.

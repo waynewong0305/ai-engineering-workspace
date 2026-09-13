@@ -437,18 +437,20 @@ You can disable web access at the task level before a run. A denied web request 
 
 Today, a build can run the validation commands you configured for the project and an independent
 reviewer can inspect its code diff. The workspace does not yet open the changed application in a
-browser or show Claude/Codex rendered pages, screenshots, console failures, accessibility results,
-or responsive comparisons. A successful type-check or frontend build therefore does not guarantee
-that the UI still looks or behaves correctly; you must currently exercise consequential UI changes
-yourself before merging.
+browser or show any model-backed agent rendered pages, screenshots, console failures, accessibility
+results, or responsive comparisons. A successful type-check or frontend build therefore does not
+guarantee that the UI still looks or behaves correctly; you must currently exercise consequential
+UI changes yourself before merging.
 
 The planned Phase 7 verifier will run configured browser scenarios, console/network checks,
 accessibility checks, and desktop/mobile screenshot comparisons locally inside the task worktree.
-Those deterministic checks do not call a model. If their results suggest that Claude or Codex
-should assess the UI/UX, the workspace will first ask you for a separate approval and show:
+Those deterministic checks do not call a model. If their results suggest that a model-backed agent
+should assess the UI/UX, the workspace will first ask you for a separate approval. The policy
+applies to every current or future provider, not only the currently supported Claude and Codex
+adapters. The approval will show:
 
 - why agent review is recommended;
-- which provider will be used;
+- which provider and agent configuration will be used;
 - which pages, scenarios, and evidence will be shared; and
 - that the run may consume provider usage.
 

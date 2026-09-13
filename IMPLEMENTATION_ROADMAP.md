@@ -200,7 +200,7 @@ Goal: make normal failure safe and understandable.
 - [ ] Supervised frontend verification runner (browser scenarios, console/network capture,
       accessibility, responsive screenshots, and optional approved-baseline comparison)
 - [ ] Separate just-in-time human approval, with a displayed reason and persisted scope, before any
-      Claude/Codex frontend UI/UX review or disclosure of browser evidence to a provider
+      current or future model-backed agent reviews frontend UI/UX or receives browser evidence
 - [ ] Token-efficient evidence selection: exception-only provider review, one-provider default,
       affected-region/failure-excerpt inputs, exact-revision artifact reuse, and separate approval
       before second-provider escalation or material scope expansion

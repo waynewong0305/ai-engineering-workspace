@@ -189,10 +189,11 @@ safety is decided; do not add a second one.
 - Deterministic local checks that do not call a model — configured frontend tests/builds and, once
   implemented, supervised browser scenarios, console/network checks, accessibility scans, and
   screenshot comparisons — may run as normal validation without a separate provider approval.
-- Before starting any Claude/Codex run whose purpose is to assess frontend UI/UX, or sending a
-  provider screenshots, rendered pages, DOM/accessibility output, or other browser evidence, stop
-  for a separate just-in-time human approval. Starting the build, allowing web access, or approving
-  an earlier code-review run does not satisfy this frontend-review approval.
+- Before starting any model-backed agent run whose purpose is to assess frontend UI/UX, or sending
+  any provider screenshots, rendered pages, DOM/accessibility output, or other browser evidence,
+  stop for a separate just-in-time human approval. This applies to every current or future adapter,
+  not only Claude and Codex. Starting the build, allowing web access, or approving an earlier
+  code-review run does not satisfy this frontend-review approval.
 - The approval screen must name the provider and explain why agent review is being recommended,
   which pages/scenarios and evidence will be shared, and that the run may consume provider usage.
   Approval is scoped to the disclosed review run; broader or later frontend review needs another

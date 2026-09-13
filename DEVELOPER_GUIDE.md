@@ -288,19 +288,22 @@ Integration tests should use temporary Git repositories and fake agent executabl
 Real Claude/Codex calls are manual acceptance tests. Automated tests must not require authentication, network access, or model credits.
 
 Frontend verification is currently limited to each registered project's configured validation
-commands. The workflow does not yet start a browser or give either provider rendered UI evidence.
+commands. The workflow does not yet start a browser or give any model-backed agent rendered UI
+evidence.
 When the Phase 7 frontend verifier is implemented, keep deterministic execution in a supervised
 server-owned runner: start the configured preview inside the assigned worktree, wait on an explicit
 readiness condition, run bounded browser scenarios and responsive/accessibility checks, capture
 console/network failures and screenshot comparisons, then terminate the full preview/browser
 process tree. Do not add browser control directly to `AgentAdapter`.
 
-Provider-based UI/UX assessment is a distinct, provider-consuming stage. Before every such run,
-persist a just-in-time human decision tied to the exact provider, reason, pages/scenarios, evidence,
-and triggering automated result. Do not infer approval from the build start, ordinary reviewer run,
-task web-access policy, or usage-safety acknowledgement. A declined review remains visible as
-`UI_REVIEW_SKIPPED`/`HUMAN_REVIEW_REQUIRED`; only deterministic results that actually ran may be
-reported as passing, and neither automation nor a provider may replace final human UX approval.
+Model-backed UI/UX assessment is a distinct, provider-consuming stage. This rule belongs at the
+workflow/capability boundary and must apply to every `AgentAdapter`, including adapters added later.
+Before every such run, persist a just-in-time human decision tied to the exact provider and agent
+configuration, reason, pages/scenarios, evidence, and triggering automated result. Do not infer
+approval from the build start, ordinary reviewer run, task web-access policy, or usage-safety
+acknowledgement. A declined review remains visible as `UI_REVIEW_SKIPPED`/
+`HUMAN_REVIEW_REQUIRED`; only deterministic results that actually ran may be reported as passing,
+and neither automation nor a model-backed agent may replace final human UX approval.
 
 Treat provider context as an exception report, not a browser-session dump. If deterministic checks
 pass and approved baselines are unchanged, do not recommend a provider run unless the human asks.

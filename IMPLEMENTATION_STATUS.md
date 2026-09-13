@@ -662,14 +662,15 @@ Completion record:
 - Current behavior: builds can run human-configured test/lint/build validation commands and the
   independent reviewer can inspect the code diff, but the workflow does not launch a local browser
   or provide rendered pages, screenshots, console/network failures, accessibility output, or visual
-  comparisons to either provider. Passing compilation is therefore not represented as proof that
-  the UI/UX is intact.
+  comparisons to any model-backed agent. Passing compilation is therefore not represented as proof
+  that the UI/UX is intact.
 - Required future behavior: deterministic supervised browser checks may run without model usage,
-  but every Claude/Codex frontend UI/UX assessment requires a separate just-in-time human approval
-  showing the provider, reason, evidence/scope, triggering change or failure, and provider-usage
-  warning. Build approval, web access, ordinary code-review approval, and usage-safety
-  acknowledgement are not substitutes. The decision must be audited, and refusal results in
-  `UI_REVIEW_SKIPPED`/`HUMAN_REVIEW_REQUIRED`, never `UI_VERIFIED`.
+  but every frontend UI/UX assessment by any current or future model-backed agent requires a
+  separate just-in-time human approval showing the provider/agent configuration, reason,
+  evidence/scope, triggering change or failure, and provider-usage warning. Build approval, web
+  access, ordinary code-review approval, and usage-safety acknowledgement are not substitutes. The
+  decision must be audited, and refusal results in `UI_REVIEW_SKIPPED`/`HUMAN_REVIEW_REQUIRED`,
+  never `UI_VERIFIED`.
 - Token-saving requirements: do not recommend a provider run when configured deterministic checks
   pass and approved baselines are unchanged; use one provider by default; include only affected
   pages/regions and concise relevant failures; reuse evidence from the exact build revision; and
@@ -679,8 +680,9 @@ Completion record:
   `AGENTS.md` and `PROJECT_SPEC.md`, and the two missing capabilities are explicit Phase 7 items in
   `IMPLEMENTATION_ROADMAP.md`.
 - Verification: `npm test` (139 workspace tests plus 9 policy-script tests), `npm run typecheck`,
-  `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema changes), and
-  `git diff --check`; all passed under Node 22.23.2.
+  `npm run build`, `npm run check:agent-policy`, and `git diff --check` all passed under Node
+  22.23.2. `npm run db:generate` also completed successfully; this documentation-only unit
+  introduced no schema changes, and separately present Phase 7 schema work was left untouched.
 
 ### Phase 7, slice 1 completion record — process, environment, and CLI failures
 
