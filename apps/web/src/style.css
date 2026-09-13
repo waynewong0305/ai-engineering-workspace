@@ -216,6 +216,9 @@ legend small { margin-left: 8px; }
 .run-console details { margin-top: 18px; color: #879ab5; font-size: 13px; }
 .run-console small { display: block; margin-top: 16px; color: #71849f; }
 
+.exhausted-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 14px; border: 1px solid rgba(255, 200, 120, 0.35); background: rgba(255, 200, 120, 0.03); }
+.exhausted-hint p { flex: 1 1 260px; margin: 0; color: #cdd8e8; font-size: 12px; line-height: 1.5; }
+
 .brainstorm-panel { margin-top: 56px; }
 .brainstorm-panel h2 { max-width: 760px; }
 .task-first-row { grid-template-columns: 0.75fr 1.25fr; }

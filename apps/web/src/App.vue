@@ -371,6 +371,33 @@ async function acknowledgeUsageAndRetryStart() {
     acknowledging.value = false;
   }
 }
+
+/**
+ * Automatic detection only catches a rate-limit refusal whose wording matches a known pattern
+ * (see usage-safety.ts). When it doesn't, a failed run looks like any other failure and nothing
+ * blocks the next attempt. This lets a human close that gap explicitly after the fact, the same
+ * way a manual snapshot works elsewhere: it is always labeled MANUAL, never silently inferred.
+ */
+async function markProviderExhausted(provider: AgentProvider) {
+  usageError.value = "";
+  const response = await fetch("/api/usage/manual-snapshot", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, windowId: "5H", windowLabel: "5-hour window", usedPercent: 100 }),
+  });
+  const result = await response.json();
+  if (!response.ok) usageError.value = result.message ?? "Could not record the exhausted reading.";
+  else {
+    usageMessage.value = `Recorded ${providerLabel(provider)} as exhausted (manual). Provider calls for ${providerLabel(provider)} are blocked until reset or a fresh reading.`;
+    await loadUsage();
+  }
+}
+
+function failedProviders(task: BrainstormTask): AgentProvider[] {
+  const failed = new Set((task.runs ?? []).filter((run) => run.status === "FAILED").map((run) => run.provider));
+  return (["CLAUDE", "CODEX"] as const).filter((provider) => failed.has(provider) && worstUsageStatus(provider) !== "EXHAUSTED");
+}
+
 const form = reactive({
   name: "",
   repositoryPath: "",
@@ -1240,6 +1267,10 @@ onUnmounted(() => {
           <p v-if="currentRun.errorMessage" class="error-text">{{ currentRun.errorMessage }}</p>
           <details v-if="currentRun.errorOutput"><summary>Process messages</summary><pre>{{ currentRun.errorOutput }}</pre></details>
           <small v-if="currentRun.durationMs !== null">Completed in {{ (currentRun.durationMs / 1000).toFixed(1) }}s</small>
+          <div v-if="currentRun.status === 'FAILED' && worstUsageStatus(currentRun.provider) !== 'EXHAUSTED'" class="exhausted-hint">
+            <p>Did this fail because {{ providerLabel(currentRun.provider) }} hit its usage limit? The workspace could not tell automatically.</p>
+            <button class="ghost-button" type="button" @click="markProviderExhausted(currentRun.provider)">Mark {{ providerLabel(currentRun.provider) }} as exhausted</button>
+          </div>
         </article>
       </section>
 
@@ -1422,6 +1453,13 @@ onUnmounted(() => {
               </div>
             </div>
             <p v-if="selectedTask.errorMessage" class="form-message error-text">{{ selectedTask.errorMessage }}</p>
+            <div v-if="failedProviders(selectedTask).length" class="exhausted-hint">
+              <p>Did this fail because a provider hit its usage limit? The workspace could not tell automatically.</p>
+              <button
+                v-for="provider in failedProviders(selectedTask)" :key="provider"
+                class="ghost-button" type="button" @click="markProviderExhausted(provider)"
+              >Mark {{ providerLabel(provider) }} as exhausted</button>
+            </div>
 
             <div v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section">
               <div class="subsection-heading"><span>INDEPENDENT OUTPUTS</span><strong>Kept separate until both completed</strong></div>
