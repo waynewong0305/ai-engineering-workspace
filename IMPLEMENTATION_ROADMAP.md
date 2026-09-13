@@ -200,8 +200,10 @@ Goal: make normal failure safe and understandable.
 - [x] Startup recovery for interrupted runs
 - [ ] Supervised frontend verification runner (browser scenarios, console/network capture,
       accessibility, responsive screenshots, and optional approved-baseline comparison)
-- [ ] Separate just-in-time human approval, with a displayed reason and persisted scope, before any
-      current or future model-backed agent reviews frontend UI/UX or receives browser evidence
+- [x] Separate just-in-time human approval, with a displayed reason and persisted scope, before any
+      current or future model-backed agent reviews frontend UI/UX or receives browser evidence —
+      `FrontendReviewApprovalService` and its routes/UI; the runner this gate protects is not yet
+      built, so nothing calls it yet
 - [ ] Token-efficient evidence selection: exception-only provider review, one-provider default,
       affected-region/failure-excerpt inputs, exact-revision artifact reuse, and separate approval
       before second-provider escalation or material scope expansion

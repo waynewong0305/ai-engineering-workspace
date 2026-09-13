@@ -297,6 +297,32 @@ export const adrs = sqliteTable("adrs", {
 
 export type AdrRecord = typeof adrs.$inferSelect;
 
+/**
+ * PROJECT_SPEC.md §24.1. A separate, explicit gate from build/review or usage-safety approval: no
+ * model-backed agent of any current or future provider may inspect the rendered frontend or receive
+ * screenshots/DOM/accessibility/browser evidence without one of these being requested, approved by
+ * a human, and then consumed by exactly the disclosed run it was approved for. Each row is both the
+ * request and its own audit trail — reason, scope, provider, agent configuration, decision, and
+ * timestamps are recorded here rather than in a separate audit table.
+ */
+export const frontendReviewApprovals = sqliteTable("frontend_review_approvals", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
+  agentConfiguration: text("agent_configuration").notNull(),
+  reason: text("reason").notNull(),
+  scope: text("scope").notNull(),
+  triggerDescription: text("trigger_description"),
+  status: text("status", { enum: ["PENDING", "APPROVED", "REFUSED", "CONSUMED"] }).notNull().default("PENDING"),
+  decidedAt: text("decided_at"),
+  consumedAt: text("consumed_at"),
+  consumedByRunId: text("consumed_by_run_id"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("frontend_review_approvals_task_idx").on(table.taskId, table.createdAt)]);
+
+export type FrontendReviewApprovalRecord = typeof frontendReviewApprovals.$inferSelect;
+export type FrontendReviewApprovalStatus = FrontendReviewApprovalRecord["status"];
+
 export type ExperimentStatus = "RUNNING" | "REVIEWING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 
 /**

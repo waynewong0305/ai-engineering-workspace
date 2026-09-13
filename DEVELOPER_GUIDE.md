@@ -234,6 +234,16 @@ Routes (`apps/server/src/routes/usage-safety.ts`): `GET /api/usage`, `GET /api/u
 
 Never: automatically redeem provider reset credits, automatically start a replacement provider, automatically downgrade a requested model, or silently treat unknown/stale usage as safe in a combined workflow.
 
+## Frontend review approval gate
+
+`apps/server/src/services/frontend-review-approval.ts` (`FrontendReviewApprovalService`) is the single, provider-neutral gate PROJECT_SPEC.md §24.1 requires before any model-backed agent — current or future — may inspect the rendered frontend or receive screenshots, rendered pages, DOM/accessibility output, or other browser evidence. It mirrors `UsageSafetyService`'s role for a different concern, and is deliberately a separate gate: build approval, web access, ordinary code-review approval, and usage-safety acknowledgement never substitute for it.
+
+Each row in `frontend_review_approvals` is both a request and its own audit trail: `taskId`, `provider`, `agentConfiguration`, `reason`, `scope`, an optional `triggerDescription`, `status` (`PENDING` / `APPROVED` / `REFUSED` / `CONSUMED`), and the `decidedAt`/`consumedAt`/`consumedByRunId` timestamps a human's decision and a run's later consumption leave behind. `request()` validates and records a `PENDING` row; `decide()` lets a human record `APPROVED` or `REFUSED` exactly once (a second call throws `ALREADY_DECIDED`); `assertApprovedAndConsume(id, consumedByRunId)` is the actual enforcement point — call it immediately before starting the disclosed run, never before. It throws `NOT_DECIDED` for a still-pending request, `REFUSED` for a declined one, and `ALREADY_CONSUMED` for one already spent on a different run, so the caller can produce an honest `HUMAN_REVIEW_REQUIRED`/`UI_REVIEW_SKIPPED` outcome rather than ever fabricating `UI_VERIFIED`. On success it marks the row `CONSUMED` so it can never cover a second, broader, or later run.
+
+Routes (`apps/server/src/routes/frontend-review-approvals.ts`): `GET`/`POST /api/tasks/:id/frontend-review-approvals`, `GET /api/frontend-review-approvals/:id`, `POST /api/frontend-review-approvals/:id/decide`. The **10 — Frontend review** panel in `apps/web/src/App.vue` is the human-facing side: request a review (provider, agent configuration, reason, scope, optional trigger) and approve/refuse it, with the required "provider usage may be consumed" disclosure shown on every pending card.
+
+This is deliberately the gate only. Nothing in the codebase calls `assertApprovedAndConsume` yet, because the supervised frontend verification runner (browser scenarios, console/network capture, accessibility, screenshots) that would actually recommend and start such a run does not exist yet — that is a separate, not-yet-built Phase 7 item. The gate exists first, the same way `UsageSafetyService` existed before every workflow that now calls it, so that runner is required to go through it from day one rather than deciding on its own.
+
 ## Security model
 
 Three permission profiles define intent:

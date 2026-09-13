@@ -6,6 +6,7 @@ import { registerAdrRoutes } from "./routes/adrs.js";
 import { registerAgentRunRoutes } from "./routes/agent-runs.js";
 import { registerBuildRoutes } from "./routes/build-runs.js";
 import { registerExperimentRoutes } from "./routes/experiments.js";
+import { registerFrontendReviewApprovalRoutes } from "./routes/frontend-review-approvals.js";
 import { registerMaintenanceRoutes } from "./routes/maintenance.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
@@ -51,6 +52,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   registerAdrRoutes(app, db);
   registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
   registerMaintenanceRoutes(app, db, sqlite, databasePath);
+  registerFrontendReviewApprovalRoutes(app, db);
 
   return app;
 }

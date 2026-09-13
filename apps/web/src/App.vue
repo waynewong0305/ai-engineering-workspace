@@ -135,6 +135,21 @@ type PromotedTask = {
   riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   planPhase: string | null;
 };
+type FrontendReviewApprovalStatus = "PENDING" | "APPROVED" | "REFUSED" | "CONSUMED";
+type FrontendReviewApproval = {
+  id: string;
+  taskId: string;
+  provider: AgentProvider;
+  agentConfiguration: string;
+  reason: string;
+  scope: string;
+  triggerDescription: string | null;
+  status: FrontendReviewApprovalStatus;
+  decidedAt: string | null;
+  consumedAt: string | null;
+  consumedByRunId: string | null;
+  createdAt: string;
+};
 type BrainstormTask = {
   id: string;
   projectId: string;
@@ -473,6 +488,15 @@ const maintenance = ref<MaintenanceStatus | null>(null);
 const maintenanceLoading = ref(false);
 const maintenanceError = ref("");
 const maintenanceMessage = ref("");
+
+const selectedFrontendReviewTaskId = ref("");
+const frontendReviewApprovals = ref<FrontendReviewApproval[]>([]);
+const frontendReviewError = ref("");
+const requestingFrontendReview = ref(false);
+const decidingFrontendReviewId = ref("");
+const frontendReviewForm = reactive({
+  provider: "CLAUDE" as AgentProvider, agentConfiguration: "", reason: "", scope: "", triggerDescription: "",
+});
 
 function providerLabel(provider: AgentProvider) {
   return provider === "CLAUDE" ? "Claude Code" : "Codex";
@@ -1125,6 +1149,62 @@ async function updateAdrStatus(adr: Adr, status: AdrStatus) {
   await loadAdrsForTask();
 }
 
+async function loadFrontendReviewApprovals() {
+  frontendReviewError.value = "";
+  if (!selectedFrontendReviewTaskId.value) {
+    frontendReviewApprovals.value = [];
+    return;
+  }
+  const response = await fetch(`/api/tasks/${selectedFrontendReviewTaskId.value}/frontend-review-approvals`);
+  if (!response.ok) {
+    frontendReviewError.value = "Could not load frontend review approval requests for this task.";
+    return;
+  }
+  frontendReviewApprovals.value = await response.json();
+}
+
+async function requestFrontendReviewApproval() {
+  if (!selectedFrontendReviewTaskId.value) return;
+  requestingFrontendReview.value = true;
+  frontendReviewError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedFrontendReviewTaskId.value}/frontend-review-approvals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: frontendReviewForm.provider, agentConfiguration: frontendReviewForm.agentConfiguration,
+        reason: frontendReviewForm.reason, scope: frontendReviewForm.scope,
+        triggerDescription: frontendReviewForm.triggerDescription || undefined,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not create the frontend review approval request.");
+    Object.assign(frontendReviewForm, { agentConfiguration: "", reason: "", scope: "", triggerDescription: "" });
+    await loadFrontendReviewApprovals();
+  } catch (error) {
+    frontendReviewError.value = error instanceof Error ? error.message : "Could not create the frontend review approval request.";
+  } finally {
+    requestingFrontendReview.value = false;
+  }
+}
+
+async function decideFrontendReviewApproval(approval: FrontendReviewApproval, decision: "APPROVED" | "REFUSED") {
+  decidingFrontendReviewId.value = approval.id;
+  frontendReviewError.value = "";
+  try {
+    const response = await fetch(`/api/frontend-review-approvals/${approval.id}/decide`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not record that decision.");
+    await loadFrontendReviewApprovals();
+  } catch (error) {
+    frontendReviewError.value = error instanceof Error ? error.message : "Could not record that decision.";
+  } finally {
+    decidingFrontendReviewId.value = "";
+  }
+}
+
 async function selectTask(taskId: string) {
   taskError.value = "";
   const response = await fetch(`/api/tasks/${taskId}`);
@@ -1651,7 +1731,7 @@ async function releaseMaintenanceLease(lease: MaintenanceLease) {
   }
 }
 
-const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions", "maintenance"];
+const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions", "maintenance", "frontend-review"];
 const activeSection = ref(NAV_SECTIONS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "projects");
 function updateActiveSection() {
   const hash = window.location.hash.slice(1);
@@ -1725,6 +1805,7 @@ onUnmounted(() => {
         <a class="nav-item disabled" href="#reviews" aria-disabled="true" title="Not built yet — this will be a dedicated place to browse past reviews. For now, reviews show up inside the Build tab."><span>07</span>Reviews</a>
         <a :class="['nav-item', { active: activeSection === 'decisions' }]" href="#decisions" title="Write down important decisions (like 'why did we choose X over Y') so you can look back and remember the reasoning later."><span>08</span>Decisions</a>
         <a :class="['nav-item', { active: activeSection === 'maintenance' }]" href="#maintenance" title="Back up or recover this app's local database, inspect cleanup warnings, and download an audit history."><span>09</span>Maintenance</a>
+        <a :class="['nav-item', { active: activeSection === 'frontend-review' }]" href="#frontend-review" title="Before Claude or Codex is ever shown a screenshot or a rendered page of your app, you must explicitly approve that one specific request here — nothing is shared with them automatically."><span>10</span>Frontend review</a>
       </nav>
 
       <div class="sidebar-foot" title="Everything you see runs on this computer only. Nothing is uploaded to a server or shared with anyone else.">
@@ -2912,6 +2993,61 @@ onUnmounted(() => {
               <button class="text-button" type="button" @click="releaseMaintenanceLease(lease)" title="Release this lease only after confirming its old process is no longer running. No worktree files are deleted.">Release stale lease</button>
             </div>
           </article>
+        </div>
+      </section>
+
+      <section id="frontend-review" class="project-panel worktree-panel" aria-labelledby="frontend-review-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">10 — FRONTEND REVIEW APPROVAL</p>
+            <h2 id="frontend-review-heading">Nothing goes to Claude or Codex until you say so.</h2>
+            <p>Claude or Codex may only see a screenshot, a rendered page, or accessibility/DOM output after you explicitly approve that one disclosed request. Approving a build, granting web access, or approving code review never counts as this approval.</p>
+          </div>
+          <span class="safety-badge" title="Each approval is used up by exactly one disclosed run. A broader or later review always needs a fresh approval.">ONE-TIME · JUST-IN-TIME</span>
+        </div>
+
+        <div class="worktree-task-picker">
+          <label title="Which task this frontend review request is associated with.">
+            <span>Task</span>
+            <select v-model="selectedFrontendReviewTaskId" @change="loadFrontendReviewApprovals">
+              <option disabled value="">Select a task</option>
+              <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.title }}</option>
+            </select>
+          </label>
+        </div>
+
+        <p v-if="frontendReviewError" class="form-message error-text" role="alert">{{ frontendReviewError }}</p>
+
+        <form v-if="selectedFrontendReviewTaskId" class="evidence-form adr-form" @submit.prevent="requestFrontendReviewApproval">
+          <label title="Which AI would do this review."><span>Provider</span>
+            <select v-model="frontendReviewForm.provider">
+              <option value="CLAUDE">Claude Code</option>
+              <option value="CODEX">Codex</option>
+            </select>
+          </label>
+          <label title="The exact model/effort configuration that would run, so you know precisely what you're approving."><span>Agent configuration</span><input v-model="frontendReviewForm.agentConfiguration" placeholder="e.g. claude-sonnet-5, effort: medium" maxlength="300" required /></label>
+          <label title="Why a human-in-the-loop AI review of the rendered app is being recommended right now."><span>Reason</span><textarea v-model="frontendReviewForm.reason" maxlength="10000" required></textarea></label>
+          <label title="Exactly which pages, scenarios, and evidence (screenshots, console/network logs, accessibility output) would be shared — nothing beyond this is sent."><span>Scope</span><textarea v-model="frontendReviewForm.scope" maxlength="10000" required></textarea></label>
+          <label title="Optional: the specific automated check, failure, or change that triggered this recommendation."><span>Triggering change or failure (optional)</span><textarea v-model="frontendReviewForm.triggerDescription" maxlength="10000"></textarea></label>
+          <button class="ghost-button" type="submit" :disabled="requestingFrontendReview" title="Record this disclosed request so it can be explicitly approved or refused. This does not start any AI run by itself.">{{ requestingFrontendReview ? "Requesting…" : "Request approval" }}</button>
+        </form>
+
+        <p v-if="selectedFrontendReviewTaskId && !frontendReviewApprovals.length" class="form-hint">No frontend review requests yet for this task.</p>
+        <div v-for="approval in frontendReviewApprovals" :key="approval.id" class="evidence-item adr-item">
+          <header>
+            <strong>{{ providerLabel(approval.provider) }} · {{ approval.agentConfiguration }}</strong>
+            <span class="usage-state" :class="approval.status.toLowerCase()" title="PENDING = waiting on your decision. APPROVED = you approved it, not yet used. REFUSED = you declined it; it can never be started. CONSUMED = it was already used to start the one disclosed run it covered.">{{ approval.status }}</span>
+          </header>
+          <p><strong>Reason</strong> {{ approval.reason }}</p>
+          <p><strong>Scope</strong> {{ approval.scope }}</p>
+          <p v-if="approval.triggerDescription"><strong>Trigger</strong> {{ approval.triggerDescription }}</p>
+          <p><small>Provider usage may be consumed if this runs.</small></p>
+          <div v-if="approval.status === 'PENDING'" class="form-actions">
+            <button class="primary-button" type="button" :disabled="decidingFrontendReviewId === approval.id" @click="decideFrontendReviewApproval(approval, 'APPROVED')" title="Allow this exact disclosed run, and only this one, to see the evidence described above.">Approve</button>
+            <button class="text-button" type="button" :disabled="decidingFrontendReviewId === approval.id" @click="decideFrontendReviewApproval(approval, 'REFUSED')" title="Refuse this request. It can never be started, and nothing is shared with the AI.">Refuse</button>
+          </div>
+          <small v-if="approval.decidedAt">Decided {{ new Date(approval.decidedAt).toLocaleString() }}</small>
+          <small v-if="approval.consumedAt">Used at {{ new Date(approval.consumedAt).toLocaleString() }}</small>
         </div>
       </section>
     </main>

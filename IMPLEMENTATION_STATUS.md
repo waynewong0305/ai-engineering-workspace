@@ -656,7 +656,49 @@ Completion record:
 - [x] Audit-history export
 - [x] Startup recovery for interrupted work
 - [ ] Supervised frontend verification runner for registered projects
-- [ ] Just-in-time approval gate before provider-based frontend UI/UX review
+- [x] Just-in-time approval gate before provider-based frontend UI/UX review
+
+### Frontend review approval gate completion record
+
+- Date: 2026-09-13
+- Added `FrontendReviewApprovalService` (`apps/server/src/services/frontend-review-approval.ts`)
+  as the single, provider-neutral gate PROJECT_SPEC.md §24.1 requires: no model-backed agent run of
+  any current or future provider may inspect the rendered frontend or receive screenshots, rendered
+  pages, DOM/accessibility output, or other browser evidence without one of these being requested,
+  decided by an explicit human action, and then consumed by exactly the one disclosed run it covers.
+  Mirrors `UsageSafetyService`'s role and shape for a different gate.
+- New `frontend_review_approvals` table (migration `0013`) is both the request and its own audit
+  trail: task, provider, agent configuration, reason, scope, an optional triggering
+  failure/change, status (`PENDING` / `APPROVED` / `REFUSED` / `CONSUMED`), and every decision/
+  consumption timestamp — exactly the fields PROJECT_SPEC.md §24.1 requires be displayed and
+  persisted. `assertApprovedAndConsume` is the actual enforcement point a future caller must use
+  immediately before starting the disclosed run; it throws for a refusal, an undecided request, or
+  one already spent on a different run, so a caller can produce an honest
+  `HUMAN_REVIEW_REQUIRED`/`UI_REVIEW_SKIPPED` outcome rather than ever fabricating `UI_VERIFIED` —
+  never a decision this service makes on its own.
+- New routes (`apps/server/src/routes/frontend-review-approvals.ts`): `GET`/`POST
+  /api/tasks/:id/frontend-review-approvals`, `GET /api/frontend-review-approvals/:id`, `POST
+  /api/frontend-review-approvals/:id/decide`. A new **10 — Frontend review** panel in
+  `apps/web/src/App.vue` lets a human request one (provider, agent configuration, reason, scope,
+  optional trigger) and approve or refuse it, with the required "provider usage may be consumed"
+  disclosure shown alongside every pending request. Verified live in the browser against a real
+  registered project: request → PENDING card with Approve/Refuse → Approve → APPROVED with a
+  decided timestamp, no console errors.
+- Known, accepted scope limit: this is the gate only, not the recommendation logic or the browser-
+  automation runner itself — both remain the separate, not-yet-built "supervised frontend
+  verification runner" item above. Nothing in the codebase calls `assertApprovedAndConsume` yet
+  because nothing yet starts a model-backed frontend-evidence run; the gate exists so that future
+  runner is required to go through it rather than deciding on its own, matching how usage-safety's
+  gate was built before every workflow that now calls it.
+- Tests added: `apps/server/src/services/frontend-review-approval.test.ts` (5 tests: request
+  validation, single-decision enforcement, the full approve/consume/reuse-blocked state machine, a
+  refusal blocking consumption, an undecided request blocking consumption) and
+  `apps/server/src/routes/frontend-review-approvals.test.ts` (2 tests: the full HTTP request → list
+  → decide flow, and validation/not-found error mapping).
+- Full verification: `npm test` (166 workspace tests: 107 server + 35 agents + 31 `packages/git`,
+  plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (19 tables; migration `0013` adds `frontend_review_approvals`, no further
+  drift), and `git diff --check`; all passed under Node 22.23.2.
 
 ### Frontend verification policy recorded — implementation pending
 
