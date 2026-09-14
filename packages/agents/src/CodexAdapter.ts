@@ -1,8 +1,10 @@
 import type { AgentAdapter } from "./AgentAdapter.js";
 import { firstLine, runCommand } from "./cli-utils.js";
+import { CodexAppServerClient, type CodexUsageReader } from "./CodexAppServerClient.js";
 import { JsonLineDecoder } from "./JsonLineDecoder.js";
 import { ProcessSupervisor } from "./ProcessSupervisor.js";
 import type { AgentEvent, AgentHealth, AgentRunInput } from "./types.js";
+import type { RateLimitWindowReading } from "./usage-extraction.js";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null;
@@ -29,7 +31,12 @@ export class CodexAdapter implements AgentAdapter {
   constructor(
     private readonly supervisor = new ProcessSupervisor(),
     private readonly executable = "codex",
+    private readonly usageReader: CodexUsageReader = new CodexAppServerClient(executable),
   ) {}
+
+  readUsage(): Promise<RateLimitWindowReading[]> {
+    return this.usageReader.readRateLimits();
+  }
 
   async healthCheck(): Promise<AgentHealth> {
     const version = await runCommand(this.executable, ["--version"]);

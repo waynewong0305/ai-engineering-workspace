@@ -78,7 +78,7 @@ interface UsageRecord {
   apiEquivalentCostUsd?: number;  // calculated from the pricing registry, always labeled as such
 
   billingMode: "subscription" | "api" | "credits" | "unknown";
-  usageSource: "provider_reported" | "cli_reported" | "calculated" | "estimated" | "unavailable";
+  usageSource: "provider_reported" | "cli_reported" | "app_server" | "calculated" | "estimated" | "unavailable";
 
   browserSearchCount?: number;
   toolCallCount?: number;
@@ -100,6 +100,12 @@ Prefer the installed Codex CLI's structured JSON/JSONL execution output over par
 Capture whatever of `input_tokens` / `cached_input_tokens` / `output_tokens` /
 `reasoning_output_tokens` the installed version actually emits. Do not assume reasoning-token
 reporting exists — verify per Step 0.
+
+Plan-usage percentages are separate from per-run token capture. `codex exec --json` does not emit
+them, but Codex App Server documents `account/rateLimits/read`; use that local, authenticated,
+machine-readable method for current plan windows and label persisted readings `APP_SERVER` /
+`EXACT`. Do not scrape terminal UI or local session/authentication files and do not call an
+undocumented remote endpoint.
 
 ## Claude usage capture
 

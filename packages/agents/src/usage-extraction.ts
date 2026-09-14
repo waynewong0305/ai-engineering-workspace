@@ -1,8 +1,9 @@
 import type { AgentProvider } from "./types.js";
 
 export type RateLimitWindowReading = {
-  windowId: "5H" | "WEEKLY";
+  windowId: string;
   windowLabel: string;
+  windowDurationMs?: number | null;
   usedPercent: number;
   resetAt: string | null;
 };

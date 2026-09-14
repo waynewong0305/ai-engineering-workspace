@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentAdapter } from "@aiew/agents";
 import { buildApp } from "../app.js";
 
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -75,5 +76,22 @@ describe("usage safety routes", () => {
     const response = await app.inject({ method: "POST", url: "/api/usage/CLAUDE/refresh" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ updated: false });
+  });
+
+  it("refreshes Codex through its adapter and exposes the exact App Server source", async () => {
+    const adapter = {
+      name: "CODEX",
+      readUsage: async () => [{
+        windowId: "5H", windowLabel: "5-hour usage window", windowDurationMs: 18_000_000,
+        usedPercent: 44, resetAt: "2026-09-14T02:00:00.000Z",
+      }],
+    } as AgentAdapter;
+    const app = buildApp({ databasePath: ":memory:", adapters: [adapter] });
+    apps.push(app);
+
+    const refreshed = await app.inject({ method: "POST", url: "/api/usage/CODEX/refresh" });
+    expect(refreshed.json()).toMatchObject({ provider: "CODEX", updated: true });
+    const view = (await app.inject({ method: "GET", url: "/api/usage/CODEX" })).json();
+    expect(view[0]).toMatchObject({ usedPercent: 44, source: "APP_SERVER", sourceConfidence: "EXACT" });
   });
 });

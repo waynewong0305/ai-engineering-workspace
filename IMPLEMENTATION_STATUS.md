@@ -4,7 +4,7 @@ Last updated: 2026-09-14
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. Phase 8 is underway: automatic token capture/backfill, Claude plan-usage telemetry, and versioned API-equivalent cost calculation are implemented; aggregate dashboards, budgets, cross-review breakdown, and Usage & Cost settings remain.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. Phase 8 is underway: automatic token capture/backfill, exact Claude run-output plan telemetry, exact Codex App Server plan telemetry, and versioned API-equivalent cost calculation are implemented; aggregate dashboards, budgets, cross-review breakdown, and Usage & Cost settings remain.
 
 Documentation consistency maintenance (2026-09-13): reconciled `AGENTS.md`, this status record,
 `IMPLEMENTATION_ROADMAP.md`, `PROJECT_SPEC.md`, `DEVELOPER_GUIDE.md`, and
@@ -157,7 +157,8 @@ Later addition (2026-09-13): with several tasks running at once there was no way
 
 Not part of the original phase sequence in `PROJECT_SPEC.md`; added as an explicit cross-cutting safety requirement that must protect every phase's provider-consuming actions, present and future.
 
-- [x] Provider-neutral usage data model: multiple windows per provider, used/remaining percentage, reset time and human-readable time-to-reset, source (`CLI_REPORTED`/`MANUAL`/`RATE_LIMIT_ERROR`), source confidence (`EXACT`/`ESTIMATED`), last-refresh time, freshness, and a `SAFE`/`WARNING`/`CHECKPOINT_REQUIRED`/`EXHAUSTED`/`UNAVAILABLE`/`STALE` status derived from configurable warning/checkpoint/staleness thresholds
+- [x] Provider-neutral usage data model: multiple windows per provider, used/remaining percentage, reset time and human-readable time-to-reset, source (`CLI_REPORTED`/`APP_SERVER`/`MANUAL`/`RATE_LIMIT_ERROR`), source confidence (`EXACT`/`ESTIMATED`), last-refresh time, freshness, and a `SAFE`/`WARNING`/`CHECKPOINT_REQUIRED`/`EXHAUSTED`/`UNAVAILABLE`/`STALE` status derived from configurable warning/checkpoint/staleness thresholds
+- [x] Exact on-demand Codex plan usage through documented App Server `account/rateLimits/read`, refreshed before every Codex safety decision and after every attempted Codex run without starting a model turn
 - [x] Validated manual usage snapshots, clearly labeled `MANUAL`/`ESTIMATED` and never confused with an automatic reading
 - [x] Heuristic parsing of a plausible provider rate-limit refusal into an `EXHAUSTED` reading (best-effort; see limitations)
 - [x] Preflight check before every provider-consuming operation: single-provider actions (the read-only repository explanation) check that one provider; the combined brainstorm workflow checks both, and rechecks immediately before every one of its four provider calls (both analyses, both cross-reviews), not only once at workflow start
@@ -171,7 +172,7 @@ Not part of the original phase sequence in `PROJECT_SPEC.md`; added as an explic
 Completion record:
 
 - Date: 2026-09-13
-- Data sources found supported: none automatically. Neither the inspected Claude Code 2.1.269 CLI nor the inspected Codex CLI 0.153.4 exposes a documented local command that reports exact usage/quota percentages (see `IMPLEMENTATION_ROADMAP.md`'s CLI capability findings), and this task's safety constraints prohibit invoking either CLI further to search for one. `refresh()` therefore always reports `unavailable` honestly rather than fabricating a value. The two real data sources implemented are an explicit human-entered manual snapshot, and a heuristic parse of a provider process's rate-limit refusal text.
+- Original 2026-09-13 finding, since superseded: neither initially inspected top-level CLI command exposed exact percentages, so the first implementation used manual snapshots and rate-limit-refusal parsing. Later investigation found Claude's structured run event and, on 2026-09-14, Codex App Server's documented `account/rateLimits/read`; both are now implemented as exact automatic sources. The original fallback behavior remains when those supported sources are unavailable.
 - Known limitation, hardened same day: the rate-limit-error parser matches on plausible provider wording for the *account/subscription usage allowance* (e.g. "usage limit reached", "5-hour limit", "usage cap", "quota exceeded") and a nearby reset-time phrase. An initial version also matched a bare "rate limit reached", which risked exactly the mistake this project must avoid — confusing an API-level tokens/requests-per-minute throttle with the Claude Code/ChatGPT subscription usage window. Fixed: removed that pattern and added an explicit exclusion (`tokens per minute`, `requests per minute`, `TPM`/`RPM`, `rate_limit_error`, `429`) that blocks a match outright when present, plus added `usage cap` and `quota/allowance exceeded` wording and a broader `until <time>` reset-time pattern. It still has not been validated against a real exhausted response (doing so would consume real usage, which this task must not do) and should be revisited once real refusal text is observed.
 - Added same day: since automatic parsing only catches wording it recognizes, an unrecognized rate-limit refusal previously left a failed run/task indistinguishable from any other failure, with nothing to stop the next attempt from failing the same way. A **Mark as exhausted** UI action (next to a failed single agent run, and next to a failed brainstorm task per failed provider, with the surrounding text naming which provider it applies to — the button label is deliberately generic since two can appear stacked together) now closes that gap explicitly: it submits the same manual snapshot (`usedPercent: 100`, labeled `MANUAL`) a human would otherwise have to type into the Usage Safety section by hand. It only appears when that provider isn't already recorded as exhausted, and never fires automatically.
 - Added same day: the "Mark as exhausted" prompt now also carries a soft, advisory hint — a broader, looser client-side heuristic (`looksUsageRelated` in `App.vue`) scans the failed run's error text for wording like "usage," "quota," "capacity," "5-hour," or "insufficient credits" (still excluding API-throttle wording) and, when it matches, shows a "LOOKS LIKE A USAGE LIMIT" badge with more specific copy instead of the generic prompt. This is purely a UI nudge: nothing is recorded or persisted from it, the button underneath does exactly the same thing either way, and a human still has to click it. Deliberately kept separate from (and looser than) the server's strict, auto-recording `EXHAUSTION_PATTERNS`, since a false positive here only costs a glance, not a wrongly blocked provider.
@@ -946,31 +947,21 @@ spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implement
 
 - Date: 2026-09-13
 - **Step 0 finding, bigger than Phase 8 itself:** re-investigating CLI capabilities (as the spec
-  requires before writing any code) found that both installed CLIs report exact, real-time
-  subscription-plan usage percentages in their own structured output — not just per-run token
-  counts. That directly overturned the standing assumption in `usage-safety.ts`/`AGENTS.md` ("no
-  supported local CLI/API surface reports exact usage percentages today"), which was true when
-  written and is no longer true for Claude Code 2.1.269 or the installed Codex CLI. Confirmed live:
-  a real minimal Claude prompt's `stream-json` output includes a `rate_limit_event` message
-  (`rate_limit_info.unifiedWindows.{five_hour,seven_day}.utilization`, exact and current); Codex's
-  real local session logs (`~/.codex/sessions/**` — read only enough of each line to see event
-  *shapes*, never full prompt/response content, since that's the user's own real work) show a
-  `token_count` event carrying an equivalent `rate_limits.{primary,secondary}.used_percent`. Given
-  this changes something bigger than the original Phase 8 scope, the human was asked directly
-  whether to fold a real-time usage-safety upgrade in alongside the original per-run token-capture
-  work — they said yes, so both are part of this slice.
+  requires before writing any code) found that Claude reports exact subscription-plan percentages
+  in its real `stream-json` run output, while Codex interactive-session telemetry contains an
+  equivalent shape but `codex exec --json` does not emit it. That overturned the standing
+  assumption for Claude and justified folding real-time usage safety into this phase; the separate
+  documented Codex App Server solution arrived in the 2026-09-14 follow-up below.
 - **Real-time usage-safety** (`packages/agents/src/usage-extraction.ts`, new — `extractRateLimitReadings`/
   `extractTokenUsage`, provider-neutral, pure, own test file with the real captured shapes above):
   wired into `AgentRunManager.applyEvent`'s `structured_output` handling, which calls the new
   `UsageSafetyService.recordCliReportedUsage()`. That method writes to the *existing*
   `provider_usage_readings` table using its `"CLI_REPORTED"` source value — which had been sitting
   in the schema's enum, reserved but never once written by any code, since before this session.
-  Both providers' windows (`five_hour`/`seven_day`, and Codex's `primary` 300-minute /`secondary`
-  10,080-minute windows) map directly onto `UsageSafetyService`'s own pre-existing `"5H"`/`"WEEKLY"`
-  windowId vocabulary, so none of its threshold/status/staleness/checkpoint logic needed to change
-  — only a new way to feed it real readings. Updated two now-inaccurate hardcoded strings this
-  uncovered: `refresh()`'s "no supported automatic usage source" message, and the Usage Safety
-  panel's "Source" tooltip in `App.vue`.
+  Claude's `five_hour`/`seven_day` windows map directly onto `UsageSafetyService`'s pre-existing
+  `"5H"`/`"WEEKLY"` vocabulary, so its threshold/status/staleness/checkpoint logic did not need to
+  change. The Codex parser remained defensive future compatibility until the separate App Server
+  reader was added in the follow-up below.
 - **Per-run token capture** (`usage_records` table, migration `0014`): one row per run, always —
   `usageSource: "unavailable"` with every token field `null` when nothing was recoverable, so
   "exactly one usage record per run" is a reliable invariant for later aggregation work rather than
@@ -1027,7 +1018,9 @@ spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implement
   (Part B) works correctly for both providers; this is specifically about the plan-usage-percentage
   half. `extractRateLimitReadings`'s Codex branch is kept rather than removed (harmless, and ready
   if a future Codex version starts including this in `exec`'s own stream), with its doc comment and
-  test suite updated to state this as a confirmed finding, not an open question.
+  test suite updated to state this as a confirmed finding, not an open question. **Resolved by the
+  2026-09-14 App Server completion record below:** the finding remains true for `exec --json`, but
+  Codex's separate documented local App Server supplies the account windows on demand.
 - Explicitly deferred from this first slice: the pricing registry and labeled cost figures (delivered
   in the second slice below), the workspace/task dashboards, cross-review cost breakdown,
   token-efficiency metrics, task usage budgets, and the Usage & Cost settings page.
@@ -1041,6 +1034,38 @@ spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implement
   `git diff --check` — all passed under Node 22.23.2, plus real-CLI verification against the actual
   running app for *both* providers (Claude at first pass, Codex once its usage limit reset the same
   session) and a live browser check of the Usage Safety panel and run-detail token line.
+
+### Phase 8 follow-up completion record — exact Codex App Server plan usage
+
+- Date: 2026-09-14
+- Added `packages/agents/src/CodexAppServerClient.ts`, a bounded one-shot JSONL stdio client for the
+  documented Codex App Server `account/rateLimits/read` request. It initializes a local
+  `codex app-server --listen stdio://` process, normalizes valid primary/secondary account windows,
+  keeps unknown durations provider-neutral, and terminates without starting a model turn or
+  redeeming a reset credit. Invalid/missing percentages are discarded rather than guessed.
+- Added the optional provider-neutral `AgentAdapter.readUsage()` capability and implemented it in
+  `CodexAdapter`. `UsageSafetyService.refresh()` invokes supported readers, stores Codex results as
+  `APP_SERVER`/`EXACT` with duration/reset metadata, and leaves existing data untouched when a read
+  fails or returns nothing. The `APP_SERVER` schema enum addition is TypeScript metadata on the
+  existing SQLite text column, so it requires no migration.
+- Every safety assertion is now asynchronous and refreshes immediately before evaluating the
+  provider. All single-provider, brainstorm, build/review, and experiment call sites await that
+  check. `AgentRunManager` also refreshes after every attempted run so the displayed Codex account
+  allowance reflects the call that just finished.
+- Updated the Usage Safety UI and project documentation to distinguish Claude's
+  `CLI_REPORTED`/`EXACT` readings, Codex's `APP_SERVER`/`EXACT` readings, and manual/error fallbacks.
+  No terminal UI, screenshot, session/authentication-file scraping, or undocumented remote endpoint
+  is used.
+- Live verification against the installed Codex CLI 0.154.0 returned both authenticated account
+  windows with used percentage, duration, and reset time through this exact client path, proving
+  the integration against real provider data without consuming a model turn.
+- Verification: exported the exact staged snapshot to a clean temporary directory, linked the
+  existing installed dependencies, and ran the complete required suite under Node 22.23.2:
+  `npm test` (217 workspace tests: 128 server + 58 agents + 31 Git, plus 9 policy-script tests),
+  `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, and `npm run db:generate`
+  (no schema drift) all passed. `git diff --cached --check` passed in the source checkout. The
+  unrelated in-progress usage-dashboard files and hunks remained unstaged and are not part of this
+  commit.
 
 ### Phase 8 second-slice completion record — versioned pricing and API-equivalent cost
 

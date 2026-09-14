@@ -131,17 +131,17 @@ export class ExperimentWorkflow {
     }
   }
 
-  private assertPhaseReady(providers: readonly AgentProvider[]) {
-    for (const provider of providers) this.usageSafety?.assertReady(provider, { combined: true });
+  private async assertPhaseReady(providers: readonly AgentProvider[]) {
+    await Promise.all(providers.map((provider) => this.usageSafety?.assertReady(provider, { combined: true })));
   }
 
   private async runBuilder(
     experiment: ExperimentRecord, task: TaskRecord, project: ProjectRecord, worktree: WorktreeRecord, options: ExperimentOptions,
   ): Promise<AgentRunRecord | null> {
-    this.assertPhaseReady([experiment.builderProvider, experiment.reviewerProvider]);
+    await this.assertPhaseReady([experiment.builderProvider, experiment.reviewerProvider]);
     const adapter = this.adapters.get(experiment.builderProvider);
     if (!adapter) throw new Error(`${experiment.builderProvider} adapter is unavailable.`);
-    this.usageSafety?.assertReady(experiment.builderProvider, { combined: true });
+    await this.usageSafety?.assertReady(experiment.builderProvider, { combined: true });
 
     const prompt = replace(builderTemplate, {
       TITLE: task.title,
@@ -175,10 +175,10 @@ export class ExperimentWorkflow {
   private async runReviewer(
     experiment: ExperimentRecord, task: TaskRecord, project: ProjectRecord, worktree: WorktreeRecord, options: ExperimentOptions,
   ) {
-    this.assertPhaseReady([experiment.builderProvider, experiment.reviewerProvider]);
+    await this.assertPhaseReady([experiment.builderProvider, experiment.reviewerProvider]);
     const adapter = this.adapters.get(experiment.reviewerProvider);
     if (!adapter) throw new Error(`${experiment.reviewerProvider} adapter is unavailable.`);
-    this.usageSafety?.assertReady(experiment.reviewerProvider, { combined: true });
+    await this.usageSafety?.assertReady(experiment.reviewerProvider, { combined: true });
 
     const builderRun = experiment.builderRunId ? this.db.select().from(agentRuns).where(eq(agentRuns.id, experiment.builderRunId)).get() : null;
     const diffText = `${experiment.diffStaged ?? ""}${experiment.diffUnstaged ?? ""}`.trim() || "(no changes were detected in the worktree)";

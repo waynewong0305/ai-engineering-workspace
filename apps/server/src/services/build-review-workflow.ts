@@ -334,8 +334,8 @@ export class BuildReviewWorkflow {
   }
 
   /** See BrainstormWorkflow.assertPhaseReady: check every provider a phase needs, together, first. */
-  private assertPhaseReady(providers: readonly AgentProvider[]) {
-    for (const provider of providers) this.usageSafety?.assertReady(provider, { combined: true });
+  private async assertPhaseReady(providers: readonly AgentProvider[]) {
+    await Promise.all(providers.map((provider) => this.usageSafety?.assertReady(provider, { combined: true })));
   }
 
   private async pipeline(initial: BuildRunRecord, options: BuildWorkflowOptions) {
@@ -372,12 +372,12 @@ export class BuildReviewWorkflow {
     worktree: WorktreeRecord,
     options: BuildWorkflowOptions,
   ): Promise<AgentRunRecord | null> {
-    this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
+    await this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
     const adapter = this.adapters.get(build.builderProvider);
     if (!adapter) throw new Error(`${build.builderProvider} adapter is unavailable.`);
     // Recheck immediately before this specific call, same as every per-call recheck in
     // BrainstormWorkflow.run — usage can change while a phase is already in flight.
-    this.usageSafety?.assertReady(build.builderProvider, { combined: true });
+    await this.usageSafety?.assertReady(build.builderProvider, { combined: true });
 
     const prompt = replace(builderTemplate, {
       TITLE: task.title,
@@ -432,10 +432,10 @@ export class BuildReviewWorkflow {
     worktree: WorktreeRecord,
     options: BuildWorkflowOptions,
   ) {
-    this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
+    await this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
     const adapter = this.adapters.get(build.reviewerProvider);
     if (!adapter) throw new Error(`${build.reviewerProvider} adapter is unavailable.`);
-    this.usageSafety?.assertReady(build.reviewerProvider, { combined: true });
+    await this.usageSafety?.assertReady(build.reviewerProvider, { combined: true });
 
     const diffText = `${build.diffStaged ?? ""}${build.diffUnstaged ?? ""}`.trim() || "(no changes were detected in the worktree)";
     const prompt = replace(reviewerTemplate, { TITLE: task.title, PROBLEM_STATEMENT: task.problemStatement, DIFF: diffText });
@@ -571,10 +571,10 @@ export class BuildReviewWorkflow {
     openFindings: readonly ReviewFindingRecord[],
     options: BuildWorkflowOptions,
   ): Promise<AgentRunRecord | null> {
-    this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
+    await this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
     const adapter = this.adapters.get(build.builderProvider);
     if (!adapter) throw new Error(`${build.builderProvider} adapter is unavailable.`);
-    this.usageSafety?.assertReady(build.builderProvider, { combined: true });
+    await this.usageSafety?.assertReady(build.builderProvider, { combined: true });
 
     const prompt = replace(builderResponseTemplate, {
       TITLE: task.title,
@@ -632,10 +632,10 @@ export class BuildReviewWorkflow {
     openFindings: readonly ReviewFindingRecord[],
     options: BuildWorkflowOptions,
   ) {
-    this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
+    await this.assertPhaseReady([build.builderProvider, build.reviewerProvider]);
     const adapter = this.adapters.get(build.reviewerProvider);
     if (!adapter) throw new Error(`${build.reviewerProvider} adapter is unavailable.`);
-    this.usageSafety?.assertReady(build.reviewerProvider, { combined: true });
+    await this.usageSafety?.assertReady(build.reviewerProvider, { combined: true });
 
     // Re-read: these rows now carry the builder's verdict/evidence/action from runBuilderResponse.
     const responded = this.db.select().from(reviewFindings)

@@ -182,8 +182,8 @@ export class BrainstormWorkflow {
    * used once the phase as a whole cannot complete. The per-call check inside `run()` remains as
    * well, since usage can still change while a phase is already in flight.
    */
-  private assertPhaseReady(providers: readonly AgentProvider[]) {
-    for (const provider of providers) this.usageSafety?.assertReady(provider, { combined: true });
+  private async assertPhaseReady(providers: readonly AgentProvider[]) {
+    await Promise.all(providers.map((provider) => this.usageSafety?.assertReady(provider, { combined: true })));
   }
 
   private async runAnalysisPhase(
@@ -192,7 +192,7 @@ export class BrainstormWorkflow {
     projectContext: string | null,
     options: WorkflowOptions,
   ): Promise<StoredAnalysis[] | null> {
-    this.assertPhaseReady(["CLAUDE", "CODEX"]);
+    await this.assertPhaseReady(["CLAUDE", "CODEX"]);
     const analysisPrompt = replace(analysisTemplate, {
       TITLE: task.title,
       TYPE: task.type,
@@ -219,7 +219,7 @@ export class BrainstormWorkflow {
     analyses: StoredAnalysis[],
     options: WorkflowOptions,
   ) {
-    this.assertPhaseReady(["CLAUDE", "CODEX"]);
+    await this.assertPhaseReady(["CLAUDE", "CODEX"]);
     const byProvider = new Map(analyses.map((entry) => [entry.provider, entry]));
     const reviewRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) => {
       const targetProvider = provider === "CLAUDE" ? "CODEX" : "CLAUDE";
@@ -281,7 +281,7 @@ export class BrainstormWorkflow {
     // Recheck usage immediately before every provider process this workflow starts, not only once
     // at the start of the workflow: this call site covers both independent-analysis and
     // cross-review runs for both providers.
-    this.usageSafety?.assertReady(provider, { combined: true });
+    await this.usageSafety?.assertReady(provider, { combined: true });
     const now = new Date().toISOString();
     const requestedModel = options.models?.[provider]?.trim() || "(provider default)";
     const run: AgentRunRecord = {

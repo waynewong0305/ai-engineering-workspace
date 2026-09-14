@@ -48,6 +48,12 @@ const baseInput: Omit<AgentRunInput, "permissionProfile"> = {
 };
 
 describe("CodexAdapter", () => {
+  it("exposes the provider's documented account-usage reader", async () => {
+    const readings = [{ windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 32, resetAt: null }];
+    const adapter = new CodexAdapter(new CapturingSupervisor(), "codex", { readRateLimits: async () => readings });
+    await expect(adapter.readUsage()).resolves.toEqual(readings);
+  });
+
   it("uses the read-only sandbox for READ_ONLY", async () => {
     const executable = await createFakeCodexExecutable();
     const supervisor = new CapturingSupervisor();

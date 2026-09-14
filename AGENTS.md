@@ -29,12 +29,12 @@ protects, and the UI it will drive) was evaluated in detail and deliberately def
 unstarted by oversight — see `IMPLEMENTATION_STATUS.md`'s record before reconsidering it. Recovery,
 database backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost
 monitoring (Phase 8, spec in `USAGE_MONITORING_SPEC.md`) was pulled forward by explicit human
-instruction and has its first slice done: real-time usage-safety readings from Claude's own
-structured output, and per-run token capture (both providers) with historical backfill. Confirmed,
-via a real completion once its usage limit reset, that Codex's `exec --json` invocation path does
-not expose plan-usage percentages the way Claude's does — it stays honestly `UNAVAILABLE` there, no
-fabrication. The pricing registry, cost figures, dashboards, cross-review breakdown, budgets, and
-settings UI remain — see `IMPLEMENTATION_STATUS.md`'s record for the full detail.
+instruction and has its first slices done: exact usage-safety readings from Claude's structured
+output and Codex's documented App Server account-rate-limit method, per-run token capture (both
+providers) with historical backfill, and versioned API-equivalent cost calculation. Codex's
+`exec --json` invocation still does not expose plan percentages, but `account/rateLimits/read`
+does without starting a model turn. Dashboards, cross-review breakdown, budgets, and settings UI
+remain — see `IMPLEMENTATION_STATUS.md`'s record for the full detail.
 
 ## Source-of-truth specifications
 
@@ -177,11 +177,12 @@ safety is decided; do not add a second one.
   re-running it. Never lose completed analysis when pausing between stages.
 - Never automatically redeem provider reset credits, automatically start a replacement provider,
   or automatically downgrade a requested model — all three require an explicit human decision.
-- There is no supported local CLI/API surface that reports exact Claude Code or Codex usage
-  percentages today. Do not add one by probing the CLIs further or calling an undocumented remote
-  endpoint. The only real data sources are an explicit human-entered manual snapshot (always
-  labeled `MANUAL`/estimated) and a heuristic parse of a provider process's own rate-limit refusal
-  text (`parseRateLimitMessage`) — treat the latter as a best-effort signal, not a certainty.
+- Use only documented, machine-readable provider surfaces for exact readings: Claude's structured
+  run output and Codex App Server's `account/rateLimits/read` using the CLI's existing ChatGPT
+  authentication. Persist the latter as `APP_SERVER`/`EXACT`. Never scrape terminal UI, session or
+  authentication files, or call undocumented remote endpoints. When a supported source fails,
+  retain honest `UNAVAILABLE`/`STALE` behavior; manual snapshots (`MANUAL`/estimated) and the
+  best-effort rate-limit-refusal parser remain explicit fallbacks.
 
 ## Web access and permission boundaries
 

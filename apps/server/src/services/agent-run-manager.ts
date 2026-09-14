@@ -84,6 +84,9 @@ export class AgentRunManager {
       };
       this.persistEvent(run.id, this.normalizeEvent(run, event), started);
     } finally {
+      // A provider may expose account usage separately from run output (Codex App Server). Refresh
+      // after every attempted run so the dashboard reflects the quota that the run just consumed.
+      await this.usageSafety?.refresh(run.provider);
       this.cancellationRequested.delete(run.id);
       this.sequenceByRun.delete(run.id);
     }

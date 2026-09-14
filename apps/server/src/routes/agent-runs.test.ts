@@ -76,6 +76,18 @@ class UsageReportingCodexAdapter extends FakeCodexAdapter {
   }
 }
 
+class AppServerUsageCodexAdapter extends FakeCodexAdapter {
+  usageReads = 0;
+
+  async readUsage() {
+    this.usageReads += 1;
+    return [{
+      windowId: "5H", windowLabel: "5-hour usage window", windowDurationMs: 18_000_000,
+      usedPercent: this.usageReads === 1 ? 10 : 11, resetAt: null,
+    }];
+  }
+}
+
 class FailingCodexAdapter extends FakeCodexAdapter {
   constructor(private readonly detail: string) {
     super();
@@ -274,6 +286,25 @@ describe("agent run routes", () => {
     const usageView = (await app.inject({ method: "GET", url: "/api/usage/CODEX" })).json();
     const fiveHour = usageView.find((window: { windowId: string }) => window.windowId === "5H");
     expect(fiveHour).toMatchObject({ usedPercent: 80, source: "CLI_REPORTED", sourceConfidence: "EXACT", status: "WARNING" });
+  });
+
+  it("refreshes Codex App Server usage before the call and again after the run", async () => {
+    const adapter = new AppServerUsageCodexAdapter();
+    const app = buildApp({ databasePath: ":memory:", adapters: [adapter] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+
+    const created = (await app.inject({
+      method: "POST", url: "/api/agent-runs",
+      payload: { projectId: project.id, provider: "CODEX", prompt: "Explain this repository." },
+    })).json();
+    await waitForTerminalRun(app, created.id);
+
+    expect(adapter.usageReads).toBe(2);
+    const usageView = (await app.inject({ method: "GET", url: "/api/usage/CODEX" })).json();
+    expect(usageView[0]).toMatchObject({ usedPercent: 11, source: "APP_SERVER", sourceConfidence: "EXACT" });
   });
 
   it("still records exactly one usage record, marked unavailable, when a run reports nothing recoverable", async () => {

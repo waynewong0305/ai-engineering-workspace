@@ -360,7 +360,7 @@ type UsageWindowView = {
   remainingPercent: number | null;
   resetAt: string | null;
   timeUntilReset: string | null;
-  source: "CLI_REPORTED" | "MANUAL" | "RATE_LIMIT_ERROR" | null;
+  source: "CLI_REPORTED" | "APP_SERVER" | "MANUAL" | "RATE_LIMIT_ERROR" | null;
   sourceConfidence: "EXACT" | "ESTIMATED" | null;
   lastRefreshedAt: string | null;
   freshness: "FRESH" | "STALE" | "UNKNOWN";
@@ -2578,10 +2578,10 @@ onUnmounted(() => {
             <p>
               A provider subscription allowance (what this page tracks) is not the same thing as an API token rate
               limit: this is about the Claude Code / ChatGPT plan allowance a run can exhaust, not per-request
-              tokens-per-minute limits. Claude reports this automatically after a run (labeled CLI_REPORTED ·
-              EXACT below); Codex's non-interactive command does not currently expose it. Before your first run,
-              or whenever no automatic reading is available, use a manual snapshot to record what the provider's
-              own interface shows you.
+              tokens-per-minute limits. Claude reports this automatically in run output (CLI_REPORTED · EXACT),
+              while Codex is read on demand through its local App Server (APP_SERVER · EXACT). The app refreshes
+              supported readings before every provider call and after each run. If a supported reader is unavailable,
+              use a manual snapshot; it remains clearly labeled as an estimate.
             </p>
           </div>
           <span class="safety-badge" title="Before the app spends any of your Claude/Codex usage, it checks how much is left — every single time, not just once.">CHECK BEFORE EVERY CALL</span>
@@ -2595,7 +2595,7 @@ onUnmounted(() => {
           <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="usage-card">
             <header>
               <strong>{{ providerLabel(provider) }}</strong>
-              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" :title="provider === 'CLAUDE' ? 'There is no on-demand check. Claude usage updates automatically when a run reports it; this button explains that.' : 'Codex does not expose plan usage through its non-interactive command. Use a manual snapshot from the provider interface instead.'">
+              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" :title="provider === 'CLAUDE' ? 'Claude usage updates when its run output reports a fresh reading; this button checks whether an on-demand reader is available.' : 'Ask Codex App Server for the current ChatGPT plan-usage windows without starting a model run.'">
                 {{ refreshingProvider === provider ? "Refreshing…" : "Refresh" }}
               </button>
             </header>
@@ -2614,7 +2614,7 @@ onUnmounted(() => {
                 <div><dt title="How much of this time window's allowance has been spent.">Used</dt><dd>{{ window.usedPercent === null ? "Unknown" : `${window.usedPercent}%` }}</dd></div>
                 <div><dt title="How much of this time window's allowance is still left to spend.">Remaining</dt><dd>{{ window.remainingPercent === null ? "Unknown" : `${window.remainingPercent}%` }}</dd></div>
                 <div><dt title="How long until this usage window refills back to 100%.">Resets</dt><dd>{{ window.timeUntilReset ? `in ${window.timeUntilReset}` : "Unknown" }}</dd></div>
-                <div><dt title="Where this reading came from: automatically captured from the AI's own output after a run, a manual entry you typed in, or text picked up from a rate-limit error message.">Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
+                <div><dt title="Where this reading came from: provider run output, Codex's supported local App Server, a manual entry, or a rate-limit error message.">Source</dt><dd>{{ window.source ?? "None yet" }}<template v-if="window.sourceConfidence"> · {{ window.sourceConfidence }}</template></dd></div>
                 <div><dt title="When this reading was last refreshed.">Last updated</dt><dd>{{ window.lastRefreshedAt ? new Date(window.lastRefreshedAt).toLocaleString() : "Never" }}</dd></div>
                 <div><dt title="Whether this reading is recent enough to trust (FRESH) or too old to rely on (STALE).">Freshness</dt><dd>{{ window.freshness }}</dd></div>
               </dl>
@@ -2626,7 +2626,7 @@ onUnmounted(() => {
                 <label title="A human-friendly name for this window, e.g. '5-hour window'."><span>Label</span><input v-model="manualSnapshotForm[provider].windowLabel" placeholder="5-hour window" maxlength="120" required /></label>
               </div>
               <div class="field-row">
-                <label title="Type in the used-percentage number you see on the provider's own website or app right now — this app can't read it automatically."><span>Used % <small>From the provider's own display</small></span><input v-model="manualSnapshotForm[provider].usedPercent" type="number" min="0" max="100" step="1" required /></label>
+                <label title="Type in the used-percentage number from the provider's own website or app when an automatic reading is unavailable."><span>Used % <small>From the provider's own display</small></span><input v-model="manualSnapshotForm[provider].usedPercent" type="number" min="0" max="100" step="1" required /></label>
                 <label title="When this usage window refreshes back to 100%, if the provider tells you."><span>Resets at <small>Optional</small></span><input v-model="manualSnapshotForm[provider].resetAt" type="datetime-local" /></label>
               </div>
               <button class="ghost-button" type="submit" title="Save this hand-typed reading so the app can use it to decide whether it's safe to keep spending usage.">Submit manual snapshot</button>

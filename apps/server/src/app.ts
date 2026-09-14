@@ -42,7 +42,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   const adapters = new Map<AgentProvider, AgentAdapter>(
     (options.adapters ?? [new ClaudeAdapter(), new CodexAdapter()]).map((adapter) => [adapter.name, adapter]),
   );
-  const usageSafety = new UsageSafetyService(db);
+  const usageSafety = new UsageSafetyService(db, adapters);
   const runManager = new AgentRunManager(db, usageSafety);
   const worktreeService = new WorktreeService();
   const worktreeUsageManager = new WorktreeUsageManager(db);

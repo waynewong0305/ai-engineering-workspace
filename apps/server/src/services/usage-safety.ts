@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RateLimitWindowReading } from "@aiew/agents";
+import type { AgentAdapter, RateLimitWindowReading } from "@aiew/agents";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
@@ -17,12 +17,10 @@ import {
 } from "../db/schema.js";
 
 /**
- * Default safety policy. As of the Phase 8 Step 0 investigation (2026-09-13), both installed CLIs
- * do report exact usage percentages in their own structured output (see `recordCliReportedUsage`
- * and `packages/agents/src/usage-extraction.ts`) — an earlier assumption here that no such surface
- * existed is now outdated and was corrected rather than left stale. Thresholds remain deliberately
- * configurable rather than tuned against one specific provider response shape, since CLI output
- * still drifts between versions and must be re-verified before being trusted, not assumed forever.
+ * Default safety policy. Claude reports exact plan usage in its run output; Codex exposes the same
+ * account windows through its documented App Server protocol. Thresholds remain deliberately
+ * configurable rather than tuned against one provider response shape, since provider tooling can
+ * still drift between versions and must be re-verified before being trusted indefinitely.
  */
 export const DEFAULT_USAGE_POLICY = {
   warningThresholdPercent: 75,
@@ -146,7 +144,10 @@ export function parseRateLimitMessage(message: string): { windowId: string; wind
 }
 
 export class UsageSafetyService {
-  constructor(private readonly db: WorkspaceDatabase) {}
+  constructor(
+    private readonly db: WorkspaceDatabase,
+    private readonly adapters: ReadonlyMap<UsageProvider, AgentAdapter> = new Map(),
+  ) {}
 
   getPolicy(): UsageSafetySettingsRecord {
     const existing = this.db.select().from(usageSafetySettings).where(eq(usageSafetySettings.id, "default")).get();
@@ -236,19 +237,40 @@ export class UsageSafetyService {
     return { CLAUDE: this.getProviderUsage("CLAUDE"), CODEX: this.getProviderUsage("CODEX") };
   }
 
-  /**
-   * There is no on-demand poll/refresh endpoint either CLI exposes — usage updates automatically
-   * whenever a run actually happens (`recordCliReportedUsage`, fed by that run's own structured
-   * output), not on request. This method exists so the API/UI has one explicit, honest action
-   * rather than silently doing nothing; it never fabricates a percentage and never contacts an
-   * undocumented endpoint.
-   */
-  refresh(provider: UsageProvider) {
-    return {
-      provider,
-      updated: false,
-      message: "There is no on-demand refresh — usage updates automatically after each run completes. Submit a manual snapshot for a reading right now, or start a run to get a fresh automatic one.",
-    };
+  /** Poll a provider only when its adapter exposes a documented, machine-readable usage source. */
+  async refresh(provider: UsageProvider) {
+    const readUsage = this.adapters.get(provider)?.readUsage;
+    if (!readUsage) {
+      return {
+        provider,
+        updated: false,
+        message: `${provider} has no supported on-demand usage reader. Existing readings were left unchanged.`,
+      };
+    }
+    try {
+      const readings = await readUsage.call(this.adapters.get(provider));
+      if (!readings.length) {
+        return {
+          provider,
+          updated: false,
+          message: `${provider} returned no valid usage windows. Existing readings were left unchanged.`,
+        };
+      }
+      this.recordAppServerUsage(provider, readings);
+      return {
+        provider,
+        updated: true,
+        message: `Refreshed ${readings.length} ${provider} usage window${readings.length === 1 ? "" : "s"}.`,
+      };
+    } catch (error) {
+      return {
+        provider,
+        updated: false,
+        message: error instanceof Error
+          ? `${provider} usage refresh failed: ${error.message}`
+          : `${provider} usage refresh failed.`,
+      };
+    }
   }
 
   submitManualSnapshot(input: Record<string, unknown>): ProviderUsageReadingRecord {
@@ -296,23 +318,25 @@ export class UsageSafetyService {
     return reading;
   }
 
-  /**
-   * Both installed CLIs report exact, real-time plan-usage utilization directly in their own
-   * structured output (Claude's `rate_limit_event`, Codex's `token_count` event's `rate_limits`) —
-   * confirmed live during Phase 8 Step 0 investigation (2026-09-13). `CLI_REPORTED` was already a
-   * reserved value in this table's `source` enum before anything wrote it; this is that writer.
-   * Called once per structured_output event that yields readings (see `AgentRunManager`), so this
-   * can be invoked far more often than a human's manual snapshot or a rate-limit error — that's
-   * fine, `getProviderUsage`'s "latest per (provider, windowId)" logic already handles a stream of
-   * readings, not just an occasional one.
-   */
   recordCliReportedUsage(provider: UsageProvider, readings: RateLimitWindowReading[]): ProviderUsageReadingRecord[] {
+    return this.recordReportedUsage(provider, readings, "CLI_REPORTED");
+  }
+
+  recordAppServerUsage(provider: UsageProvider, readings: RateLimitWindowReading[]): ProviderUsageReadingRecord[] {
+    return this.recordReportedUsage(provider, readings, "APP_SERVER");
+  }
+
+  private recordReportedUsage(
+    provider: UsageProvider,
+    readings: RateLimitWindowReading[],
+    source: "CLI_REPORTED" | "APP_SERVER",
+  ): ProviderUsageReadingRecord[] {
     const now = new Date().toISOString();
     return readings.map((reading) => {
       const record: ProviderUsageReadingRecord = {
         id: randomUUID(), provider, windowId: reading.windowId, windowLabel: reading.windowLabel,
-        windowDurationMs: null, usedPercent: reading.usedPercent, resetAt: reading.resetAt,
-        source: "CLI_REPORTED", sourceConfidence: "EXACT", recordedAt: now, createdAt: now,
+        windowDurationMs: reading.windowDurationMs ?? null, usedPercent: reading.usedPercent,
+        resetAt: reading.resetAt, source, sourceConfidence: "EXACT", recordedAt: now, createdAt: now,
       };
       this.db.insert(providerUsageReadings).values(record).run();
       return record;
@@ -429,7 +453,8 @@ export class UsageSafetyService {
     };
   }
 
-  assertReady(provider: UsageProvider, options: { combined: boolean }): UsageEvaluation {
+  async assertReady(provider: UsageProvider, options: { combined: boolean }): Promise<UsageEvaluation> {
+    await this.refresh(provider);
     const decision = this.evaluate(provider, options);
     if (!decision.allowed) {
       this.recordCheckpoint(provider, decision.windowId, decision.status, decision.reason);

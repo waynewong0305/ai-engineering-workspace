@@ -61,7 +61,7 @@ export function registerAgentRunRoutes(
     if (!adapter) return reply.code(503).send({ message: `${provider} adapter is unavailable.` });
 
     try {
-      usageSafety.assertReady(provider, { combined: false });
+      await usageSafety.assertReady(provider, { combined: false });
     } catch (error) {
       if (error instanceof UsageCheckpointError) return reply.code(409).send({ message: error.message, code: "USAGE_CHECKPOINT", decision: error.decision });
       throw error;

@@ -435,7 +435,7 @@ export const experiments = sqliteTable("experiments", {
 export type ExperimentRecord = typeof experiments.$inferSelect;
 
 export type UsageProvider = "CLAUDE" | "CODEX";
-export type UsageSource = "CLI_REPORTED" | "MANUAL" | "RATE_LIMIT_ERROR";
+export type UsageSource = "CLI_REPORTED" | "APP_SERVER" | "MANUAL" | "RATE_LIMIT_ERROR";
 export type UsageSourceConfidence = "EXACT" | "ESTIMATED";
 
 /**
@@ -452,7 +452,7 @@ export const providerUsageReadings = sqliteTable("provider_usage_readings", {
   windowDurationMs: integer("window_duration_ms"),
   usedPercent: real("used_percent").notNull(),
   resetAt: text("reset_at"),
-  source: text("source", { enum: ["CLI_REPORTED", "MANUAL", "RATE_LIMIT_ERROR"] }).notNull(),
+  source: text("source", { enum: ["CLI_REPORTED", "APP_SERVER", "MANUAL", "RATE_LIMIT_ERROR"] }).notNull(),
   sourceConfidence: text("source_confidence", { enum: ["EXACT", "ESTIMATED"] }).notNull(),
   recordedAt: text("recorded_at").notNull(),
   createdAt: text("created_at").notNull(),

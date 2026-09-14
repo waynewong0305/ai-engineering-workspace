@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
+import type { AgentAdapter, AgentProvider, RateLimitWindowReading } from "@aiew/agents";
 import { createDatabase } from "../db/database.js";
 import { providerUsageReadings } from "../db/schema.js";
 import {
@@ -12,10 +13,17 @@ import {
 
 const databases: Array<ReturnType<typeof createDatabase>["sqlite"]> = [];
 
-function service() {
+function service(adapters: AgentAdapter[] = []) {
   const { db, sqlite } = createDatabase(":memory:");
   databases.push(sqlite);
-  return new UsageSafetyService(db);
+  return new UsageSafetyService(db, new Map(adapters.map((adapter) => [adapter.name, adapter])));
+}
+
+function adapterWithUsage(provider: AgentProvider, readings: RateLimitWindowReading[]): AgentAdapter {
+  return {
+    name: provider,
+    readUsage: async () => readings,
+  } as AgentAdapter;
 }
 
 afterEach(() => {
@@ -194,13 +202,13 @@ describe("UsageSafetyService", () => {
     expect(usage.evaluate("CLAUDE", { combined: false })).toMatchObject({ allowed: true, status: "SAFE" });
   });
 
-  it("refuses any override once a provider is reliably exhausted, and assertReady throws and records the checkpoint", () => {
+  it("refuses any override once a provider is reliably exhausted, and assertReady throws and records the checkpoint", async () => {
     const usage = service();
     usage.submitManualSnapshot({ provider: "CODEX", windowId: "5H", windowLabel: "5-hour window", usedPercent: 100 });
     usage.recordAcknowledgement({ provider: "CODEX", status: "EXHAUSTED", userAction: "OVERRIDE", reason: "Please let me continue anyway." });
     expect(usage.evaluate("CODEX", { combined: false })).toMatchObject({ allowed: false, status: "EXHAUSTED" });
 
-    expect(() => usage.assertReady("CODEX", { combined: false })).toThrow(UsageCheckpointError);
+    await expect(usage.assertReady("CODEX", { combined: false })).rejects.toThrow(UsageCheckpointError);
     const audit = usage.getAuditHistory("CODEX");
     expect(audit[0]).toMatchObject({ eventType: "CHECKPOINT_TRIGGERED", status: "EXHAUSTED" });
   });
@@ -213,10 +221,32 @@ describe("UsageSafetyService", () => {
     expect(usage.evaluate("CLAUDE", { combined: false })).toMatchObject({ allowed: true, status: "SAFE" });
   });
 
-  it("refresh() never fabricates a percentage when no automatic source is supported", () => {
+  it("refresh() never fabricates a percentage when no automatic source is supported", async () => {
     const usage = service();
-    const result = usage.refresh("CLAUDE");
+    const result = await usage.refresh("CLAUDE");
     expect(result.updated).toBe(false);
     expect(usage.getProviderUsage("CLAUDE")[0]!.status).toBe("UNAVAILABLE");
+  });
+
+  it("refreshes exact Codex App Server readings with their real window durations", async () => {
+    const usage = service([adapterWithUsage("CODEX", [{
+      windowId: "5H", windowLabel: "5-hour usage window", windowDurationMs: 18_000_000,
+      usedPercent: 72, resetAt: "2026-09-14T02:00:00.000Z",
+    }])]);
+
+    await expect(usage.refresh("CODEX")).resolves.toMatchObject({ updated: true });
+    expect(usage.getProviderUsage("CODEX")[0]).toMatchObject({
+      windowId: "5H", windowDurationMs: 18_000_000, usedPercent: 72,
+      source: "APP_SERVER", sourceConfidence: "EXACT",
+    });
+  });
+
+  it("refreshes immediately before evaluating whether a provider call is safe", async () => {
+    const usage = service([adapterWithUsage("CODEX", [{
+      windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 95, resetAt: null,
+    }])]);
+
+    await expect(usage.assertReady("CODEX", { combined: false })).rejects.toThrow(UsageCheckpointError);
+    expect(usage.getProviderUsage("CODEX")[0]).toMatchObject({ usedPercent: 95, status: "CHECKPOINT_REQUIRED" });
   });
 });
