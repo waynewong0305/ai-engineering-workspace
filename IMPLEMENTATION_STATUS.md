@@ -142,6 +142,19 @@ action alignment and plain-language tooltip at desktop width and the stacked 390
 horizontal overflow; the destructive confirmation was not accepted against the user's real local
 task data.
 
+Later addition (2026-09-14): active brainstorm tasks now use a quiet status-only refresh path.
+The previous 1.5-second poll re-entered the full task-selection flow, which repeatedly showed the
+task-usage loading message and reset experiment, generated-report, and error state while independent
+analysis or cross-review was running. Polling now updates only the selected task and its list entry;
+usage and budget totals refresh without loading indicators or overwriting an in-progress budget form
+only when the workflow changes stage. Responses are ignored if the human selected another task while
+a request was in flight, and transient status failures keep the current task visible while polling
+retries. No API or schema change. Verified under Node 22.23.2 with `npm test` (143 server tests,
+65 agent-package tests, 31 Git-package tests, and 9 policy-script tests), `npm run typecheck`,
+`npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema changes), and
+`git diff --check`; all passed. The hot-reloaded local brainstorm UI rendered the updated task
+detail without console warnings or errors; no paid provider run was started for manual verification.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

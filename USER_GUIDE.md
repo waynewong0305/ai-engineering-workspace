@@ -302,7 +302,7 @@ The workflow is:
 7. The comparison screen groups consensus, disagreements, open questions, missing evidence, and recommended experiments.
 8. You correct facts and assumptions, add evidence or decisions, and decide which disagreement matters.
 
-The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. You can cancel while analysis or cross-review is active. If the server restarts during active provider work, startup recovery marks the abandoned records failed, releases their usage leases, and preserves completed output and artifacts for inspection.
+The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. While analysis or cross-review is active, status and newly completed results update quietly in place; the task usage card, budget form, experiments, and generated report are not reset on every status check. You can cancel while analysis or cross-review is active. If the server restarts during active provider work, startup recovery marks the abandoned records failed, releases their usage leases, and preserves completed output and artifacts for inspection.
 
 To permanently remove a plan, open it and select **Delete task** beside its status. The confirmation
 names the local history that will be removed: provider runs, generated reports and comparison,

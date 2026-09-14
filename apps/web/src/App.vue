@@ -550,6 +550,7 @@ const tasks = ref<BrainstormTask[]>([]);
 const tasksLoading = ref(true);
 const selectedTask = ref<BrainstormTask | null>(null);
 const taskError = ref("");
+const taskRefreshError = ref("");
 const taskMessage = ref("");
 const creatingTask = ref(false);
 const startingTask = ref(false);
@@ -781,13 +782,14 @@ async function loadUsageDashboard() {
   }
 }
 
-async function loadSelectedTaskUsage(taskId: string) {
-  selectedTaskUsageLoading.value = true;
+async function loadSelectedTaskUsage(taskId: string, showLoading = true) {
+  if (showLoading) selectedTaskUsageLoading.value = true;
   try {
     const response = await fetch(`/api/usage-records/dashboard?period=all&taskId=${encodeURIComponent(taskId)}`);
-    selectedTaskUsage.value = response.ok ? await response.json() : null;
+    const result = response.ok ? await response.json() : null;
+    if (selectedTask.value?.id === taskId) selectedTaskUsage.value = result;
   } finally {
-    selectedTaskUsageLoading.value = false;
+    if (showLoading) selectedTaskUsageLoading.value = false;
   }
 }
 
@@ -800,15 +802,17 @@ function copyBudgetToForm(detail: UsageBudgetDetail) {
   taskBudgetForm.warningPercent = String(detail.budget.warningPercent);
 }
 
-async function loadSelectedTaskBudget(taskId: string) {
-  taskBudgetError.value = "";
+async function loadSelectedTaskBudget(taskId: string, syncForm = true) {
+  if (syncForm) taskBudgetError.value = "";
   const response = await fetch(`/api/tasks/${taskId}/usage-budget`);
   if (!response.ok) {
-    taskBudgetError.value = "Could not load this task's budget.";
+    if (syncForm && selectedTask.value?.id === taskId) taskBudgetError.value = "Could not load this task's budget.";
     return;
   }
-  selectedTaskBudget.value = await response.json();
-  copyBudgetToForm(selectedTaskBudget.value!);
+  const result: UsageBudgetDetail = await response.json();
+  if (selectedTask.value?.id !== taskId) return;
+  selectedTaskBudget.value = result;
+  if (syncForm) copyBudgetToForm(result);
 }
 
 async function saveTaskBudget() {
@@ -1563,6 +1567,7 @@ async function updateAdrStatus(adr: Adr, status: AdrStatus) {
 
 async function selectTask(taskId: string) {
   taskError.value = "";
+  taskRefreshError.value = "";
   const response = await fetch(`/api/tasks/${taskId}`);
   if (!response.ok) {
     taskError.value = "Could not load the task.";
@@ -1576,6 +1581,36 @@ async function selectTask(taskId: string) {
   experimentError.value = "";
   await Promise.all([loadExperimentsForTask(), loadSelectedTaskUsage(taskId), loadSelectedTaskBudget(taskId)]);
   scheduleTaskRefresh();
+}
+
+async function refreshSelectedTaskStatus(taskId: string) {
+  if (selectedTask.value?.id !== taskId) return;
+  try {
+    const response = await fetch(`/api/tasks/${taskId}`);
+    if (!response.ok) {
+      taskRefreshError.value = "Could not get the latest task status. Retrying automatically.";
+      return;
+    }
+    const refreshedTask: BrainstormTask = await response.json();
+    if (selectedTask.value?.id !== taskId) return;
+
+    const previousStatus = selectedTask.value.status;
+    selectedTask.value = refreshedTask;
+    const index = tasks.value.findIndex((task) => task.id === taskId);
+    if (index >= 0) tasks.value[index] = refreshedTask;
+    taskRefreshError.value = "";
+
+    if (refreshedTask.status !== previousStatus) {
+      void Promise.allSettled([
+        loadSelectedTaskUsage(taskId, false),
+        loadSelectedTaskBudget(taskId, false),
+      ]);
+    }
+  } catch {
+    taskRefreshError.value = "Could not get the latest task status. Retrying automatically.";
+  } finally {
+    scheduleTaskRefresh();
+  }
 }
 
 async function loadExperimentsForTask() {
@@ -1664,10 +1699,15 @@ async function loadBrainstormReport() {
 }
 
 function scheduleTaskRefresh() {
-  if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
+  if (taskPollTimer !== null) {
+    window.clearTimeout(taskPollTimer);
+    taskPollTimer = null;
+  }
   if (!selectedTask.value || !["ANALYZING", "CROSS_REVIEW"].includes(selectedTask.value.status)) return;
-  taskPollTimer = window.setTimeout(async () => {
-    if (selectedTask.value) await selectTask(selectedTask.value.id);
+  const taskId = selectedTask.value.id;
+  taskPollTimer = window.setTimeout(() => {
+    taskPollTimer = null;
+    void refreshSelectedTaskStatus(taskId);
   }, 1500);
 }
 
@@ -2639,6 +2679,8 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
+
+            <p v-if="taskRefreshError" class="form-message error-text" role="status">{{ taskRefreshError }}</p>
 
             <div class="stage-track" aria-label="Workflow stages">
               <div :class="{ current: selectedTask.status === 'DRAFT', complete: selectedTask.status !== 'DRAFT' }" title="You've written the problem down, but the AIs haven't started thinking about it yet."><span>01</span><strong>Draft</strong></div>
