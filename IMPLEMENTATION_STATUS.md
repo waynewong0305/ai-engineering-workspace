@@ -169,6 +169,60 @@ tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm
 completed task at desktop and narrow widths, opened every disclosure, found zero overflowing
 descendants in the task pane, and found no browser warnings or errors.
 
+Later addition (2026-09-14): auditable question resolution, step 1 of 6 — schema, migration,
+lifecycle routes, and tests (the frontend cards/filters, report integration, `v2` structured
+suggestions, human-confirmed duplicate grouping, and optional legacy suggestion generation are
+tracked as follow-on units, not yet started). A `QUESTION`-typed evidence item previously had no
+lifecycle at all: `openQuestionCount` counted every such record forever, with no way to mark one
+answered, deferred, not applicable, or a duplicate short of reclassifying it away from `QUESTION`
+entirely (discarding that it was ever asked). New `question_details` (one row per `QUESTION`
+evidence item, 1:1 via `questionId`, carrying `status`/`whyItMatters`/`suggestedAction`/
+`expectedEvidence`/`suggestionSource`/`duplicateOfQuestionId`) and append-only `question_responses`
+(one row per lifecycle action, never overwritten — editing an answer means answering again) —
+genuine `CREATE TABLE`s, not `ALTER TABLE ... ADD COLUMN ... REFERENCES`, avoiding the known Phase 5
+SQLite FK-action bug. `ensureQuestionDetails` (`apps/server/src/services/question-details.ts`) is an
+idempotent upsert called from every place a `QUESTION` evidence item can be created or reclassified
+into (`POST`/`PATCH /api/tasks/:id/evidence[/...]` and `BrainstormWorkflow.addAnalysisEvidence`), so
+the invariant "every `QUESTION` evidence item has exactly one `question_details` row" holds
+regardless of entry point; a reclassified-away-and-back question keeps its original row and history.
+New `apps/server/src/routes/questions.ts` (`registerQuestionRoutes`, plain inline CRUD/state-machine
+logic matching `adrs.ts`'s established style, no separate service class) adds
+`POST .../questions/:questionId/{responses,reopen,defer,mark-not-applicable,confirm-duplicate}` and
+`DELETE .../duplicate-link`. State-machine rule (a design choice made while implementing this, not
+in the original request): `respond`/`defer`/`mark-not-applicable`/`confirm-duplicate` all require the
+question's current status to be `OPEN` (reopen it first otherwise); `reopen` requires the opposite.
+`confirm-duplicate` rejects a self-reference, a cross-task target, and chaining a duplicate onto
+another already-confirmed duplicate — a duplicate link always points at a canonical question in the
+same task. `openQuestionCount` (`GET /api/tasks` and `GET /api/tasks/:id`) now counts a `QUESTION`
+only while its `question_details.status` is `OPEN` and it carries no `duplicateOfQuestionId` (a
+missing `question_details` row, which should not occur given the invariant above, still counts as
+open rather than silently dropping out); `GET /api/tasks/:id` additionally returns
+`questionDetails: (QuestionDetailRecord & { responses: QuestionResponseRecord[] })[]` so a client can
+render status, suggestions, and full response history without a second round trip. Migration
+`0017_flawless_master_mold.sql` includes a hand-appended data backfill (same precedent as
+`0006_fix_agent_runs_worktree_fk.sql`) that gives every pre-existing `QUESTION` evidence item an
+`OPEN` `question_details` row with no invented suggestion content — verified against the real local
+database: 18 `QUESTION` evidence items, 18 backfilled `question_details` rows, original question text
+in `evidence_items` untouched. `USER_GUIDE.md`'s open-question badge description is updated to note
+that a question also stops counting once resolved or confirmed a duplicate (via the API today; the
+dedicated question-review screen is a follow-on unit, not yet built). Tests:
+`apps/server/src/routes/questions.test.ts` (9 new tests — invariant creation on both evidence-create
+and evidence-reclassify paths and its preservation across a reclassify-away-and-back round trip; the
+full respond/reopen/defer/mark-not-applicable lifecycle with open-count assertions at each step;
+confirm-duplicate/remove-duplicate-link without double-counting; rejecting action on a non-`OPEN`
+question and reopening an already-`OPEN` one; rejecting a self-duplicate, a cross-task duplicate, and
+duplicate-chaining; 404s for an unknown task/question and a real evidence item that isn't type
+`QUESTION`; the corrected count on both the list and detail endpoints; and cascade deletion of
+`question_details`/`question_responses` when the owning task is deleted, verified the same way the
+existing cascade-delete test does — through the API, not a raw DB query). Verified under Node
+22.23.2 with `npm test` (152 server tests, up from 143; 65 agent-package tests; 31 Git-package tests;
+9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
+db:generate` (reports the new migration only, confirms no further drift once committed), `npm run
+db:migrate` against the real local database, and `git diff --check`; all passed. No frontend change
+in this unit — the evidence board's existing `QUESTION` rendering and the sidebar badge are otherwise
+unchanged; browser verification is deferred to the follow-on unit that adds the dedicated question
+card UI.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

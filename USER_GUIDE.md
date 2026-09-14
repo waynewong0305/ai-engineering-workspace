@@ -318,7 +318,7 @@ first. It is also refused while a managed worktree is linked; safely remove the 
 **04 — Worktrees** and then retry. **Cancel workflow** only stops processing and keeps the task;
 it does not delete it.
 
-When you have several tasks going at once, each entry in the **Tasks** sidebar list shows an **N open question(s)** badge whenever its evidence board holds one or more `QUESTION` records, so you can tell at a glance which tasks still need a human to weigh in — without opening each one. A question stops counting once you reclassify it to a different record type (typically `DECISION`).
+When you have several tasks going at once, each entry in the **Tasks** sidebar list shows an **N open question(s)** badge whenever its evidence board holds one or more unresolved `QUESTION` records, so you can tell at a glance which tasks still need a human to weigh in — without opening each one. A question stops counting once you reclassify it to a different record type (typically `DECISION`), or once it has been answered, deferred, marked not applicable, or confirmed as a duplicate of another question — each `QUESTION` record now keeps its own resolution status and an append-only history of how it got there, reachable via the API today; a dedicated question-review screen on the task detail pane (**03 — Independent brainstorming**) is planned but not yet built.
 
 Claude's role is not to lead automatically, and Codex's role is not merely to approve. Either provider can be assigned as architect or skeptic. Cross-review should distinguish a factual error from a legitimate difference in engineering judgment.
 

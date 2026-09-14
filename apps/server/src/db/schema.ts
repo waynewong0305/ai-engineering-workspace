@@ -389,6 +389,55 @@ export const evidenceItems = sqliteTable("evidence_items", {
 
 export type EvidenceItemRecord = typeof evidenceItems.$inferSelect;
 
+export type QuestionStatus = "OPEN" | "ANSWERED" | "DEFERRED" | "NOT_APPLICABLE" | "DUPLICATE";
+export type QuestionSuggestionSource = "CLAUDE" | "CODEX" | "HUMAN";
+export type QuestionResponseSource = "HUMAN" | "EXPERIMENT" | "PROVIDER";
+
+/**
+ * One row per QUESTION-typed evidence item (1:1 via `questionId`, never a separate id) — the
+ * evidence item's own `content` stays the immutable original question text; everything about
+ * resolving it lives here instead, so the original is never overwritten. `taskId` is denormalized
+ * (matches `evidenceItems`' own precedent) so the open-count and list queries never need a join
+ * through `evidenceItems` just to filter by task. A missing row for a QUESTION evidence item should
+ * not happen (see `ensureQuestionDetails`), but callers treat that case as `OPEN` rather than
+ * dropping the question from any count.
+ */
+export const questionDetails = sqliteTable("question_details", {
+  questionId: text("question_id").primaryKey().references(() => evidenceItems.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  status: text("status", { enum: ["OPEN", "ANSWERED", "DEFERRED", "NOT_APPLICABLE", "DUPLICATE"] }).notNull().default("OPEN"),
+  whyItMatters: text("why_it_matters"),
+  suggestedAction: text("suggested_action"),
+  expectedEvidence: text("expected_evidence", { mode: "json" }).$type<string[] | null>(),
+  suggestionSource: text("suggestion_source", { enum: ["CLAUDE", "CODEX", "HUMAN"] }),
+  // Set together with status "DUPLICATE"; always points at a canonical (non-duplicate) question in
+  // the same task — see the confirm-duplicate route's validation in routes/questions.ts.
+  duplicateOfQuestionId: text("duplicate_of_question_id").references(() => evidenceItems.id, { onDelete: "set null" }),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [index("question_details_task_status_idx").on(table.taskId, table.status)]);
+
+export type QuestionDetailRecord = typeof questionDetails.$inferSelect;
+
+/**
+ * Append-only: editing an answer inserts another row rather than overwriting a prior one, so the
+ * full resolution history survives (see routes/questions.ts). No `updatedAt` — a response is never
+ * mutated once written.
+ */
+export const questionResponses = sqliteTable("question_responses", {
+  id: text("id").primaryKey(),
+  questionId: text("question_id").notNull().references(() => evidenceItems.id, { onDelete: "cascade" }),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  answer: text("answer").notNull(),
+  resultingStatus: text("resulting_status", { enum: ["OPEN", "ANSWERED", "DEFERRED", "NOT_APPLICABLE", "DUPLICATE"] }).notNull(),
+  linkedEvidenceItemId: text("linked_evidence_item_id").references(() => evidenceItems.id, { onDelete: "set null" }),
+  linkedExperimentId: text("linked_experiment_id").references(() => experiments.id, { onDelete: "set null" }),
+  source: text("source", { enum: ["HUMAN", "EXPERIMENT", "PROVIDER"] }).notNull().default("HUMAN"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("question_responses_question_created_idx").on(table.questionId, table.createdAt)]);
+
+export type QuestionResponseRecord = typeof questionResponses.$inferSelect;
+
 export type AdrStatus = "PROPOSED" | "ACCEPTED" | "REJECTED" | "SUPERSEDED";
 
 /**

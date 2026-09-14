@@ -8,17 +8,21 @@ import {
   agentRuns,
   evidenceItems,
   projects,
+  questionDetails,
+  questionResponses,
   taskArtifacts,
   taskComparisons,
   tasks,
   worktrees,
   type EvidenceType,
+  type QuestionDetailRecord,
   type RiskLevel,
   type TaskType,
 } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
 import { buildBrainstormPlanReport } from "../services/brainstorm-report.js";
 import { BrainstormWorkflow } from "../services/brainstorm-workflow.js";
+import { ensureQuestionDetails } from "../services/question-details.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
 import { UsageBudgetService } from "../services/usage-settings.js";
 
@@ -52,6 +56,14 @@ function text(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+// A QUESTION evidence item counts as "open" only while it hasn't been answered/deferred/marked
+// not-applicable/confirmed a duplicate. A QUESTION with no question_details row at all (should not
+// happen once ensureQuestionDetails runs on every creation path, but defensively handled) counts as
+// open rather than silently dropping out of the badge.
+function isQuestionOpen(detail: { status: QuestionDetailRecord["status"] | null; duplicateOfQuestionId: QuestionDetailRecord["duplicateOfQuestionId"] | null } | undefined) {
+  return (detail?.status ?? "OPEN") === "OPEN" && !detail?.duplicateOfQuestionId;
+}
+
 export function registerTaskRoutes(
   app: FastifyInstance,
   db: WorkspaceDatabase,
@@ -67,10 +79,16 @@ export function registerTaskRoutes(
     const rows = request.query.projectId
       ? query.where(eq(tasks.projectId, request.query.projectId)).orderBy(desc(tasks.createdAt)).all()
       : query.orderBy(desc(tasks.createdAt)).all();
-    // One pass over every QUESTION record rather than a per-task query — cheap for a local, single-user
-    // workspace's evidence volume, and avoids an N+1 query per row in the list a human scans across tasks.
+    // One pass over every QUESTION record (left-joined against its resolution status) rather than a
+    // per-task query — cheap for a local, single-user workspace's evidence volume, and avoids an
+    // N+1 query per row in the list a human scans across tasks.
     const openQuestionCounts = new Map<string, number>();
-    for (const item of db.select({ taskId: evidenceItems.taskId }).from(evidenceItems).where(eq(evidenceItems.type, "QUESTION")).all()) {
+    const questionRows = db.select({ taskId: evidenceItems.taskId, status: questionDetails.status, duplicateOfQuestionId: questionDetails.duplicateOfQuestionId })
+      .from(evidenceItems)
+      .leftJoin(questionDetails, eq(questionDetails.questionId, evidenceItems.id))
+      .where(eq(evidenceItems.type, "QUESTION")).all();
+    for (const item of questionRows) {
+      if (!isQuestionOpen(item)) continue;
       openQuestionCounts.set(item.taskId, (openQuestionCounts.get(item.taskId) ?? 0) + 1);
     }
     return rows.map((task) => ({ ...task, openQuestionCount: openQuestionCounts.get(task.id) ?? 0 }));
@@ -80,13 +98,23 @@ export function registerTaskRoutes(
     const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
     if (!task) return reply.code(404).send({ message: "Task not found." });
     const evidence = db.select().from(evidenceItems).where(eq(evidenceItems.taskId, task.id)).orderBy(asc(evidenceItems.createdAt)).all();
+    const details = db.select().from(questionDetails).where(eq(questionDetails.taskId, task.id)).all();
+    const detailsByQuestionId = new Map(details.map((detail) => [detail.questionId, detail]));
+    const responses = db.select().from(questionResponses).where(eq(questionResponses.taskId, task.id)).orderBy(asc(questionResponses.createdAt)).all();
+    const responsesByQuestionId = new Map<string, typeof responses>();
+    for (const response of responses) {
+      const list = responsesByQuestionId.get(response.questionId) ?? [];
+      list.push(response);
+      responsesByQuestionId.set(response.questionId, list);
+    }
     return {
       ...task,
       runs: db.select().from(agentRuns).where(eq(agentRuns.taskId, task.id)).orderBy(asc(agentRuns.createdAt)).all(),
       artifacts: db.select().from(taskArtifacts).where(eq(taskArtifacts.taskId, task.id)).orderBy(asc(taskArtifacts.createdAt)).all(),
       evidence,
       comparison: db.select().from(taskComparisons).where(eq(taskComparisons.taskId, task.id)).get()?.content ?? null,
-      openQuestionCount: evidence.filter((item) => item.type === "QUESTION").length,
+      questionDetails: details.map((detail) => ({ ...detail, responses: responsesByQuestionId.get(detail.questionId) ?? [] })),
+      openQuestionCount: evidence.filter((item) => item.type === "QUESTION" && isQuestionOpen(detailsByQuestionId.get(item.id))).length,
     };
   });
 
@@ -260,6 +288,7 @@ export function registerTaskRoutes(
     const now = new Date().toISOString();
     const item = { id: randomUUID(), taskId: task.id, type, content, sourceProvider: null, sourceArtifactId: null, createdAt: now, updatedAt: now };
     db.insert(evidenceItems).values(item).run();
+    if (type === "QUESTION") ensureQuestionDetails(db, item.id, task.id);
     return reply.code(201).send(item);
   });
 
@@ -270,6 +299,7 @@ export function registerTaskRoutes(
     const content = request.body?.content === undefined ? current.content : text(request.body.content);
     if (!type || !EVIDENCE_TYPES.has(type) || !content) return reply.code(400).send({ message: "A valid record type and content are required." });
     db.update(evidenceItems).set({ type, content, updatedAt: new Date().toISOString() }).where(eq(evidenceItems.id, current.id)).run();
+    if (type === "QUESTION") ensureQuestionDetails(db, current.id, current.taskId);
     return db.select().from(evidenceItems).where(eq(evidenceItems.id, current.id)).get();
   });
 }

@@ -19,6 +19,7 @@ import {
   type TaskRecord,
 } from "../db/schema.js";
 import { AgentRunManager } from "./agent-run-manager.js";
+import { ensureQuestionDetails } from "./question-details.js";
 import { extractJson, MAX_ITEM_CHARS, record, strings } from "./structured-output.js";
 import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
 import { UsageBudgetCheckpointError, type UsageBudgetService } from "./usage-settings.js";
@@ -388,10 +389,12 @@ export class BrainstormWorkflow {
     ];
     for (const [type, values] of groups) {
       for (const content of values) {
+        const id = randomUUID();
         this.db.insert(evidenceItems).values({
-          id: randomUUID(), taskId, type, content, sourceProvider: provider,
+          id, taskId, type, content, sourceProvider: provider,
           sourceArtifactId: artifactId, createdAt: now, updatedAt: now,
         }).run();
+        if (type === "QUESTION") ensureQuestionDetails(this.db, id, taskId);
       }
     }
   }
