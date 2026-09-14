@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { AgentAdapter, AgentProvider } from "@aiew/agents";
 import type { FastifyInstance } from "fastify";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
+  adrs,
   agentRuns,
   evidenceItems,
   projects,
   taskArtifacts,
   taskComparisons,
   tasks,
+  worktrees,
   type EvidenceType,
   type RiskLevel,
   type TaskType,
@@ -36,6 +38,10 @@ type StartTaskBody = {
   codexModel?: unknown;
   claudeEffort?: unknown;
   timeoutMs?: unknown;
+};
+
+type DeleteTaskBody = {
+  confirm?: unknown;
 };
 
 const TASK_TYPES = new Set<TaskType>(["BRAINSTORM", "ARCHITECTURE"]);
@@ -196,6 +202,52 @@ export function registerTaskRoutes(
     return await workflow.cancel(request.params.id)
       ? reply.code(202).send({ message: "Task cancellation requested." })
       : reply.code(409).send({ message: "Task is not running." });
+  });
+
+  app.delete<{ Params: { id: string }; Body: DeleteTaskBody }>("/api/tasks/:id", async (request, reply) => {
+    const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
+    if (!task) return reply.code(404).send({ message: "Task not found." });
+    if (request.body?.confirm !== true) {
+      return reply.code(400).send({
+        message: "Explicit confirmation is required to delete this task and its local history.",
+        code: "CONFIRMATION_REQUIRED",
+      });
+    }
+
+    const activeRun = db.select({ id: agentRuns.id })
+      .from(agentRuns)
+      .where(and(eq(agentRuns.taskId, task.id), inArray(agentRuns.status, ["QUEUED", "RUNNING"])))
+      .get();
+    if (["ANALYZING", "CROSS_REVIEW"].includes(task.status) || activeRun) {
+      return reply.code(409).send({
+        message: "Cancel or wait for active agent runs before deleting this task.",
+        code: "ACTIVE_RUNS",
+      });
+    }
+
+    const linkedWorktree = db.select({ id: worktrees.id }).from(worktrees).where(eq(worktrees.taskId, task.id)).get();
+    if (linkedWorktree) {
+      return reply.code(409).send({
+        message: "Remove this task's managed worktrees from the Worktrees screen before deleting it.",
+        code: "WORKTREES_LINKED",
+      });
+    }
+
+    const now = new Date().toISOString();
+    db.transaction((transaction) => {
+      const ownedAdrIds = transaction.select({ id: adrs.id }).from(adrs).where(eq(adrs.taskId, task.id)).all().map((adr) => adr.id);
+      if (ownedAdrIds.length) {
+        transaction.update(tasks).set({ originAdrId: null, updatedAt: now }).where(inArray(tasks.originAdrId, ownedAdrIds)).run();
+      }
+      for (const adr of transaction.select().from(adrs).all()) {
+        const relatedTaskIds = adr.relatedTaskIds.filter((taskId) => taskId !== task.id);
+        if (relatedTaskIds.length !== adr.relatedTaskIds.length) {
+          transaction.update(adrs).set({ relatedTaskIds, updatedAt: now }).where(eq(adrs.id, adr.id)).run();
+        }
+      }
+      transaction.delete(tasks).where(eq(tasks.id, task.id)).run();
+    });
+    return reply.code(204).send();
   });
 
   app.post<{ Params: { id: string }; Body: { type?: unknown; content?: unknown } }>("/api/tasks/:id/evidence", async (request, reply) => {

@@ -101,6 +101,37 @@ class FakeBrainstormAdapter implements AgentAdapter {
   async cancel() {}
 }
 
+class PausedBrainstormAdapter implements AgentAdapter {
+  constructor(readonly name: AgentProvider, private readonly release: Promise<void>) {}
+
+  async healthCheck(): Promise<AgentHealth> {
+    return {
+      provider: this.name, available: true, authenticated: true, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+      capabilities: { structuredOutput: true, sessionResume: false, dynamicModelDiscovery: false, availableModels: null, availableEffortLevels: null },
+    };
+  }
+
+  async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+    const occurredAt = new Date().toISOString();
+    recordStart(input.promptVersion, this.name);
+    yield { type: "started", runId: input.runId, occurredAt };
+    await waitForPair(input.promptVersion);
+    await this.release;
+    const output = input.promptVersion.startsWith("brainstorm") ? analysis(this.name) : review(this.name);
+    yield { type: "stdout", runId: input.runId, occurredAt, chunk: output };
+    yield {
+      type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+      metadata: {
+        provider: this.name, requestedModel: input.model.requested, actualModel: `fake-${this.name.toLowerCase()}`,
+        effort: input.model.effort ?? null, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+        promptVersion: input.promptVersion, webAccessPermitted: input.webAccess.permitted === true,
+      },
+    };
+  }
+
+  async cancel() {}
+}
+
 async function createTestRepository() {
   const repositoryPath = await mkdtemp(join(tmpdir(), "aiew-task-repo-"));
   await execFileAsync("git", ["init", "-b", "main", repositoryPath]);
@@ -187,6 +218,12 @@ describe("brainstorm task routes", () => {
       method: "PATCH", url: `/api/tasks/${created.id}/evidence/${evidence.id}`, payload: { content: "Use a versioned tenant-to-shard map." },
     });
     expect(updateResponse.json().content).toBe("Use a versioned tenant-to-shard map.");
+
+    const deletion = await app.inject({ method: "DELETE", url: `/api/tasks/${created.id}`, payload: { confirm: true } });
+    expect(deletion.statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/tasks/${created.id}` })).statusCode).toBe(404);
+    const retainedRuns = (await app.inject({ method: "GET", url: `/api/agent-runs?projectId=${project.id}` })).json();
+    expect(retainedRuns.filter((run: { taskId: string | null }) => run.taskId === created.id)).toEqual([]);
   });
 
   it("requires an explicit per-task web-access decision", async () => {
@@ -201,6 +238,143 @@ describe("brainstorm task routes", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json().message).toContain("web-access decision");
+  });
+
+  it("requires confirmation, then deletes a task and its dependent local history without touching Git", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const repositoryPath = await createTestRepository();
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Disposable draft", problemStatement: "Remove this local plan.",
+        type: "BRAINSTORM", riskLevel: "LOW", webAccessPermitted: false,
+      },
+    })).json();
+    await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/evidence`, payload: { type: "FACT", content: "Temporary evidence." },
+    });
+
+    const unconfirmed = await app.inject({ method: "DELETE", url: `/api/tasks/${task.id}`, payload: { confirm: false } });
+    expect(unconfirmed.statusCode).toBe(400);
+    expect(unconfirmed.json().code).toBe("CONFIRMATION_REQUIRED");
+
+    const deletion = await app.inject({ method: "DELETE", url: `/api/tasks/${task.id}`, payload: { confirm: true } });
+    expect(deletion.statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/tasks?projectId=${project.id}` })).json()).toEqual([]);
+    expect((await execFileAsync("git", ["-C", repositoryPath, "status", "--porcelain=v1"])).stdout).toBe("");
+  });
+
+  it("refuses to delete a task while its brainstorm agent runs are active", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new PausedBrainstormAdapter("CLAUDE", gate), new PausedBrainstormAdapter("CODEX", gate)],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Active plan", problemStatement: "Keep this while providers are running.",
+        type: "BRAINSTORM", riskLevel: "MEDIUM", webAccessPermitted: false,
+      },
+    })).json();
+
+    await acknowledgeUnknownUsage(app);
+    expect((await app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} })).statusCode).toBe(202);
+    const deletion = await app.inject({ method: "DELETE", url: `/api/tasks/${task.id}`, payload: { confirm: true } });
+    expect(deletion.statusCode).toBe(409);
+    expect(deletion.json().code).toBe("ACTIVE_RUNS");
+    expect((await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).statusCode).toBe(200);
+
+    release();
+    let finalStatus = "";
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+      finalStatus = detail.status;
+      if (["READY", "FAILED"].includes(detail.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(finalStatus).toBe("READY");
+  });
+
+  it("removes loose ADR references instead of leaving dangling plan links", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const createTask = async (title: string) => (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title, problemStatement: `${title} context.`,
+        type: "ARCHITECTURE", riskLevel: "MEDIUM", webAccessPermitted: false,
+      },
+    })).json();
+    const sourceTask = await createTask("Source plan");
+    const survivingTask = await createTask("Surviving plan");
+    const adrPayload = {
+      title: "Shard routing", context: "Storage is constrained.", optionsConsidered: "Hashing or explicit mapping.",
+      decision: "Use explicit mapping.", reasons: "Controlled migration.", consequences: "Maintain a registry.",
+    };
+    const ownedAdr = (await app.inject({
+      method: "POST", url: `/api/tasks/${sourceTask.id}/adrs`, payload: adrPayload,
+    })).json();
+    const promotedTask = (await app.inject({
+      method: "POST", url: `/api/adrs/${ownedAdr.id}/promote`,
+      payload: { title: "Build shard registry", problemStatement: "Implement the chosen registry." },
+    })).json();
+    const survivingAdr = (await app.inject({
+      method: "POST", url: `/api/tasks/${survivingTask.id}/adrs`,
+      payload: { ...adrPayload, title: "Related rollout", relatedTaskIds: [sourceTask.id] },
+    })).json();
+
+    expect((await app.inject({
+      method: "DELETE", url: `/api/tasks/${sourceTask.id}`, payload: { confirm: true },
+    })).statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/adrs/${ownedAdr.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/tasks/${promotedTask.id}` })).json().originAdrId).toBeNull();
+    expect((await app.inject({ method: "GET", url: `/api/adrs/${survivingAdr.id}` })).json().relatedTaskIds).toEqual([]);
+  });
+
+  it("refuses to delete a task until its managed worktree is safely removed", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Worktree-backed plan", problemStatement: "Protect the managed checkout.",
+        type: "ARCHITECTURE", riskLevel: "HIGH", webAccessPermitted: false,
+      },
+    })).json();
+    const proposals = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/worktrees/preview` })).json().proposals;
+    const proposal = proposals.find((item: { provider: AgentProvider }) => item.provider === "CLAUDE");
+    const worktree = (await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/worktrees`, payload: proposal,
+    })).json();
+
+    const blocked = await app.inject({ method: "DELETE", url: `/api/tasks/${task.id}`, payload: { confirm: true } });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().code).toBe("WORKTREES_LINKED");
+    expect(blocked.json().message).toContain("Worktrees screen");
+
+    expect((await app.inject({
+      method: "DELETE", url: `/api/worktrees/${worktree.id}`, payload: { confirm: true, deleteBranch: false },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "DELETE", url: `/api/tasks/${task.id}`, payload: { confirm: true },
+    })).statusCode).toBe(204);
   });
 
   it("keeps the task in draft when either provider is not ready", async () => {

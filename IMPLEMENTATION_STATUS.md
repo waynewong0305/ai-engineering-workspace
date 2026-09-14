@@ -122,6 +122,26 @@ Later addition (2026-09-13): a brainstorm plan export, modeled on the build work
 
 Later addition (2026-09-13): with several tasks running at once there was no way to tell which needed human attention without opening each one individually, so `GET /api/tasks` and `GET /api/tasks/:id` now both return `openQuestionCount` (a count of the task's `evidence_items` rows of type `QUESTION`, computed in application code rather than a SQL aggregate, matching this route file's existing style) and the task-list sidebar item in `App.vue` shows an amber "N open question(s)" badge whenever that count is nonzero. A question stops counting the moment a human reclassifies it away from `QUESTION` (typically to `DECISION`) through the evidence board's existing edit flow — no new state was added. No schema change. Verified with two new assertions in `tasks.test.ts` (the list endpoint and the detail endpoint both report the count derived from the fake-adapter workflow's real evidence), the full verification list, and manual browser verification (added a `QUESTION` record through the UI, confirmed the badge appeared, then removed that test record from the local database directly since there is no delete-evidence endpoint yet).
 
+Later addition (2026-09-14): individual brainstorm/architecture plans can now be permanently deleted
+from their detail pane after a native confirmation prompt. `DELETE /api/tasks/:id` also requires
+server-side `{ confirm: true }`, refuses deletion while the task is analyzing/cross-reviewing or any
+linked agent run remains queued/running, and refuses deletion while any managed worktree record is
+linked. This keeps cancellation distinct from deletion and prevents a database cascade from
+orphaning real Git state; once safe, dependent local history is removed through the existing
+foreign-key cascades and the registered repository is untouched. Transactional cleanup also removes
+the deleted task from surviving ADRs' loose related-task lists and clears surviving promoted tasks'
+origin link when their owning ADR is cascaded, avoiding dangling plan references. The UI clears task-specific
+selection/report/usage state, reloads the remaining task list and usage dashboard, and includes the
+required plain-language tooltip plus a small-screen layout for the new action. Covered by route
+tests for required confirmation, completed-plan history cleanup, active-run refusal, managed-
+worktree refusal and retry after safe worktree removal. Verified with `npm test` (143 server tests,
+65 agent-package tests, 31 Git-package tests, and 9 policy-script tests), `npm run typecheck`, `npm
+run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema changes), and `git diff
+--check`; all passed under Node 22.23.2. Manual browser verification confirmed the status/delete
+action alignment and plain-language tooltip at desktop width and the stacked 390px layout without
+horizontal overflow; the destructive confirmation was not accepted against the user's real local
+task data.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

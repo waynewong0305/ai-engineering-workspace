@@ -276,6 +276,12 @@ FEATURE
 Add promotion versioning workflow
 ```
 
+A user may explicitly delete a task and its dependent local workspace history. Deletion requires
+confirmation, is refused while any linked agent run is active, and is refused while any managed
+worktree record remains linked to the task. The user must safely remove those worktrees first so
+deleting a database record can never orphan real Git work. Task deletion never deletes or modifies
+the registered repository itself.
+
 ---
 
 # 7. Agent abstraction

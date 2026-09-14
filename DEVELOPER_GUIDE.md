@@ -169,6 +169,16 @@ Settings resolution order is role override, task override, project default, glob
 
 The Phase 3 `BrainstormWorkflow` service currently lives in the server beside the run manager. It persists `DRAFT → ANALYZING → CROSS_REVIEW → READY`, with `FAILED` and `CANCELLED` terminal paths. Move the stable, multi-workflow state-machine contract into `packages/core` when Phase 4/5 introduces additional task types and transitions.
 
+`DELETE /api/tasks/:id` is the explicit task-lifecycle cleanup path. It requires `{ confirm: true }`,
+refuses `ANALYZING`/`CROSS_REVIEW` tasks or any linked `QUEUED`/`RUNNING` agent run, and refuses any
+linked managed worktree. Once those guards pass, SQLite cascades the task's dependent local run,
+artifact, comparison, evidence, budget, experiment, build, review, and ADR records. The worktree
+guard is essential: a database cascade must never stand in for Git-aware worktree cleanup or leave
+an untracked checkout/branch behind. The delete runs transactionally and also removes the deleted
+task from surviving ADRs' loose `relatedTaskIds` arrays; if deleting the task cascades an ADR that
+had already promoted implementation tasks, those surviving tasks have `originAdrId` cleared rather
+than retaining a dangling provenance link.
+
 Transitions are explicit and integration-tested. Refreshing the browser reconstructs state from SQLite. Long-running work is represented by run records and events, not in-memory UI state. Cancellation is a terminal run result distinct from failure.
 
 Independent brainstorm branches must be scheduled from the same user problem without exposing one provider's output to the other. Cross-review begins only after both original analyses are durably stored.

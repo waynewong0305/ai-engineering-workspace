@@ -553,6 +553,7 @@ const taskError = ref("");
 const taskMessage = ref("");
 const creatingTask = ref(false);
 const startingTask = ref(false);
+const deletingTaskId = ref("");
 const evidenceType = ref<EvidenceItem["type"]>("FACT");
 const evidenceContent = ref("");
 const editingEvidenceId = ref("");
@@ -1768,6 +1769,56 @@ async function cancelBrainstorm() {
   await selectTask(selectedTask.value.id);
 }
 
+async function deleteTask() {
+  if (!selectedTask.value) return;
+  const task = selectedTask.value;
+  const confirmed = window.confirm(
+    `Delete “${task.title}”? This permanently removes the task, its agent-run history, reports, evidence, experiments, builds, and linked decisions from AI Engineering Workspace. Your Git repository and files will not be changed.`,
+  );
+  if (!confirmed) return;
+
+  deletingTaskId.value = task.id;
+  taskError.value = "";
+  taskMessage.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${task.id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.message ?? "Could not delete the task.");
+    }
+
+    if (taskPollTimer !== null) window.clearTimeout(taskPollTimer);
+    if (experimentPollTimer !== null) window.clearTimeout(experimentPollTimer);
+    tasks.value = tasks.value.filter((item) => item.id !== task.id);
+    selectedTask.value = null;
+    brainstormReport.value = null;
+    selectedTaskUsage.value = null;
+    selectedTaskBudget.value = null;
+    experimentsForTask.value = [];
+    if (selectedWorktreeTaskId.value === task.id) selectedWorktreeTaskId.value = "";
+    if (selectedBuildTaskId.value === task.id) {
+      selectedBuildTaskId.value = "";
+      builds.value = [];
+      selectedBuild.value = null;
+    }
+    if (selectedAdrTaskId.value === task.id) {
+      selectedAdrTaskId.value = "";
+      adrsForTask.value = [];
+    }
+    if (usageDashboardTaskId.value === task.id) usageDashboardTaskId.value = "";
+    taskMessage.value = `Deleted “${task.title}”. Its Git repository and files were not changed.`;
+    await Promise.all([loadTasks(), loadUsageDashboard()]);
+  } catch (error) {
+    taskError.value = error instanceof Error ? error.message : "Could not delete the task.";
+  } finally {
+    deletingTaskId.value = "";
+  }
+}
+
 async function addEvidence() {
   if (!selectedTask.value || !evidenceContent.value.trim()) return;
   const response = await fetch(`/api/tasks/${selectedTask.value.id}/evidence`, {
@@ -2581,7 +2632,12 @@ onUnmounted(() => {
                 <h3>{{ selectedTask.title }}</h3>
                 <p>{{ selectedTask.problemStatement }}</p>
               </div>
-              <span :class="['task-status', selectedTask.status.toLowerCase()]" title="Where this task currently is in its workflow — see the four steps below for what each stage means.">{{ selectedTask.status }}</span>
+              <div class="task-detail-actions">
+                <span :class="['task-status', selectedTask.status.toLowerCase()]" title="Where this task currently is in its workflow — see the four steps below for what each stage means.">{{ selectedTask.status }}</span>
+                <button class="text-button danger-button" type="button" :disabled="deletingTaskId === selectedTask.id" @click="deleteTask" title="Permanently remove this task and its local history. Active AI runs and managed worktrees must be stopped or cleaned up first; your Git repository is never deleted.">
+                  {{ deletingTaskId === selectedTask.id ? "Deleting…" : "Delete task" }}
+                </button>
+              </div>
             </div>
 
             <div class="stage-track" aria-label="Workflow stages">
