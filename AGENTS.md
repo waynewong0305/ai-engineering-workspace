@@ -29,13 +29,14 @@ protects, and the UI it will drive) was evaluated in detail and deliberately def
 unstarted by oversight — see `IMPLEMENTATION_STATUS.md`'s record before reconsidering it. Recovery,
 database backup/restore, cleanup diagnostics, and audit export are complete. Usage, token, and cost
 monitoring (Phase 8, spec in `USAGE_MONITORING_SPEC.md`) was pulled forward by explicit human
-instruction and has its first slices done: exact usage-safety readings from Claude's structured
+instruction and is complete: exact usage-safety readings from Claude's structured
 output and Codex's documented App Server account-rate-limit method, per-run token capture (both
 providers) with historical backfill, versioned API-equivalent cost calculation, and the
 workspace/project/task/run dashboard with cross-review and efficiency breakdowns. Codex's
 `exec --json` invocation still does not expose plan percentages, but `account/rateLimits/read`
-does without starting a model turn. Task budgets and the Usage & Cost settings UI remain — see
-`IMPLEMENTATION_STATUS.md`'s record for the full detail.
+does without starting a model turn. Task-level preset/custom budgets, audited budget checkpoints,
+and the Usage & Cost settings/pricing editor are also complete — see `IMPLEMENTATION_STATUS.md`'s
+record for the full detail.
 
 ## Source-of-truth specifications
 

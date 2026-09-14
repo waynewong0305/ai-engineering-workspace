@@ -25,6 +25,7 @@ import {
 import { AgentRunManager } from "./agent-run-manager.js";
 import { extractJson, record } from "./structured-output.js";
 import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
+import { UsageBudgetCheckpointError, type UsageBudgetService } from "./usage-settings.js";
 import type { WorktreeUsageManager } from "./worktree-usage-manager.js";
 
 const BUILD_VERSION = "experiment-builder:v1";
@@ -81,6 +82,7 @@ export class ExperimentWorkflow {
     private readonly worktreeService: WorktreeService,
     private readonly worktreeUsageManager: WorktreeUsageManager,
     private readonly usageSafety?: UsageSafetyService,
+    private readonly usageBudgets?: UsageBudgetService,
   ) {}
 
   async start(experimentId: string, options: ExperimentOptions = {}) {
@@ -88,6 +90,17 @@ export class ExperimentWorkflow {
     if (!experiment || experiment.status !== "RUNNING") return;
     try {
       await this.pipeline(experiment, options);
+    } catch (error) {
+      this.handleWorkflowError(experiment.id, error);
+    }
+  }
+
+  async resume(experimentId: string, options: ExperimentOptions = {}) {
+    const experiment = this.getExperiment(experimentId);
+    if (!experiment || experiment.status !== "CHECKPOINTED") return;
+    try {
+      this.updateStatus(experiment.id, experiment.diffUnstaged !== null ? "REVIEWING" : "RUNNING");
+      await this.pipeline(this.getExperiment(experiment.id)!, options);
     } catch (error) {
       this.handleWorkflowError(experiment.id, error);
     }
@@ -142,6 +155,7 @@ export class ExperimentWorkflow {
     const adapter = this.adapters.get(experiment.builderProvider);
     if (!adapter) throw new Error(`${experiment.builderProvider} adapter is unavailable.`);
     await this.usageSafety?.assertReady(experiment.builderProvider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
 
     const prompt = replace(builderTemplate, {
       TITLE: task.title,
@@ -179,6 +193,7 @@ export class ExperimentWorkflow {
     const adapter = this.adapters.get(experiment.reviewerProvider);
     if (!adapter) throw new Error(`${experiment.reviewerProvider} adapter is unavailable.`);
     await this.usageSafety?.assertReady(experiment.reviewerProvider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
 
     const builderRun = experiment.builderRunId ? this.db.select().from(agentRuns).where(eq(agentRuns.id, experiment.builderRunId)).get() : null;
     const diffText = `${experiment.diffStaged ?? ""}${experiment.diffUnstaged ?? ""}`.trim() || "(no changes were detected in the worktree)";
@@ -267,7 +282,7 @@ export class ExperimentWorkflow {
   }
 
   private handleWorkflowError(experimentId: string, error: unknown) {
-    if (error instanceof UsageCheckpointError) {
+    if (error instanceof UsageCheckpointError || error instanceof UsageBudgetCheckpointError) {
       this.db.update(experiments).set({ status: "CHECKPOINTED", errorMessage: error.message, updatedAt: new Date().toISOString() }).where(eq(experiments.id, experimentId)).run();
       return;
     }

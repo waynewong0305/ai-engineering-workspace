@@ -95,6 +95,7 @@ export function usageRecordValues(
   billingMode: "subscription" | "api" | "credits" | "unknown",
   actualModel: string | null,
   createdAt = new Date().toISOString(),
+  storeRawTelemetry = true,
 ) {
   const model = actualModel ?? (run.requestedModel === "(provider default)" ? null : run.requestedModel);
   const price = tokenUsage ? resolvePricingEntry(db, run.provider, model, createdAt) : null;
@@ -126,7 +127,7 @@ export function usageRecordValues(
     costCalculatedAt: cost ? createdAt : null,
     billingMode,
     usageSource: tokenUsage ? "provider_reported" as const : "unavailable" as const,
-    rawUsageMetadata: tokenUsage ? (tokenUsage as unknown as Record<string, unknown>) : null,
+    rawUsageMetadata: tokenUsage && storeRawTelemetry ? (tokenUsage as unknown as Record<string, unknown>) : null,
     createdAt,
   };
 }

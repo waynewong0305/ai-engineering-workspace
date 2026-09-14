@@ -21,6 +21,7 @@ import {
 import { AgentRunManager } from "./agent-run-manager.js";
 import { extractJson, MAX_ITEM_CHARS, record, strings } from "./structured-output.js";
 import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
+import { UsageBudgetCheckpointError, type UsageBudgetService } from "./usage-settings.js";
 
 const ANALYSIS_VERSION = "brainstorm-analysis:v1";
 const REVIEW_VERSION = "cross-review:v1";
@@ -117,6 +118,7 @@ function compare(analyses: BrainstormAnalysis[], reviews: CrossReview[]): TaskCo
 }
 
 type StoredAnalysis = { provider: AgentProvider; data: BrainstormAnalysis | null };
+type StoredReview = { provider: AgentProvider; data: CrossReview | null };
 
 export class BrainstormWorkflow {
   constructor(
@@ -124,6 +126,7 @@ export class BrainstormWorkflow {
     private readonly manager: AgentRunManager,
     private readonly adapters: Map<AgentProvider, AgentAdapter>,
     private readonly usageSafety?: UsageSafetyService,
+    private readonly usageBudgets?: UsageBudgetService,
   ) {}
 
   async start(taskId: string, options: WorkflowOptions = {}) {
@@ -200,15 +203,35 @@ export class BrainstormWorkflow {
       PROJECT_CONTEXT: projectContext ?? "No project context was supplied.",
       PROBLEM_STATEMENT: task.problemStatement,
     });
-    const analysisRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) =>
-      this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options),
-    ));
-    if (this.isCancelled(task.id)) return null;
-    const analyses = analysisRuns.map((run) => this.storeAnalysis(task, run));
-    if (analysisRuns.some((run) => run.status !== "COMPLETED") || analyses.some((entry) => !entry.data)) {
-      this.fail(task.id, "One or more independent analyses failed or returned invalid structured output.");
-      return null;
+    const existing = this.db.select().from(taskArtifacts).where(and(
+      eq(taskArtifacts.taskId, task.id), eq(taskArtifacts.kind, "ANALYSIS"),
+    )).all();
+    const analysesByProvider = new Map<AgentProvider, StoredAnalysis>(existing.flatMap((artifact) => artifact.structuredData
+      ? [[artifact.provider, { provider: artifact.provider, data: artifact.structuredData as BrainstormAnalysis }] as const]
+      : []));
+    const missingProviders = (["CLAUDE", "CODEX"] as const).filter((provider) => !analysesByProvider.has(provider));
+    const parallel = this.usageBudgets?.assertBatchReady(task.id, missingProviders.length) ?? true;
+    const storeRun = (run: AgentRunRecord) => {
+      const stored = this.storeAnalysis(task, run);
+      if (run.status !== "COMPLETED" || !stored.data) {
+        this.fail(task.id, "One or more independent analyses failed or returned invalid structured output.");
+        return false;
+      }
+      analysesByProvider.set(run.provider, stored);
+      return true;
+    };
+    if (parallel) {
+      const runs = await Promise.all(missingProviders.map((provider) =>
+        this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options)));
+      if (runs.some((run) => !storeRun(run))) return null;
+    } else {
+      for (const provider of missingProviders) {
+        const run = await this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options);
+        if (!storeRun(run)) return null;
+      }
     }
+    if (this.isCancelled(task.id)) return null;
+    const analyses = (["CLAUDE", "CODEX"] as const).map((provider) => analysesByProvider.get(provider)!);
     this.updateStatus(task.id, "CROSS_REVIEW");
     return analyses;
   }
@@ -221,7 +244,15 @@ export class BrainstormWorkflow {
   ) {
     await this.assertPhaseReady(["CLAUDE", "CODEX"]);
     const byProvider = new Map(analyses.map((entry) => [entry.provider, entry]));
-    const reviewRuns = await Promise.all((["CLAUDE", "CODEX"] as const).map((provider) => {
+    const existing = this.db.select().from(taskArtifacts).where(and(
+      eq(taskArtifacts.taskId, task.id), eq(taskArtifacts.kind, "CROSS_REVIEW"),
+    )).all();
+    const reviewsByProvider = new Map<AgentProvider, StoredReview>(existing.flatMap((artifact) => artifact.structuredData
+      ? [[artifact.provider, { provider: artifact.provider, data: artifact.structuredData as CrossReview }] as const]
+      : []));
+    const missingProviders = (["CLAUDE", "CODEX"] as const).filter((provider) => !reviewsByProvider.has(provider));
+    const parallel = this.usageBudgets?.assertBatchReady(task.id, missingProviders.length) ?? true;
+    const runReview = (provider: AgentProvider) => {
       const targetProvider = provider === "CLAUDE" ? "CODEX" : "CLAUDE";
       const target = byProvider.get(targetProvider)!;
       const prompt = replace(reviewTemplate, {
@@ -231,12 +262,27 @@ export class BrainstormWorkflow {
         ANALYSIS: JSON.stringify(target.data, null, 2),
       });
       return this.run(task, repositoryPath, provider, "CROSS_REVIEW", targetProvider, REVIEW_VERSION, prompt, options);
-    }));
-    if (this.isCancelled(task.id)) return;
-    const reviews = reviewRuns.map((run) => this.storeReview(task, run));
-    if (reviewRuns.some((run) => run.status !== "COMPLETED") || reviews.some((entry) => !entry.data)) {
-      return this.fail(task.id, "One or more cross-reviews failed or returned invalid structured output.");
+    };
+    const storeRun = (run: AgentRunRecord) => {
+      const stored = this.storeReview(task, run);
+      if (run.status !== "COMPLETED" || !stored.data) {
+        this.fail(task.id, "One or more cross-reviews failed or returned invalid structured output.");
+        return false;
+      }
+      reviewsByProvider.set(run.provider, stored);
+      return true;
+    };
+    if (parallel) {
+      const runs = await Promise.all(missingProviders.map(runReview));
+      if (runs.some((run) => !storeRun(run))) return;
+    } else {
+      for (const provider of missingProviders) {
+        const run = await runReview(provider);
+        if (!storeRun(run)) return;
+      }
     }
+    if (this.isCancelled(task.id)) return;
+    const reviews = (["CLAUDE", "CODEX"] as const).map((provider) => reviewsByProvider.get(provider)!);
 
     const comparison = compare(
       analyses.map((entry) => entry.data!),
@@ -247,7 +293,7 @@ export class BrainstormWorkflow {
   }
 
   private handleWorkflowError(taskId: string, error: unknown) {
-    if (error instanceof UsageCheckpointError) {
+    if (error instanceof UsageCheckpointError || error instanceof UsageBudgetCheckpointError) {
       this.checkpoint(taskId, error.message);
       return;
     }
@@ -282,6 +328,7 @@ export class BrainstormWorkflow {
     // at the start of the workflow: this call site covers both independent-analysis and
     // cross-review runs for both providers.
     await this.usageSafety?.assertReady(provider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
     const now = new Date().toISOString();
     const requestedModel = options.models?.[provider]?.trim() || "(provider default)";
     const run: AgentRunRecord = {

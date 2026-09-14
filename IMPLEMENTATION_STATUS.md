@@ -4,7 +4,7 @@ Last updated: 2026-09-14
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. Phase 8 is underway: automatic token capture/backfill, exact Claude run-output plan telemetry, exact Codex App Server plan telemetry, versioned API-equivalent cost calculation, and workspace/project/task/run dashboards with cross-review and efficiency breakdowns are implemented; task budgets and the Usage & Cost settings editor remain.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. **Phase 8 (usage, token, and cost monitoring) is fully implemented**: automatic token capture/backfill, exact Claude run-output and Codex App Server plan telemetry, versioned API-equivalent cost calculation, workspace/project/task/run dashboards with cross-review and efficiency breakdowns, per-task preset/custom budgets, audited checkpoint decisions, and the Usage & Cost settings/pricing editor.
 
 Documentation consistency maintenance (2026-09-13): reconciled `AGENTS.md`, this status record,
 `IMPLEMENTATION_ROADMAP.md`, `PROJECT_SPEC.md`, `DEVELOPER_GUIDE.md`, and
@@ -925,23 +925,22 @@ Completion record:
 
 ## Phase 8 — Usage, token, and cost monitoring
 
-Started 2026-09-13, with two slices complete after explicit human instructions to proceed. Full
+Started 2026-09-13 and completed 2026-09-14 after explicit human instructions to proceed. Full
 spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implementation boundary.
 
 - [x] Re-verify installed Claude/Codex CLI usage telemetry and historical-data recoverability
 - [x] `UsageRecord` data model and migrations (per-run token and immutable cost snapshots)
 - [x] Pricing registry and API-equivalent cost calculation
-- [ ] Workspace/project/task/run usage dashboard
-- [ ] Cross-review cost breakdown
-- [ ] Task usage budgets integrated with the max-review-round cap
+- [x] Workspace/project/task/run usage dashboard
+- [x] Cross-review cost breakdown
+- [x] Task usage budgets integrated with the max-review-round cap
 - [x] Historical backfill with a backfill report
-- [ ] Usage & Cost settings
+- [x] Usage & Cost settings
 - [x] *(Not originally scoped as a Phase 8 checklist item, but discovered during Step 0 and folded in
   by explicit human instruction)* Real-time automatic usage-safety readings from Claude's own
-  structured output, replacing the previous permanent `UNAVAILABLE` status. Confirmed **not**
-  available from Codex through the invocation path this app drives (`codex exec --json` never
-  emits a rate-limit reading, confirmed against a real completion) — Codex still reports
-  `UNAVAILABLE` honestly rather than a fabricated reading; its per-run *token* capture works fine.
+  structured output, replacing the previous permanent `UNAVAILABLE` status. Codex's invocation
+  path (`codex exec --json`) still does not emit a plan reading, but its documented App Server
+  `account/rateLimits/read` method now supplies exact readings without starting a model turn.
 
 ### Phase 8 first-slice completion record — real-time usage-safety data and per-run token capture
 
@@ -1141,6 +1140,39 @@ spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implement
   responsive viewport had no horizontal page overflow, and the browser console had no warnings or
   errors. No model-backed frontend reviewer or provider usage was started for this deterministic
   check.
+
+### Phase 8 final-slice completion record — task budgets and Usage & Cost settings
+
+- Date: 2026-09-14
+- Added migration `0016` with singleton `usage_cost_settings`, per-task resolved
+  `task_usage_budgets`, and append-only `usage_budget_audit`. New tasks snapshot the configured
+  default (`None`, `Economy`, `Balanced`, or `Deep`); a task can later use a named preset or Custom
+  maximum tokens, API-equivalent cost warning, agent-run cap, review-round cap, and warning level.
+  Editing a named preset affects future snapshots only.
+- `UsageBudgetService` evaluates task-linked runs and usage immediately before every model call.
+  It checkpoints before the next call rather than interrupting one in progress, treats missing
+  counters/pricing honestly when the corresponding custom limit cannot be verified, refuses a
+  parallel phase that would cross its exact run cap, and records Stop & Summarize, Continue One
+  Run, and budget increases. A one-run allowance is consumed exactly once. Named preset review
+  ceilings feed the Phase 5 build default and cannot be exceeded by a build request.
+- Budget checkpoints reuse the existing workflow `CHECKPOINTED` recovery path. Brainstorm provider
+  calls remain parallel normally, but a one-run allowance is serialized so that exact result is
+  persisted before the next call pauses; resume now reuses partial analysis and cross-review
+  artifacts. Checkpointed experiments and later finding-response/re-review rounds also gained
+  stage-aware resume support, closing recovery gaps the budget work exposed.
+- Added **Usage & Cost settings** to section 10: new-run tracking, API-equivalent-cost visibility,
+  raw normalized telemetry retention, default budget, editable named presets, provider-plan
+  warning level, and an append-only pricing-registry editor. Each task detail now shows budget
+  consumption, custom controls, checkpoint choices, and its existing usage breakdown. Turning
+  tracking off still preserves the invariant of one honest `unavailable` usage row per run.
+- Added 3 budget/settings service tests and 2 settings-route tests. Full verification passed under
+  Node 22.23.2: `npm test` (230 workspace tests: 138 server + 61 agents + 31 Git, plus 9 policy
+  tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate`
+  (24 tables, no schema drift), and `git diff --check`.
+- Deterministic browser verification against the real local database confirmed the settings and
+  task-budget surfaces render with no console warnings/errors. The 891-pixel tablet layout and a
+  390 × 844 mobile viewport had no horizontal overflow; the viewport override was reset afterward.
+  No model-backed frontend reviewer or provider run was started.
 
 ## End-to-end workflow verification (cross-cutting)
 

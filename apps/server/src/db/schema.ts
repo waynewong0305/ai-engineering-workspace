@@ -209,6 +209,58 @@ export const usageRecords = sqliteTable("usage_records", {
 
 export type UsageRecordRecord = typeof usageRecords.$inferSelect;
 
+export type UsageBudgetPreset = "NONE" | "ECONOMY" | "BALANCED" | "DEEP" | "CUSTOM";
+export type UsageBudgetState = "ACTIVE" | "CHECKPOINTED" | "STOPPED";
+export type UsageBudgetPresetLimits = {
+  maxAgentRuns: number;
+  maxReviewRounds: number;
+  warningPercent: number;
+};
+export type UsageBudgetPresets = Record<"ECONOMY" | "BALANCED" | "DEEP", UsageBudgetPresetLimits>;
+
+/** Local display/capture preferences plus the configurable task-budget preset definitions. */
+export const usageCostSettings = sqliteTable("usage_cost_settings", {
+  id: text("id").primaryKey(),
+  trackUsage: integer("track_usage", { mode: "boolean" }).notNull(),
+  showApiEquivalentCost: integer("show_api_equivalent_cost", { mode: "boolean" }).notNull(),
+  storeRawTelemetry: integer("store_raw_telemetry", { mode: "boolean" }).notNull(),
+  defaultBudgetPreset: text("default_budget_preset", { enum: ["NONE", "ECONOMY", "BALANCED", "DEEP", "CUSTOM"] }).notNull(),
+  budgetPresets: text("budget_presets", { mode: "json" }).$type<UsageBudgetPresets>().notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type UsageCostSettingsRecord = typeof usageCostSettings.$inferSelect;
+
+/** A task receives a resolved budget snapshot so later preset edits never rewrite history. */
+export const taskUsageBudgets = sqliteTable("task_usage_budgets", {
+  taskId: text("task_id").primaryKey().references(() => tasks.id, { onDelete: "cascade" }),
+  preset: text("preset", { enum: ["NONE", "ECONOMY", "BALANCED", "DEEP", "CUSTOM"] }).notNull(),
+  state: text("state", { enum: ["ACTIVE", "CHECKPOINTED", "STOPPED"] }).notNull(),
+  maxTokens: integer("max_tokens"),
+  apiEquivalentCostWarningUsd: real("api_equivalent_cost_warning_usd"),
+  maxAgentRuns: integer("max_agent_runs"),
+  maxReviewRounds: integer("max_review_rounds"),
+  warningPercent: real("warning_percent").notNull(),
+  continueRunsRemaining: integer("continue_runs_remaining").notNull().default(0),
+  checkpointReason: text("checkpoint_reason"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export type TaskUsageBudgetRecord = typeof taskUsageBudgets.$inferSelect;
+
+export const usageBudgetAudit = sqliteTable("usage_budget_audit", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  eventType: text("event_type", { enum: ["CHECKPOINT_TRIGGERED", "ACKNOWLEDGEMENT", "BUDGET_UPDATED"] }).notNull(),
+  userAction: text("user_action", { enum: ["STOP_AND_SUMMARIZE", "CONTINUE_ONE_RUN", "INCREASE_BUDGET"] }),
+  reason: text("reason").notNull(),
+  budgetSnapshot: text("budget_snapshot", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [index("usage_budget_audit_task_created_idx").on(table.taskId, table.createdAt)]);
+
+export type UsageBudgetAuditRecord = typeof usageBudgetAudit.$inferSelect;
+
 export type BrainstormAnalysis = {
   summary: string;
   facts: string[];

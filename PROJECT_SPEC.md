@@ -1697,6 +1697,7 @@ workspace/project/task/run usage dashboard
 cross-review cost breakdown by role/workflow
 task usage budgets integrated with the max-review-round cap
 historical backfill from provider-reported data only
+local Usage & Cost settings for collection, display, warning defaults, budget presets, and pricing
 ```
 
 Acceptance:
@@ -1704,6 +1705,13 @@ Acceptance:
 A small real Claude run and a small real Codex run each produce a usage record with correctly
 labeled billing mode and usage-source reliability, the workspace dashboard reflects both, and no
 historical or current value is fabricated.
+
+Implemented budgets are task-level snapshots selected before workflow start (`No budget`,
+`Economy`, `Balanced`, `Deep`, or `Custom`). They are checked immediately before model calls and
+never interrupt a run already in progress. A checkpoint requires an audited human choice to stop
+further calls, allow exactly one additional run, or save a larger/replacement budget. Named presets
+control provider-neutral run/review ceilings and warning percentages; explicit task web decisions
+and requested provider models/effort are never silently changed by a budget.
 
 ---
 

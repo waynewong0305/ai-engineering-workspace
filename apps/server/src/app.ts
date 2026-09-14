@@ -13,10 +13,12 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUsageRecordRoutes } from "./routes/usage-records.js";
 import { registerUsageSafetyRoutes } from "./routes/usage-safety.js";
+import { registerUsageSettingsRoutes } from "./routes/usage-settings.js";
 import { registerWorktreeRoutes } from "./routes/worktrees.js";
 import { AgentRunManager } from "./services/agent-run-manager.js";
 import { inspectLocalTools } from "./services/tool-health.js";
 import { UsageSafetyService } from "./services/usage-safety.js";
+import { UsageBudgetService, UsageCostSettingsService } from "./services/usage-settings.js";
 import { WorktreeUsageManager } from "./services/worktree-usage-manager.js";
 import { recoverInterruptedState } from "./services/startup-recovery.js";
 
@@ -43,18 +45,21 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
     (options.adapters ?? [new ClaudeAdapter(), new CodexAdapter()]).map((adapter) => [adapter.name, adapter]),
   );
   const usageSafety = new UsageSafetyService(db, adapters);
-  const runManager = new AgentRunManager(db, usageSafety);
+  const usageSettings = new UsageCostSettingsService(db);
+  const usageBudgets = new UsageBudgetService(db, usageSettings);
+  const runManager = new AgentRunManager(db, usageSafety, usageSettings);
   const worktreeService = new WorktreeService();
   const worktreeUsageManager = new WorktreeUsageManager(db);
   registerAgentRunRoutes(app, db, adapters, runManager, usageSafety);
-  registerTaskRoutes(app, db, adapters, runManager, usageSafety);
+  registerTaskRoutes(app, db, adapters, runManager, usageSafety, usageBudgets);
   registerWorktreeRoutes(app, db, worktreeService, worktreeUsageManager);
-  registerBuildRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
+  registerBuildRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager, usageBudgets);
   registerUsageSafetyRoutes(app, usageSafety);
+  registerUsageSettingsRoutes(app, db, usageSettings, usageBudgets);
   registerPricingRoutes(app, db);
   registerUsageRecordRoutes(app, db);
   registerAdrRoutes(app, db);
-  registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager);
+  registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager, usageBudgets);
   registerMaintenanceRoutes(app, db, sqlite, databasePath);
   registerFrontendReviewApprovalRoutes(app, db);
 

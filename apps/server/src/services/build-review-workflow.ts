@@ -33,6 +33,7 @@ import {
 import { AgentRunManager } from "./agent-run-manager.js";
 import { extractJson, record } from "./structured-output.js";
 import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
+import { UsageBudgetCheckpointError, type UsageBudgetService } from "./usage-settings.js";
 import { ValidationRunner } from "./validation-runner.js";
 import type { WorktreeUsageManager } from "./worktree-usage-manager.js";
 
@@ -245,6 +246,7 @@ export class BuildReviewWorkflow {
     private readonly worktreeService: WorktreeService,
     private readonly worktreeUsageManager: WorktreeUsageManager,
     private readonly usageSafety?: UsageSafetyService,
+    private readonly usageBudgets?: UsageBudgetService,
   ) {}
 
   async start(buildRunId: string, options: BuildWorkflowOptions = {}) {
@@ -263,19 +265,18 @@ export class BuildReviewWorkflow {
    * either nothing about the current phase was persisted yet (restart it), or the diff was already
    * collected (builder+validation are done — resume straight into review, recheck usage first).
    *
-   * This only covers the original build/validate/review pipeline (round 1). A checkpoint during a
-   * later respondToFindings round is deliberately not auto-resumable yet (see reviewRound check
-   * below) — a known limitation, not an oversight: nothing already persisted for that round is
-   * lost, but restarting it currently requires a fresh /respond call rather than /resume.
+   * A later finding-response round is resumed from its persisted finding state: OPEN means the
+   * builder response has not run yet; RESPONDED means its validation/diff already completed and
+   * only the reviewer recheck remains.
    */
   async resume(buildRunId: string, options: BuildWorkflowOptions = {}) {
     const build = this.getBuild(buildRunId);
     if (!build || build.status !== "CHECKPOINTED") return;
-    if (build.reviewRound > 1) {
-      this.fail(build.id, "This build checkpointed during a re-review round, which cannot yet be resumed automatically. Once usage allows, start a new response round instead.");
-      return;
-    }
     try {
+      if (build.reviewRound > 1) {
+        await this.resumeRespondPipeline(build, options);
+        return;
+      }
       this.updateStatus(build.id, build.diffUnstaged !== null ? "REVIEWING" : "BUILDING");
       await this.pipeline(this.getBuild(build.id)!, options);
     } catch (error) {
@@ -378,6 +379,7 @@ export class BuildReviewWorkflow {
     // Recheck immediately before this specific call, same as every per-call recheck in
     // BrainstormWorkflow.run — usage can change while a phase is already in flight.
     await this.usageSafety?.assertReady(build.builderProvider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
 
     const prompt = replace(builderTemplate, {
       TITLE: task.title,
@@ -436,6 +438,7 @@ export class BuildReviewWorkflow {
     const adapter = this.adapters.get(build.reviewerProvider);
     if (!adapter) throw new Error(`${build.reviewerProvider} adapter is unavailable.`);
     await this.usageSafety?.assertReady(build.reviewerProvider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
 
     const diffText = `${build.diffStaged ?? ""}${build.diffUnstaged ?? ""}`.trim() || "(no changes were detected in the worktree)";
     const prompt = replace(reviewerTemplate, { TITLE: task.title, PROBLEM_STATEMENT: task.problemStatement, DIFF: diffText });
@@ -556,6 +559,39 @@ export class BuildReviewWorkflow {
     await this.runReviewerRecheck(this.getBuild(initial.id)!, task, project, worktree, openFindings, options);
   }
 
+  private async resumeRespondPipeline(initial: BuildRunRecord, options: BuildWorkflowOptions) {
+    const task = this.db.select().from(tasks).where(eq(tasks.id, initial.taskId)).get();
+    if (!task) return this.fail(initial.id, "The task no longer exists.");
+    const project = this.db.select().from(projects).where(eq(projects.id, initial.projectId)).get();
+    if (!project) return this.fail(initial.id, "The registered project no longer exists.");
+    const worktree = initial.worktreeId ? this.db.select().from(worktrees).where(eq(worktrees.id, initial.worktreeId)).get() : null;
+    if (!worktree) return this.fail(initial.id, "The builder worktree no longer exists.");
+    this.worktreeUsageManager.acquire(worktree.id, "AGENT_RUN", initial.id);
+
+    const responded = this.db.select().from(reviewFindings).where(and(
+      eq(reviewFindings.buildRunId, initial.id), eq(reviewFindings.status, "RESPONDED"),
+    )).orderBy(reviewFindings.ordinal).all();
+    if (responded.length) {
+      this.updateStatus(initial.id, "REVIEWING");
+      await this.runReviewerRecheck(this.getBuild(initial.id)!, task, project, worktree, responded, options);
+      return;
+    }
+
+    const open = this.db.select().from(reviewFindings).where(and(
+      eq(reviewFindings.buildRunId, initial.id), eq(reviewFindings.status, "OPEN"),
+    )).orderBy(reviewFindings.ordinal).all();
+    if (!open.length) return this.fail(initial.id, "No resumable open or responded findings remain.");
+    this.updateStatus(initial.id, "RESPONDING");
+    const builderRun = await this.runBuilderResponse(this.getBuild(initial.id)!, task, project, worktree, open, options);
+    if (!builderRun) return;
+    this.updateStatus(initial.id, "VALIDATING");
+    const validationOptions = { ...options, validationCommandIds: options.validationCommandIds ?? this.previousValidationCommandIds(initial.id) };
+    await this.runValidation(this.getBuild(initial.id)!, project, worktree, validationOptions);
+    await this.collectDiff(this.getBuild(initial.id)!, worktree);
+    this.updateStatus(initial.id, "REVIEWING");
+    await this.runReviewerRecheck(this.getBuild(initial.id)!, task, project, worktree, open, options);
+  }
+
   /** Distinct command ids validated in the prior round, so a re-review re-runs the same checks by default. */
   private previousValidationCommandIds(buildRunId: string): string[] | undefined {
     const rows = this.db.selectDistinct({ commandId: validationRuns.commandId }).from(validationRuns)
@@ -575,6 +611,7 @@ export class BuildReviewWorkflow {
     const adapter = this.adapters.get(build.builderProvider);
     if (!adapter) throw new Error(`${build.builderProvider} adapter is unavailable.`);
     await this.usageSafety?.assertReady(build.builderProvider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
 
     const prompt = replace(builderResponseTemplate, {
       TITLE: task.title,
@@ -636,6 +673,7 @@ export class BuildReviewWorkflow {
     const adapter = this.adapters.get(build.reviewerProvider);
     if (!adapter) throw new Error(`${build.reviewerProvider} adapter is unavailable.`);
     await this.usageSafety?.assertReady(build.reviewerProvider, { combined: true });
+    this.usageBudgets?.assertReady(task.id);
 
     // Re-read: these rows now carry the builder's verdict/evidence/action from runBuilderResponse.
     const responded = this.db.select().from(reviewFindings)
@@ -806,7 +844,7 @@ export class BuildReviewWorkflow {
   }
 
   private handleWorkflowError(buildRunId: string, error: unknown) {
-    if (error instanceof UsageCheckpointError) {
+    if (error instanceof UsageCheckpointError || error instanceof UsageBudgetCheckpointError) {
       this.checkpoint(buildRunId, error.message);
       return;
     }

@@ -18,6 +18,7 @@ import { AgentRunManager } from "../services/agent-run-manager.js";
 import { BuildReviewWorkflow } from "../services/build-review-workflow.js";
 import { buildPrePrReport } from "../services/pre-pr-report.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
+import { UsageBudgetService } from "../services/usage-settings.js";
 import { WorktreeUsageManager } from "../services/worktree-usage-manager.js";
 import { ensureWorktreeForTask, safetyError } from "./worktrees.js";
 
@@ -81,8 +82,9 @@ export function registerBuildRoutes(
   usageSafety: UsageSafetyService = new UsageSafetyService(db),
   worktreeService: WorktreeService = new WorktreeService(),
   worktreeUsageManager: WorktreeUsageManager = new WorktreeUsageManager(db),
+  usageBudgets: UsageBudgetService = new UsageBudgetService(db),
 ) {
-  const workflow = new BuildReviewWorkflow(db, manager, adapters, worktreeService, worktreeUsageManager, usageSafety);
+  const workflow = new BuildReviewWorkflow(db, manager, adapters, worktreeService, worktreeUsageManager, usageSafety, usageBudgets);
 
   const detailFor = (build: BuildRunRecord) => ({
     ...build,
@@ -134,9 +136,14 @@ export function registerBuildRoutes(
     }
     // Deliberately a per-build setting rather than a hardcoded constant (PROJECT_SPEC.md §23 names
     // 3 as the default, not a fixed ceiling) — a human can raise or lower it per build at start time.
-    const maxReviewRounds = typeof request.body?.maxReviewRounds === "number" ? request.body.maxReviewRounds : DEFAULT_MAX_REVIEW_ROUNDS;
+    const taskBudget = usageBudgets.getOrCreate(task.id);
+    const budgetReviewRounds = taskBudget.maxReviewRounds ?? DEFAULT_MAX_REVIEW_ROUNDS;
+    const maxReviewRounds = typeof request.body?.maxReviewRounds === "number" ? request.body.maxReviewRounds : budgetReviewRounds;
     if (!Number.isInteger(maxReviewRounds) || maxReviewRounds < 1 || maxReviewRounds > 10) {
       return reply.code(400).send({ message: "maxReviewRounds must be an integer between 1 and 10." });
+    }
+    if (taskBudget.maxReviewRounds !== null && maxReviewRounds > taskBudget.maxReviewRounds) {
+      return reply.code(409).send({ message: `This task budget allows at most ${taskBudget.maxReviewRounds} review round(s). Increase the task budget before starting a larger build.` });
     }
 
     const providersToCheck = [builderProvider, reviewerProvider] as const;
@@ -158,6 +165,10 @@ export function registerBuildRoutes(
       .find((decision) => !decision.allowed);
     if (usageDecision) {
       return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    const budgetDecision = usageBudgets.evaluate(task.id);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
     }
 
     let worktree;
@@ -252,6 +263,10 @@ export function registerBuildRoutes(
     if (usageDecision) {
       return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
     }
+    const budgetDecision = usageBudgets.evaluate(build.taskId);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
+    }
 
     void workflow.respondToFindings(build.id, {
       models: { CLAUDE: text(request.body?.claudeModel) ?? undefined, CODEX: text(request.body?.codexModel) ?? undefined },
@@ -313,6 +328,10 @@ export function registerBuildRoutes(
       .find((decision) => !decision.allowed);
     if (usageDecision) {
       return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    const budgetDecision = usageBudgets.evaluate(build.taskId);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
     }
     void workflow.resume(build.id);
     return reply.code(202).send({ message: "Resuming the checkpointed build.", buildRunId: build.id });

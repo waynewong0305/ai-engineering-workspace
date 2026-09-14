@@ -648,6 +648,28 @@ cost availability. Browser-search counts say **Unavailable** because the current
 does not expose a trustworthy count. Missing token or pricing data is never estimated as zero; the
 unavailable-run counts explain what could not be included.
 
+### Task budgets and Usage & Cost settings
+
+Choose **No task budget**, **Economy**, **Balanced**, or **Deep** while creating a task. The selected
+preset is copied into that task, so changing a preset later affects future tasks only. In the task
+detail, the **Task budget** card shows current runs, tokens, API-equivalent cost, and the most-used
+limit. You can replace it with another preset or a Custom budget containing any combination of
+maximum tokens, API-equivalent cost warning, maximum agent runs, and maximum review rounds.
+
+A budget never stops an AI mid-run. Once a limit is reached, the workflow checkpoints before its
+next model call and keeps every completed result. Choose **Stop & Summarize** to prevent further
+model calls while retaining the accumulated output, **Continue One Run** to grant exactly one more
+call, or save an increased/replacement budget. Then use the workflow's normal Resume button. These
+decisions are recorded locally. Provider-plan safety remains a separate gate and may still pause
+the workflow sooner.
+
+Open **Usage & Cost settings** near the top of section 10 to control collection for new runs, hide or
+show API-equivalent cost, retain or omit raw normalized usage metadata, choose the default budget,
+edit the three named preset definitions, and change the provider-plan warning threshold. Turning
+tracking off still creates an honest “unavailable” usage row for each new run; it never fabricates
+zeros. The nested **Pricing registry** editor adds immutable provider/model price versions. Existing
+calculated snapshots are never silently repriced.
+
 ## Reviews and human responsibility
 
 AI agreement does not mean the code is automatically correct. Two models may share the same blind spot, rely on the same false assumption, or miss behavior that only appears in production conditions.

@@ -18,6 +18,7 @@ import { AgentRunManager } from "../services/agent-run-manager.js";
 import { buildBrainstormPlanReport } from "../services/brainstorm-report.js";
 import { BrainstormWorkflow } from "../services/brainstorm-workflow.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
+import { UsageBudgetService } from "../services/usage-settings.js";
 
 type CreateTaskBody = {
   projectId?: unknown;
@@ -26,6 +27,8 @@ type CreateTaskBody = {
   type?: unknown;
   riskLevel?: unknown;
   webAccessPermitted?: unknown;
+  budgetPreset?: unknown;
+  budget?: unknown;
 };
 
 type StartTaskBody = {
@@ -49,8 +52,9 @@ export function registerTaskRoutes(
   adapters: Map<AgentProvider, AgentAdapter>,
   manager: AgentRunManager,
   usageSafety = new UsageSafetyService(db),
+  usageBudgets = new UsageBudgetService(db),
 ) {
-  const workflow = new BrainstormWorkflow(db, manager, adapters, usageSafety);
+  const workflow = new BrainstormWorkflow(db, manager, adapters, usageSafety, usageBudgets);
 
   app.get<{ Querystring: { projectId?: string } }>("/api/tasks", async (request) => {
     const query = db.select().from(tasks);
@@ -110,7 +114,18 @@ export function registerTaskRoutes(
       errorMessage: null, createdAt: now, updatedAt: now,
     };
     db.insert(tasks).values(task).run();
-    return reply.code(201).send({ ...task, runs: [], artifacts: [], evidence: [], comparison: null, openQuestionCount: 0 });
+    try {
+      const budgetInput = request.body.budget && typeof request.body.budget === "object"
+        ? request.body.budget as Record<string, unknown>
+        : { preset: request.body.budgetPreset ?? usageBudgets.getOrCreate(task.id).preset };
+      const budget = request.body.budget === undefined && request.body.budgetPreset === undefined
+        ? usageBudgets.getOrCreate(task.id)
+        : usageBudgets.set(task.id, budgetInput);
+      return reply.code(201).send({ ...task, budget, runs: [], artifacts: [], evidence: [], comparison: null, openQuestionCount: 0 });
+    } catch (error) {
+      db.delete(tasks).where(eq(tasks.id, task.id)).run();
+      return reply.code(400).send({ message: error instanceof Error ? error.message : "The task budget is invalid." });
+    }
   });
 
   app.post<{ Params: { id: string }; Body: StartTaskBody }>("/api/tasks/:id/start", async (request, reply) => {
@@ -141,6 +156,10 @@ export function registerTaskRoutes(
     if (usageDecision) {
       return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
     }
+    const budgetDecision = usageBudgets.evaluate(task.id);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
+    }
     void workflow.start(task.id, {
       models: { CLAUDE: text(request.body?.claudeModel) ?? undefined, CODEX: text(request.body?.codexModel) ?? undefined },
       claudeEffort: text(request.body?.claudeEffort) ?? undefined,
@@ -158,6 +177,10 @@ export function registerTaskRoutes(
       .find((decision) => !decision.allowed);
     if (usageDecision) {
       return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    const budgetDecision = usageBudgets.evaluate(task.id);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
     }
     void workflow.resume(task.id);
     return reply.code(202).send({ message: "Resuming the checkpointed workflow.", taskId: task.id });

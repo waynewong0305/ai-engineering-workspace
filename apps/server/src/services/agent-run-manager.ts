@@ -15,6 +15,7 @@ import type { WorkspaceDatabase } from "../db/database.js";
 import { agentRunEvents, agentRuns, usageRecords, type AgentRunEventRecord, type AgentRunRecord } from "../db/schema.js";
 import type { UsageSafetyService } from "./usage-safety.js";
 import { usageRecordValues } from "./usage-cost.js";
+import type { UsageCostSettingsService } from "./usage-settings.js";
 
 const TERMINAL_STATUSES = ["COMPLETED", "FAILED", "CANCELLED"] as const;
 const MAX_STORED_TEXT = 5 * 1024 * 1024;
@@ -47,7 +48,11 @@ export class AgentRunManager {
   private readonly latestTokenUsage = new Map<string, TokenUsage>();
   private readonly sawRateLimitReading = new Set<string>();
 
-  constructor(private readonly db: WorkspaceDatabase, private readonly usageSafety?: UsageSafetyService) {
+  constructor(
+    private readonly db: WorkspaceDatabase,
+    private readonly usageSafety?: UsageSafetyService,
+    private readonly usageSettings?: UsageCostSettingsService,
+  ) {
     this.emitter.setMaxListeners(100);
   }
 
@@ -193,8 +198,9 @@ export class AgentRunManager {
    * such concept), so it's marked `subscription`; otherwise `unknown`, never assumed `api`.
    */
   private recordUsage(runId: string, current: AgentRunRecord, actualModel: string | null) {
-    const tokenUsage = this.latestTokenUsage.get(runId) ?? null;
-    const billingMode = this.sawRateLimitReading.has(runId) ? "subscription" : "unknown";
+    const settings = this.usageSettings?.get();
+    const tokenUsage = settings?.trackUsage === false ? null : this.latestTokenUsage.get(runId) ?? null;
+    const billingMode = settings?.trackUsage === false ? "unknown" : this.sawRateLimitReading.has(runId) ? "subscription" : "unknown";
     this.latestTokenUsage.delete(runId);
     this.sawRateLimitReading.delete(runId);
     this.db.insert(usageRecords).values(usageRecordValues(
@@ -203,6 +209,8 @@ export class AgentRunManager {
       tokenUsage,
       billingMode,
       actualModel,
+      undefined,
+      settings?.storeRawTelemetry !== false,
     )).run();
   }
 }

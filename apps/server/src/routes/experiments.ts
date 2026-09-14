@@ -8,6 +8,7 @@ import { agentRuns, experiments, projects, tasks, type ExperimentRecord } from "
 import { AgentRunManager } from "../services/agent-run-manager.js";
 import { ExperimentWorkflow } from "../services/experiment-workflow.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
+import { UsageBudgetService } from "../services/usage-settings.js";
 import { WorktreeUsageManager } from "../services/worktree-usage-manager.js";
 import { ensureWorktreeForTask, safetyError } from "./worktrees.js";
 
@@ -44,8 +45,9 @@ export function registerExperimentRoutes(
   usageSafety: UsageSafetyService = new UsageSafetyService(db),
   worktreeService: WorktreeService = new WorktreeService(),
   worktreeUsageManager: WorktreeUsageManager = new WorktreeUsageManager(db),
+  usageBudgets: UsageBudgetService = new UsageBudgetService(db),
 ) {
-  const workflow = new ExperimentWorkflow(db, manager, adapters, worktreeService, worktreeUsageManager, usageSafety);
+  const workflow = new ExperimentWorkflow(db, manager, adapters, worktreeService, worktreeUsageManager, usageSafety, usageBudgets);
 
   const detailFor = (experiment: ExperimentRecord) => ({
     ...experiment,
@@ -107,6 +109,10 @@ export function registerExperimentRoutes(
     if (usageDecision) {
       return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
     }
+    const budgetDecision = usageBudgets.evaluate(task.id);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
+    }
 
     let worktree;
     try {
@@ -141,5 +147,19 @@ export function registerExperimentRoutes(
     return await workflow.cancel(request.params.id)
       ? reply.code(202).send({ message: "Experiment cancellation requested." })
       : reply.code(409).send({ message: "Experiment is not running." });
+  });
+
+  app.post<{ Params: { id: string } }>("/api/experiments/:id/resume", async (request, reply) => {
+    const experiment = db.select().from(experiments).where(eq(experiments.id, request.params.id)).get();
+    if (!experiment) return reply.code(404).send({ message: "Experiment not found." });
+    if (experiment.status !== "CHECKPOINTED") return reply.code(409).send({ message: "Only a checkpointed experiment can be resumed." });
+    const usageDecision = ([experiment.builderProvider, experiment.reviewerProvider] as const)
+      .map((provider) => usageSafety.evaluate(provider, { combined: true }))
+      .find((decision) => !decision.allowed);
+    if (usageDecision) return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    const budgetDecision = usageBudgets.evaluate(experiment.taskId);
+    if (!budgetDecision.allowed) return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
+    void workflow.resume(experiment.id);
+    return reply.code(202).send({ message: "Resuming the checkpointed experiment.", experimentId: experiment.id });
   });
 }

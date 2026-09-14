@@ -172,6 +172,7 @@ function formatPercent(value: number | null): string {
 }
 
 function formatAggregateCost(value: number, calculatedRuns: number): string {
+  if (usageCostSettings.value?.showApiEquivalentCost === false) return "Hidden by settings";
   return calculatedRuns ? formatUsd(value) : "Unavailable";
 }
 
@@ -461,6 +462,50 @@ type UsageDecision = {
   readingId: string | null;
   reason: string;
 };
+type UsageBudgetPreset = "NONE" | "ECONOMY" | "BALANCED" | "DEEP" | "CUSTOM";
+type UsageBudget = {
+  taskId: string;
+  preset: UsageBudgetPreset;
+  state: "ACTIVE" | "CHECKPOINTED" | "STOPPED";
+  maxTokens: number | null;
+  apiEquivalentCostWarningUsd: number | null;
+  maxAgentRuns: number | null;
+  maxReviewRounds: number | null;
+  warningPercent: number;
+  continueRunsRemaining: number;
+  checkpointReason: string | null;
+};
+type UsageBudgetDetail = {
+  budget: UsageBudget;
+  progress: {
+    agentRuns: number;
+    totalTokens: number;
+    apiEquivalentCostUsd: number;
+    unavailableTokenRuns: number;
+    unavailableCostRuns: number;
+    utilizationPercent: number;
+  };
+  audit?: Array<{ id: string; eventType: string; userAction: string | null; reason: string; createdAt: string }>;
+};
+type UsageCostSettings = {
+  trackUsage: boolean;
+  showApiEquivalentCost: boolean;
+  storeRawTelemetry: boolean;
+  defaultBudgetPreset: Exclude<UsageBudgetPreset, "CUSTOM">;
+  budgetPresets: Record<"ECONOMY" | "BALANCED" | "DEEP", { maxAgentRuns: number; maxReviewRounds: number; warningPercent: number }>;
+};
+type PricingEntry = {
+  id: string;
+  provider: AgentProvider;
+  model: string;
+  inputPricePerMillion: number;
+  cachedInputPricePerMillion: number | null;
+  cacheCreationInputPricePerMillion: number | null;
+  outputPricePerMillion: number;
+  reasoningPricePerMillion: number | null;
+  effectiveFrom: string;
+  source: string;
+};
 type MaintenanceBackup = { name: string; sizeBytes: number; createdAt: string };
 type MaintenanceLease = {
   id: string;
@@ -530,6 +575,7 @@ const taskForm = reactive({
   riskLevel: "HIGH" as BrainstormTask["riskLevel"],
   problemStatement: "How should this system support database sharding?",
   webAccessPermitted: false,
+  budgetPreset: "BALANCED" as Exclude<UsageBudgetPreset, "CUSTOM">,
   claudeModel: "",
   codexModel: "",
   claudeEffort: "",
@@ -614,6 +660,45 @@ const usageDashboardFrom = ref("");
 const usageDashboardTo = ref("");
 const selectedTaskUsage = ref<UsageDashboard | null>(null);
 const selectedTaskUsageLoading = ref(false);
+const selectedTaskBudget = ref<UsageBudgetDetail | null>(null);
+const taskBudgetError = ref("");
+const taskBudgetMessage = ref("");
+const taskBudgetSaving = ref(false);
+const taskBudgetForm = reactive({
+  preset: "BALANCED" as UsageBudgetPreset,
+  maxTokens: "",
+  apiEquivalentCostWarningUsd: "",
+  maxAgentRuns: "",
+  maxReviewRounds: "",
+  warningPercent: "80",
+});
+const usageCostSettings = ref<UsageCostSettings | null>(null);
+const usageSettingsForm = reactive<UsageCostSettings>({
+  trackUsage: true,
+  showApiEquivalentCost: true,
+  storeRawTelemetry: true,
+  defaultBudgetPreset: "BALANCED",
+  budgetPresets: {
+    ECONOMY: { maxAgentRuns: 4, maxReviewRounds: 1, warningPercent: 75 },
+    BALANCED: { maxAgentRuns: 8, maxReviewRounds: 3, warningPercent: 80 },
+    DEEP: { maxAgentRuns: 16, maxReviewRounds: 5, warningPercent: 85 },
+  },
+});
+const usageSettingsSaving = ref(false);
+const usageSettingsMessage = ref("");
+const pricingEntries = ref<PricingEntry[]>([]);
+const pricingSaving = ref(false);
+const pricingForm = reactive({
+  provider: "CODEX" as AgentProvider,
+  model: "",
+  inputPricePerMillion: "",
+  cachedInputPricePerMillion: "",
+  cacheCreationInputPricePerMillion: "",
+  outputPricePerMillion: "",
+  reasoningPricePerMillion: "",
+  effectiveFrom: "",
+  source: "",
+});
 
 const usageDashboardTaskOptions = computed(() => tasks.value.filter((task) =>
   !usageDashboardProjectId.value || task.projectId === usageDashboardProjectId.value,
@@ -702,6 +787,153 @@ async function loadSelectedTaskUsage(taskId: string) {
     selectedTaskUsage.value = response.ok ? await response.json() : null;
   } finally {
     selectedTaskUsageLoading.value = false;
+  }
+}
+
+function copyBudgetToForm(detail: UsageBudgetDetail) {
+  taskBudgetForm.preset = detail.budget.preset;
+  taskBudgetForm.maxTokens = detail.budget.maxTokens === null ? "" : String(detail.budget.maxTokens);
+  taskBudgetForm.apiEquivalentCostWarningUsd = detail.budget.apiEquivalentCostWarningUsd === null ? "" : String(detail.budget.apiEquivalentCostWarningUsd);
+  taskBudgetForm.maxAgentRuns = detail.budget.maxAgentRuns === null ? "" : String(detail.budget.maxAgentRuns);
+  taskBudgetForm.maxReviewRounds = detail.budget.maxReviewRounds === null ? "" : String(detail.budget.maxReviewRounds);
+  taskBudgetForm.warningPercent = String(detail.budget.warningPercent);
+}
+
+async function loadSelectedTaskBudget(taskId: string) {
+  taskBudgetError.value = "";
+  const response = await fetch(`/api/tasks/${taskId}/usage-budget`);
+  if (!response.ok) {
+    taskBudgetError.value = "Could not load this task's budget.";
+    return;
+  }
+  selectedTaskBudget.value = await response.json();
+  copyBudgetToForm(selectedTaskBudget.value!);
+}
+
+async function saveTaskBudget() {
+  if (!selectedTask.value) return;
+  taskBudgetSaving.value = true;
+  taskBudgetError.value = "";
+  taskBudgetMessage.value = "";
+  const numberOrNull = (value: string) => value.trim() ? Number(value) : null;
+  const payload = taskBudgetForm.preset === "CUSTOM" ? {
+    preset: "CUSTOM",
+    maxTokens: numberOrNull(taskBudgetForm.maxTokens),
+    apiEquivalentCostWarningUsd: numberOrNull(taskBudgetForm.apiEquivalentCostWarningUsd),
+    maxAgentRuns: numberOrNull(taskBudgetForm.maxAgentRuns),
+    maxReviewRounds: numberOrNull(taskBudgetForm.maxReviewRounds),
+    warningPercent: Number(taskBudgetForm.warningPercent),
+  } : { preset: taskBudgetForm.preset };
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/usage-budget`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not save this task budget.");
+    selectedTaskBudget.value = result;
+    copyBudgetToForm(result);
+    taskBudgetMessage.value = "Task budget saved. Existing usage remains counted against the new limits.";
+  } catch (error) {
+    taskBudgetError.value = error instanceof Error ? error.message : "Could not save this task budget.";
+  } finally {
+    taskBudgetSaving.value = false;
+  }
+}
+
+async function decideTaskBudget(action: "STOP_AND_SUMMARIZE" | "CONTINUE_ONE_RUN") {
+  if (!selectedTask.value) return;
+  taskBudgetSaving.value = true;
+  taskBudgetError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/usage-budget/decision`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not record the budget decision.");
+    const next = { ...selectedTaskBudget.value!, ...result } as UsageBudgetDetail;
+    selectedTaskBudget.value = next;
+    copyBudgetToForm(next);
+    taskBudgetMessage.value = action === "CONTINUE_ONE_RUN"
+      ? "One additional model run is allowed. Resume the checkpointed workflow when ready."
+      : "Further model runs are stopped. The task's accumulated results and usage summary remain available.";
+  } catch (error) {
+    taskBudgetError.value = error instanceof Error ? error.message : "Could not record the budget decision.";
+  } finally {
+    taskBudgetSaving.value = false;
+  }
+}
+
+async function loadUsageSettings() {
+  const [settingsResponse, pricingResponse] = await Promise.all([fetch("/api/usage/settings"), fetch("/api/usage/pricing")]);
+  if (settingsResponse.ok) {
+    const result = await settingsResponse.json() as UsageCostSettings;
+    usageCostSettings.value = result;
+    usageSettingsForm.trackUsage = result.trackUsage;
+    usageSettingsForm.showApiEquivalentCost = result.showApiEquivalentCost;
+    usageSettingsForm.storeRawTelemetry = result.storeRawTelemetry;
+    usageSettingsForm.defaultBudgetPreset = result.defaultBudgetPreset;
+    usageSettingsForm.budgetPresets = JSON.parse(JSON.stringify(result.budgetPresets)) as UsageCostSettings["budgetPresets"];
+    taskForm.budgetPreset = result.defaultBudgetPreset;
+  }
+  if (pricingResponse.ok) pricingEntries.value = await pricingResponse.json();
+}
+
+async function saveUsageSettings() {
+  usageSettingsSaving.value = true;
+  usageSettingsMessage.value = "";
+  usageDashboardError.value = "";
+  try {
+    const [settingsResponse, policyResponse] = await Promise.all([
+      fetch("/api/usage/settings", {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(usageSettingsForm),
+      }),
+      fetch("/api/usage/policy", {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ warningThresholdPercent: Number(policyForm.warningThresholdPercent) }),
+      }),
+    ]);
+    const settingsResult = await settingsResponse.json();
+    const policyResult = await policyResponse.json();
+    if (!settingsResponse.ok) throw new Error(settingsResult.message ?? "Could not save usage and cost settings.");
+    if (!policyResponse.ok) throw new Error(policyResult.message ?? "Could not save the default warning threshold.");
+    usageCostSettings.value = settingsResult;
+    usagePolicy.value = policyResult;
+    usageSettingsMessage.value = "Usage, cost, pricing-preset, and warning settings saved.";
+  } catch (error) {
+    usageDashboardError.value = error instanceof Error ? error.message : "Could not save usage and cost settings.";
+  } finally {
+    usageSettingsSaving.value = false;
+  }
+}
+
+async function createPricingVersion() {
+  pricingSaving.value = true;
+  usageDashboardError.value = "";
+  const optionalNumber = (value: string) => value.trim() ? Number(value) : null;
+  try {
+    const response = await fetch("/api/usage/pricing", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: pricingForm.provider,
+        model: pricingForm.model,
+        inputPricePerMillion: Number(pricingForm.inputPricePerMillion),
+        cachedInputPricePerMillion: optionalNumber(pricingForm.cachedInputPricePerMillion),
+        cacheCreationInputPricePerMillion: optionalNumber(pricingForm.cacheCreationInputPricePerMillion),
+        outputPricePerMillion: Number(pricingForm.outputPricePerMillion),
+        reasoningPricePerMillion: optionalNumber(pricingForm.reasoningPricePerMillion),
+        effectiveFrom: pricingForm.effectiveFrom ? new Date(pricingForm.effectiveFrom).toISOString() : undefined,
+        source: pricingForm.source,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not add the pricing version.");
+    pricingEntries.value.unshift(result);
+    pricingForm.model = "";
+    pricingForm.source = "";
+    usageSettingsMessage.value = "Immutable pricing version added. Existing calculated costs were not rewritten.";
+  } catch (error) {
+    usageDashboardError.value = error instanceof Error ? error.message : "Could not add the pricing version.";
+  } finally {
+    pricingSaving.value = false;
   }
 }
 
@@ -1098,6 +1330,9 @@ async function selectBuild(buildRunId: string) {
     return;
   }
   selectedBuild.value = await response.json();
+  if (selectedBuild.value?.status === "CHECKPOINTED" && selectedTask.value?.id === selectedBuild.value.taskId) {
+    await loadSelectedTaskBudget(selectedBuild.value.taskId);
+  }
   prePrReport.value = null;
   reportError.value = "";
   scheduleBuildRefresh();
@@ -1332,7 +1567,7 @@ async function selectTask(taskId: string) {
   brainstormReport.value = null;
   brainstormReportError.value = "";
   experimentError.value = "";
-  await Promise.all([loadExperimentsForTask(), loadSelectedTaskUsage(taskId)]);
+  await Promise.all([loadExperimentsForTask(), loadSelectedTaskUsage(taskId), loadSelectedTaskBudget(taskId)]);
   scheduleTaskRefresh();
 }
 
@@ -1342,7 +1577,12 @@ async function loadExperimentsForTask() {
     return;
   }
   const response = await fetch(`/api/tasks/${selectedTask.value.id}/experiments`);
-  if (response.ok) experimentsForTask.value = await response.json();
+  if (response.ok) {
+    experimentsForTask.value = await response.json();
+    if (experimentsForTask.value.some((experiment) => experiment.status === "CHECKPOINTED")) {
+      await loadSelectedTaskBudget(selectedTask.value.id);
+    }
+  }
   scheduleExperimentRefresh();
 }
 
@@ -1389,6 +1629,17 @@ async function cancelExperiment(experiment: Experiment) {
   await loadExperimentsForTask();
 }
 
+async function resumeExperiment(experiment: Experiment) {
+  experimentError.value = "";
+  const response = await fetch(`/api/experiments/${experiment.id}/resume`, { method: "POST" });
+  const result = await response.json();
+  if (!response.ok) {
+    experimentError.value = result.message ?? "Could not resume the experiment.";
+    return;
+  }
+  await loadExperimentsForTask();
+}
+
 async function loadBrainstormReport() {
   if (!selectedTask.value) return;
   loadingBrainstormReport.value = true;
@@ -1428,6 +1679,7 @@ async function createTask() {
         riskLevel: taskForm.riskLevel,
         problemStatement: taskForm.problemStatement,
         webAccessPermitted: taskForm.webAccessPermitted,
+        budgetPreset: taskForm.budgetPreset,
       }),
     });
     const result = await response.json();
@@ -1461,6 +1713,10 @@ async function startBrainstorm() {
     const result = await response.json();
     if (!response.ok) {
       if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      if (result.code === "BUDGET_CHECKPOINT") {
+        selectedTaskBudget.value = { budget: result.decision.budget, progress: result.decision.progress };
+        copyBudgetToForm(selectedTaskBudget.value);
+      }
       throw new Error(result.message ?? "Could not start the task.");
     }
     taskMessage.value = "Both independent analyses are starting. Cross-reviews will follow only after both finish.";
@@ -1483,6 +1739,10 @@ async function resumeBrainstorm() {
     const result = await response.json();
     if (!response.ok) {
       if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      if (result.code === "BUDGET_CHECKPOINT") {
+        selectedTaskBudget.value = { budget: result.decision.budget, progress: result.decision.progress };
+        copyBudgetToForm(selectedTaskBudget.value);
+      }
       throw new Error(result.message ?? "Could not resume the task.");
     }
     taskMessage.value = "Resuming the checkpointed workflow.";
@@ -1885,7 +2145,7 @@ onMounted(() => {
     if (element) sectionObserver.observe(element);
   }
 
-  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage(), loadMaintenance(), loadUsageDashboard()]);
+  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage(), loadMaintenance(), loadUsageDashboard(), loadUsageSettings()]);
 });
 onUnmounted(() => {
   eventSource?.close();
@@ -2173,11 +2433,11 @@ onUnmounted(() => {
             v-if="['COMPLETED', 'FAILED', 'CANCELLED'].includes(currentRun.status)"
             title="API-equivalent cost applies published per-token API prices to this run's exact token counts. It is not what a subscription run charged you."
           >
-            API-equivalent cost: {{ currentRun.usage?.costSource === 'calculated' && currentRun.usage.apiEquivalentCostUsd !== null
+            API-equivalent cost: {{ usageCostSettings?.showApiEquivalentCost === false ? 'hidden by settings' : currentRun.usage?.costSource === 'calculated' && currentRun.usage.apiEquivalentCostUsd !== null
               ? `${formatUsd(currentRun.usage.apiEquivalentCostUsd)} · CALCULATED`
               : 'unavailable' }}
           </small>
-          <details v-if="currentRun.usage?.costBreakdown" class="usage-cost-breakdown">
+          <details v-if="usageCostSettings?.showApiEquivalentCost !== false && currentRun.usage?.costBreakdown" class="usage-cost-breakdown">
             <summary title="Show the token counts, price rates, and subtotals used to calculate this API-equivalent amount.">API-equivalent cost breakdown</summary>
             <p><strong>Model:</strong> {{ currentRun.usage.costBreakdown.model }}</p>
             <ul>
@@ -2250,6 +2510,16 @@ onUnmounted(() => {
           <label title="Describe, in your own words, the question or problem you want Claude and Codex to think about.">
             <span>Problem statement</span>
             <textarea v-model="taskForm.problemStatement" rows="5" maxlength="20000" required></textarea>
+          </label>
+
+          <label title="Choose how many model runs and review rounds this task should be allowed before the app pauses for your decision. You can fine-tune it after creating the draft.">
+            <span>Usage budget</span>
+            <select v-model="taskForm.budgetPreset" title="Balanced is the workspace default. No budget still keeps the provider-plan safety checks active.">
+              <option value="NONE">No task budget</option>
+              <option value="ECONOMY">Economy</option>
+              <option value="BALANCED">Balanced</option>
+              <option value="DEEP">Deep</option>
+            </select>
           </label>
 
           <fieldset class="web-decision" title="Decide once, before you start, whether the AIs are allowed to search the internet for this task. You must pick one — it can't be changed after you start.">
@@ -2332,6 +2602,35 @@ onUnmounted(() => {
               </template>
             </div>
 
+            <div v-if="selectedTaskBudget" class="task-budget-card">
+              <div class="subsection-heading"><span>TASK BUDGET</span><strong>{{ selectedTaskBudget.budget.state }} · {{ selectedTaskBudget.budget.preset }}</strong></div>
+              <div class="task-usage-summary">
+                <div><span>Agent runs</span><strong>{{ selectedTaskBudget.progress.agentRuns }}<template v-if="selectedTaskBudget.budget.maxAgentRuns !== null">/{{ selectedTaskBudget.budget.maxAgentRuns }}</template></strong></div>
+                <div><span>Tokens</span><strong>{{ selectedTaskBudget.progress.totalTokens.toLocaleString() }}<template v-if="selectedTaskBudget.budget.maxTokens !== null">/{{ selectedTaskBudget.budget.maxTokens.toLocaleString() }}</template></strong></div>
+                <div><span>API-equivalent cost</span><strong>{{ usageCostSettings?.showApiEquivalentCost === false ? "Hidden" : formatUsd(selectedTaskBudget.progress.apiEquivalentCostUsd) }}<template v-if="usageCostSettings?.showApiEquivalentCost !== false && selectedTaskBudget.budget.apiEquivalentCostWarningUsd !== null"> / {{ formatUsd(selectedTaskBudget.budget.apiEquivalentCostWarningUsd) }}</template></strong></div>
+                <div><span>Utilization</span><strong>{{ selectedTaskBudget.progress.utilizationPercent.toFixed(0) }}%</strong></div>
+              </div>
+              <p v-if="selectedTaskBudget.budget.checkpointReason" class="form-message error-text" role="alert">{{ selectedTaskBudget.budget.checkpointReason }}</p>
+              <form class="budget-form" @submit.prevent="saveTaskBudget">
+                <label title="Use a named preset, remove the task budget, or enter exact custom limits."><span>Preset</span><select v-model="taskBudgetForm.preset" title="Changing a budget never erases usage already recorded for this task."><option value="NONE">No budget</option><option value="ECONOMY">Economy</option><option value="BALANCED">Balanced</option><option value="DEEP">Deep</option><option value="CUSTOM">Custom</option></select></label>
+                <template v-if="taskBudgetForm.preset === 'CUSTOM'">
+                  <label title="Pause before the next model run once the task has recorded this many tokens. Leave blank for no token limit."><span>Maximum tokens</span><input v-model="taskBudgetForm.maxTokens" type="number" min="1" max="10000000000" title="Enter a positive whole-number token limit, or leave it blank." /></label>
+                  <label title="Pause before the next model run once calculated API-equivalent cost reaches this amount. Missing pricing also causes an honest checkpoint."><span>Cost warning (USD)</span><input v-model="taskBudgetForm.apiEquivalentCostWarningUsd" type="number" min="0.000001" step="0.000001" title="Enter an API-equivalent cost limit, or leave it blank." /></label>
+                  <label title="Pause before starting a model run once this many task-linked runs already exist."><span>Maximum agent runs</span><input v-model="taskBudgetForm.maxAgentRuns" type="number" min="1" max="1000" title="Enter a positive whole-number model-run limit, or leave it blank." /></label>
+                  <label title="Cap build/review loops for this task. This does not interrupt a round already in progress."><span>Maximum review rounds</span><input v-model="taskBudgetForm.maxReviewRounds" type="number" min="1" max="10" title="Enter a review-round cap from 1 to 10, or leave it blank." /></label>
+                  <label title="Show a warning once the most-used configured limit reaches this percentage."><span>Warning at %</span><input v-model="taskBudgetForm.warningPercent" type="number" min="1" max="99" title="Choose a warning percentage from 1 to 99." /></label>
+                </template>
+                <button class="text-button" type="submit" :disabled="taskBudgetSaving" title="Save this task's resolved budget. Existing usage continues to count.">{{ taskBudgetSaving ? "Saving…" : "Save task budget" }}</button>
+              </form>
+              <div v-if="selectedTaskBudget.budget.state === 'CHECKPOINTED'" class="provider-pair">
+                <button class="ghost-button" type="button" :disabled="taskBudgetSaving" @click="decideTaskBudget('STOP_AND_SUMMARIZE')" title="Stop all further model calls for this task. Existing results and the usage summary are kept.">Stop &amp; Summarize</button>
+                <button class="danger-outline-button" type="button" :disabled="taskBudgetSaving" @click="decideTaskBudget('CONTINUE_ONE_RUN')" title="Allow exactly one more model call, then evaluate the budget again before anything else runs.">Continue One Run</button>
+              </div>
+              <p v-if="taskBudgetError" class="form-message error-text" role="alert">{{ taskBudgetError }}</p>
+              <p v-if="taskBudgetMessage" class="form-message success-text" role="status">{{ taskBudgetMessage }}</p>
+              <small>Budgets never interrupt a model mid-run. Provider-plan safety remains separate and can still pause a task sooner.</small>
+            </div>
+
             <div v-if="usageBlockedDecision" class="usage-checkpoint-block" role="alert" title="The app paused here to make sure you don't accidentally run out of your Claude/Codex plan without knowing.">
               <span>USAGE SAFETY CHECKPOINT</span>
               <strong>{{ usageBlockedDecision.provider === 'CLAUDE' ? 'Claude Code' : 'Codex' }} · {{ usageStatusLabel(usageBlockedDecision.status) }}</strong>
@@ -2394,9 +2693,8 @@ onUnmounted(() => {
 
             <div v-if="selectedTask.status === 'CHECKPOINTED'" class="live-stages checkpointed" title="The workflow paused itself so it wouldn't spend more usage without your say-so. Nothing already finished is lost.">
               <p>
-                This workflow paused at a usage-safety checkpoint rather than continuing blind. Everything completed so
-                far is saved. Resolve the checkpoint above (acknowledge, wait for reset, or record a fresh reading), then
-                resume — nothing already completed is re-run.
+                This workflow paused at a provider-safety or task-budget checkpoint rather than continuing blind. Everything
+                completed so far is saved. Resolve the checkpoint above, then resume — nothing already completed is re-run.
               </p>
               <div class="provider-pair">
                 <button class="primary-button" type="button" :disabled="startingTask" @click="resumeBrainstorm" title="Pick up right where the brainstorm paused — steps already completed are not repeated.">
@@ -2571,6 +2869,11 @@ onUnmounted(() => {
                 <p><strong>Builder / Reviewer</strong> {{ providerLabel(experiment.builderProvider) }} builds, {{ providerLabel(experiment.reviewerProvider) }} reviews</p>
                 <p v-if="experiment.result"><strong>Result</strong> {{ experiment.result }}</p>
                 <p v-if="experiment.conclusion"><strong>Conclusion</strong> {{ experiment.conclusion }}</p>
+                <button
+                  v-if="experiment.status === 'CHECKPOINTED'"
+                  class="ghost-button" type="button" @click="resumeExperiment(experiment)"
+                  title="Resume this experiment after resolving its provider-safety or task-budget checkpoint. Completed work is reused."
+                >Resume</button>
                 <button
                   v-if="['RUNNING', 'REVIEWING', 'CHECKPOINTED'].includes(experiment.status)"
                   class="danger-outline-button" type="button" @click="cancelExperiment(experiment)"
@@ -3161,6 +3464,44 @@ onUnmounted(() => {
           <span class="safety-badge" title="Token totals identify whether they came directly from a provider, were calculated from exact counters, or were unavailable. Costs appear only when a matching versioned price exists.">LABELED SOURCES · NO GUESSING</span>
         </div>
 
+        <details class="usage-settings-card">
+          <summary title="Open local collection, display, budget-preset, and pricing controls.">Usage &amp; Cost settings</summary>
+          <form class="usage-settings-form" @submit.prevent="saveUsageSettings">
+            <label class="setting-toggle" title="When off, new runs keep an unavailable audit row but token counters and calculated cost are not collected."><input v-model="usageSettingsForm.trackUsage" type="checkbox" title="Turn token and cost collection for new runs on or off." /><span><strong>Track usage</strong><small>Collect provider-reported counters for new runs.</small></span></label>
+            <label class="setting-toggle" title="Hide or show API-equivalent estimates in the interface. Previously calculated values stay stored."><input v-model="usageSettingsForm.showApiEquivalentCost" type="checkbox" title="Show API-equivalent cost estimates in dashboards and task cards." /><span><strong>Show API-equivalent cost</strong><small>Display estimates only when a matching price exists.</small></span></label>
+            <label class="setting-toggle" title="Store the normalized provider token payload on new usage records for troubleshooting. Turning it off does not delete history."><input v-model="usageSettingsForm.storeRawTelemetry" type="checkbox" title="Keep or omit raw normalized usage metadata on new records." /><span><strong>Store raw usage telemetry</strong><small>Useful for auditing provider counter changes.</small></span></label>
+            <label title="Budget preset automatically selected when a new task is created."><span>Default task budget</span><select v-model="usageSettingsForm.defaultBudgetPreset" title="Choose the starting budget for future tasks only."><option value="NONE">No budget</option><option value="ECONOMY">Economy</option><option value="BALANCED">Balanced</option><option value="DEEP">Deep</option></select></label>
+            <label title="Warn when provider-plan usage reaches this percentage. The separate checkpoint threshold still controls blocking."><span>Default usage warning %</span><input v-model="policyForm.warningThresholdPercent" type="number" min="0" max="100" title="Choose the provider-plan warning threshold from 0 to 100 percent." /></label>
+            <div v-for="preset in (['ECONOMY', 'BALANCED', 'DEEP'] as const)" :key="preset" class="preset-editor">
+              <strong>{{ preset }}</strong>
+              <label :title="`Maximum model calls in the ${preset.toLowerCase()} preset.`"><span>Runs</span><input v-model.number="usageSettingsForm.budgetPresets[preset].maxAgentRuns" type="number" min="1" max="1000" :title="`Set ${preset.toLowerCase()} maximum model runs.`" /></label>
+              <label :title="`Maximum build/review rounds in the ${preset.toLowerCase()} preset.`"><span>Review rounds</span><input v-model.number="usageSettingsForm.budgetPresets[preset].maxReviewRounds" type="number" min="1" max="10" :title="`Set ${preset.toLowerCase()} maximum review rounds.`" /></label>
+              <label :title="`Warning percentage for the ${preset.toLowerCase()} preset.`"><span>Warn at %</span><input v-model.number="usageSettingsForm.budgetPresets[preset].warningPercent" type="number" min="1" max="99" :title="`Set ${preset.toLowerCase()} warning percentage.`" /></label>
+            </div>
+            <button class="primary-button" type="submit" :disabled="usageSettingsSaving" title="Save these local settings and preset definitions. Existing task budget snapshots do not change.">{{ usageSettingsSaving ? "Saving…" : "Save settings" }}</button>
+          </form>
+          <p v-if="usageSettingsMessage" class="form-message success-text" role="status">{{ usageSettingsMessage }}</p>
+
+          <details class="pricing-editor">
+            <summary title="Add immutable per-model price versions and inspect the saved registry.">Pricing registry · {{ pricingEntries.length }} version(s)</summary>
+            <form class="pricing-form" @submit.prevent="createPricingVersion">
+              <label title="The provider whose model price is being recorded."><span>Provider</span><select v-model="pricingForm.provider" title="Choose Claude Code or Codex."><option value="CLAUDE">Claude Code</option><option value="CODEX">Codex</option></select></label>
+              <label title="Exact model identifier reported by the provider."><span>Model ID</span><input v-model="pricingForm.model" required maxlength="200" title="Enter the exact provider model ID." /></label>
+              <label title="USD price per one million ordinary input tokens."><span>Input / 1M</span><input v-model="pricingForm.inputPricePerMillion" type="number" min="0" step="0.000001" required title="Enter the input-token price per million." /></label>
+              <label title="USD price per one million output tokens."><span>Output / 1M</span><input v-model="pricingForm.outputPricePerMillion" type="number" min="0" step="0.000001" required title="Enter the output-token price per million." /></label>
+              <label title="Optional USD price per one million cached input tokens."><span>Cached input / 1M</span><input v-model="pricingForm.cachedInputPricePerMillion" type="number" min="0" step="0.000001" title="Enter a cached-input price or leave it blank." /></label>
+              <label title="Optional USD price per one million cache-creation input tokens."><span>Cache creation / 1M</span><input v-model="pricingForm.cacheCreationInputPricePerMillion" type="number" min="0" step="0.000001" title="Enter a cache-creation price or leave it blank." /></label>
+              <label title="Optional USD price per one million reasoning-output tokens."><span>Reasoning / 1M</span><input v-model="pricingForm.reasoningPricePerMillion" type="number" min="0" step="0.000001" title="Enter a reasoning-output price or leave it blank." /></label>
+              <label title="When this price became valid. Leave blank to use the current time."><span>Effective from</span><input v-model="pricingForm.effectiveFrom" type="datetime-local" title="Choose the price's effective date and time, or leave it blank for now." /></label>
+              <label title="Where this price came from, such as a provider pricing page and retrieval date."><span>Source</span><input v-model="pricingForm.source" required maxlength="1000" title="Record a human-readable source for this price version." /></label>
+              <button class="text-button" type="submit" :disabled="pricingSaving" title="Add a new immutable price version. Existing usage snapshots are never silently recalculated.">{{ pricingSaving ? "Adding…" : "Add price version" }}</button>
+            </form>
+            <div class="pricing-list">
+              <span v-for="entry in pricingEntries" :key="entry.id"><strong>{{ entry.provider }} · {{ entry.model }}</strong> · in {{ formatUsd(entry.inputPricePerMillion) }}/1M · out {{ formatUsd(entry.outputPricePerMillion) }}/1M · effective {{ new Date(entry.effectiveFrom).toLocaleString() }} · {{ entry.source }}</span>
+            </div>
+          </details>
+        </details>
+
         <form class="usage-dashboard-filters" @submit.prevent="loadUsageDashboard">
           <label title="How much history to include in every card and table below.">
             <span>Period</span>
@@ -3262,7 +3603,7 @@ onUnmounted(() => {
                 <summary :title="`Open the token and cost details for this ${providerLabel(run.provider)} run.`">
                   <span>{{ providerLabel(run.provider) }} · {{ run.workflow.replaceAll('_', ' ') }}</span>
                   <strong>{{ run.tokens === null ? "Tokens unavailable" : `${run.tokens.toLocaleString()} tokens` }}</strong>
-                  <small>{{ run.apiEquivalentCostUsd === null ? "Cost unavailable" : formatUsd(run.apiEquivalentCostUsd) }}</small>
+                  <small>{{ usageCostSettings?.showApiEquivalentCost === false ? "Cost hidden" : run.apiEquivalentCostUsd === null ? "Cost unavailable" : formatUsd(run.apiEquivalentCostUsd) }}</small>
                 </summary>
                 <dl class="usage-run-grid">
                   <div><dt>Task</dt><dd>{{ taskName(run.taskId) }}</dd></div>
