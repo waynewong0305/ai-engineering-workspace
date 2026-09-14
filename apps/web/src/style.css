@@ -16,8 +16,8 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 320px; background: #070b14; }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+html { background: #070b14; }
+body { margin: 0; min-height: 100vh; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
 
@@ -320,7 +320,7 @@ legend small { margin-left: 8px; }
 .usage-panel { margin-top: 56px; }
 .usage-panel > .panel-heading p { max-width: 760px; }
 .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 26px; }
-.usage-card { display: grid; align-content: start; gap: 16px; padding: 20px; border: 1px solid var(--line); background: #080e19; }
+.usage-card { display: grid; min-width: 0; align-content: start; gap: 16px; padding: 20px; border: 1px solid var(--line); background: #080e19; }
 .usage-card header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .usage-card header strong { font-size: 15px; }
 .usage-window { display: grid; gap: 8px; }
@@ -543,9 +543,9 @@ legend small { margin-left: 8px; }
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; height: auto; min-width: 0; padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
   .brand { margin-bottom: 18px; }
-  nav { display: flex; overflow-x: auto; }
+  nav { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 4px; }
   .nav-label, .nav-item span, .nav-item em, .sidebar-foot { display: none; }
-  .nav-item { white-space: nowrap; border-left: 0; border-bottom: 2px solid transparent; }
+  .nav-item { justify-content: center; min-width: 0; white-space: nowrap; border-left: 0; border-bottom: 2px solid transparent; }
   .nav-item.active { border-bottom-color: var(--cyan); }
   main { padding-top: 24px; }
   .intro-grid { grid-template-columns: 1fr; gap: 24px; }
@@ -564,6 +564,8 @@ legend small { margin-left: 8px; }
 }
 
 @media (max-width: 520px) {
+  .sidebar { padding-inline: 16px; }
+  nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar { align-items: flex-start; }
   .topbar .ghost-button { padding: 0 12px; white-space: nowrap; }
   .intro-grid { padding-top: 42px; }

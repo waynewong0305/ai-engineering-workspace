@@ -745,6 +745,36 @@ Completion record:
   `npm run build`, and `git diff --check`; all passed under Node 22.23.2. No console errors observed
   at any audited viewport.
 
+### Small-screen overflow regression fixed (post-audit)
+
+- Date: 2026-09-14
+- The **10 — Usage & cost** dashboard (added later the same day as the accessibility/responsive
+  audit above, so it postdates that audit's sweep) introduced a real small-screen regression: the
+  audit's own record above only holds for the UI as it existed *before* that section shipped. A
+  human caught the regression by hand on a real small viewport and asked Codex to fix it; Codex made
+  the CSS edit but ran out of usage credits before verifying or committing, leaving the change
+  uncommitted in the working tree.
+- Verified the leftover uncommitted `apps/web/src/style.css` change rather than trusting it blind:
+  loaded the live app in the Browser pane at 320px, 375px, and 768px, reloaded at each size against
+  the same registered project/task data used above, and confirmed
+  `document.documentElement.scrollWidth === window.innerWidth` (i.e. no element anywhere on the page
+  forces horizontal overflow) at all three, scrolling the full length of every numbered section
+  (01–10) at 375px. Also re-checked the unaffected desktop layout (800px) for regressions and
+  exercised in-page anchor navigation (nav → `#worktrees`) at 375px to confirm the fix didn't break
+  scroll-to-section behavior. No console errors at any width.
+- Root causes fixed: (1) `html`/`body` no longer force `min-width: 320px`, which had been clamping
+  the viewport wider than some real small devices; (2) `.usage-card` (a CSS grid item) now sets
+  `min-width: 0` — grid/flex items default to a content-based minimum width, so the Usage & Cost
+  cards' unwrapped numbers/labels were forcing the grid wider than the viewport; (3) the `≤720px`
+  sidebar nav changed from a horizontally-scrolling `flex` strip to a wrapping
+  `grid-template-columns: repeat(auto-fill, minmax(130px, 1fr))`, and a `≤520px` override tightens it
+  to a fixed 2-column grid with reduced side padding, so the nav itself no longer needs horizontal
+  scroll to reach every tab on a phone.
+- Full verification: `npm test` (230 workspace tests: 138 server + 61 agents + 31 `packages/git`,
+  plus 9 policy-script tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`,
+  `npm run db:generate` (no schema changes — this was a CSS-only fix), and `git diff --check`; all
+  passed under Node 22.23.2.
+
 ### Frontend verification policy recorded — implementation pending
 
 - Date: 2026-09-13
