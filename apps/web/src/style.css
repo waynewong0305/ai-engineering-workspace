@@ -449,6 +449,32 @@ legend small { margin-left: 8px; }
 .evidence-item p { margin: 0; font-size: 12px; }
 .evidence-item small { color: #647792; }
 
+.question-board { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.question-filters { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 12px; }
+.question-filters .text-button.active { color: var(--cyan); }
+.question-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 14px; }
+.question-card { min-width: 0; overflow-wrap: anywhere; padding: 14px; border: 1px solid var(--line); background: #080e19; }
+.question-card-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; }
+.question-status { font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: 0.06em; color: var(--muted); }
+.question-status.answered { color: var(--lime); }
+.question-status.deferred, .question-status.duplicate { color: #ffcb6b; }
+.question-status.not_applicable { color: #71849f; }
+.question-card-heading small { color: #647792; }
+.question-text { margin: 10px 0; font-size: 13px; line-height: 1.5; }
+.question-suggestion { margin: 8px 0; color: #9bb0ca; font-size: 12px; line-height: 1.5; }
+.question-suggestion strong { color: var(--cyan); font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: 0.04em; }
+.question-suggestion ul { margin: 4px 0 0; padding-left: 18px; }
+.question-duplicate-note { margin: 8px 0; color: #ffcb6b; font-size: 12px; }
+.question-card textarea, .question-card select { width: 100%; margin-top: 8px; }
+.question-suggested-answers { display: grid; gap: 6px; margin-top: 8px; }
+.question-suggested-answer { width: 100%; padding: 10px 12px; text-align: left; white-space: normal; line-height: 1.5; }
+.question-actions { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; align-items: center; }
+.question-history { margin-top: 10px; }
+.question-history > summary { cursor: pointer; color: #8297b3; font: 600 10px/1.4 ui-monospace, monospace; }
+.question-history[open] > summary { color: var(--cyan); }
+.question-history ul { margin: 8px 0 0; padding-left: 18px; color: #9bb0ca; font-size: 12px; line-height: 1.6; }
+.question-history small { display: block; color: #647792; font-size: 10px; }
+
 /* ADRs have many long-form fields, not evidence-board's fixed 3-column shape, so both reused
    classes are overridden to a single stacked column rather than inheriting that grid. */
 .adr-form.evidence-form { grid-template-columns: 1fr; max-width: 640px; }

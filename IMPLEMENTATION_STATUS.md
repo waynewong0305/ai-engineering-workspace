@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 
 ## Current release boundary
 
@@ -222,6 +222,55 @@ db:migrate` against the real local database, and `git diff --check`; all passed.
 in this unit — the evidence board's existing `QUESTION` rendering and the sidebar badge are otherwise
 unchanged; browser verification is deferred to the follow-on unit that adds the dedicated question
 card UI.
+
+Later addition (2026-09-15): auditable question resolution, step 2 of 6 — the dedicated question
+card UI, wired to the step-1 lifecycle routes, plus a schema addition for multiple-choice suggested
+answers added while scoping this step (see below). `apps/web/src/App.vue`'s evidence board now
+renders `QUESTION`-typed evidence items in a separate "QUESTIONS" subsection instead of the generic
+`.evidence-item` list (the generic list now excludes them via a new `nonQuestionEvidence` computed),
+with Open/Answered/Deferred/Duplicates/All-records filter tabs and one card per question showing its
+status, why-it-matters/suggested-action/evidence-needed (each hidden when blank, since no code path
+populates them yet — that is step 4/6), Write answer/Defer/Not applicable/Mark as duplicate actions
+gated on the question being `OPEN` (matching the step-1 state machine), a Reopen/Remove-duplicate-link
+action otherwise, and an expandable History disclosure listing every past response with its
+timestamp. Every new control carries a plain-language `title` tooltip per `AGENTS.md`. New CSS in
+`apps/web/src/style.css` (`.question-board`, `.question-card`, `.question-status` with per-status
+color modifiers matching the existing `.finding-status` precedent, etc.) — no dark/light theming
+concern since this whole application is a single fixed dark theme, not a themed Artifact.
+While scoping the answer UX with the human, a follow-on request emerged mid-implementation: when a
+question carries provider-suggested candidate answers, offer them as one-click multiple-choice
+options (with a "Write my own answer" escape hatch) rather than only a blank textarea — closer to how
+an agent's own clarifying-question UI works. Added `question_details.suggested_answers` (nullable
+JSON string array, migration `0018_peaceful_redwing.sql`, a plain additive `ALTER TABLE ... ADD`
+column with no FK so the Phase 5 FK-action pitfall doesn't apply) and `ensureQuestionDetails`'s
+default now includes it as `null`. The answer box (`startAnswering`/`useCustomAnswer`/
+`selectSuggestedAnswer` in `App.vue`) shows suggested answers as clickable buttons that submit
+immediately when present, defaulting straight to the free-text textarea when a question has none;
+either path posts to the same `POST .../questions/:questionId/responses` route from step 1, so no
+server-side lifecycle change was needed. Nothing currently populates `suggested_answers` — that is
+step 4 (v2 structured prompts, generated automatically as part of the existing analysis/cross-review
+call, per explicit human decision — no separate provider run) and step 6 (on-demand legacy
+suggestion generation) — so this ships forward-compatible but inert until then, exactly like the
+already-blank `whyItMatters`/`suggestedAction`/`expectedEvidence` fields from step 1.
+No automated frontend test harness exists for this project (established limitation, see the Phase 3
+usage-safety UI record); verified instead in the real local browser against the task's real 18
+question records (not a synthetic fixture): answered a question (badge count 18→17), reopened it
+(count restored, History showed both entries), confirmed a duplicate using the exact
+infrastructure-topology pair the human had already flagged as a likely duplicate (count 17→16,
+"Duplicate of: <canonical question text>" rendered correctly), removed the duplicate link (count
+restored), and — after temporarily patching one question's `suggested_answers` directly in the real
+database to exercise the otherwise-still-unpopulated MCQ path — picked a suggested answer end to end
+(History correctly recorded three entries: original test answer, reopened, MCQ-selected answer) and
+confirmed the "Write my own answer"/"Back to suggestions" escape hatches both render. The test-only
+`suggested_answers` value was cleared from the real database afterward; every other test action
+(answer/reopen/duplicate/remove-link) was left as real, intentional, permanent audit history on the
+human's real task, matching what the feature is supposed to produce in normal use. Checked layout at
+both desktop and an emulated 375px mobile width — filter tabs, action buttons, and the MCQ options
+all wrap without horizontal overflow. Verified under Node 22.23.2 with `npm test` (unchanged: 152
+server tests, since `toMatchObject`-style assertions in `questions.test.ts` don't break on an added
+field; 65 agent-package tests; 31 Git-package tests), `npm run typecheck`, `npm run build`, `npm run
+check:agent-policy`, `npm run db:generate` (reports only migration `0018`), `npm run db:migrate`
+against the real local database, and `git diff --check`; all passed.
 
 ## Phase 4 — Git worktrees
 

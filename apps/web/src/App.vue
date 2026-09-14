@@ -224,6 +224,29 @@ type EvidenceItem = {
   content: string;
   sourceProvider: AgentProvider | null;
 };
+type QuestionStatus = "OPEN" | "ANSWERED" | "DEFERRED" | "NOT_APPLICABLE" | "DUPLICATE";
+type QuestionResponseSource = "HUMAN" | "EXPERIMENT" | "PROVIDER";
+type QuestionResponse = {
+  id: string;
+  questionId: string;
+  answer: string;
+  resultingStatus: QuestionStatus;
+  linkedEvidenceItemId: string | null;
+  linkedExperimentId: string | null;
+  source: QuestionResponseSource;
+  createdAt: string;
+};
+type QuestionDetail = {
+  questionId: string;
+  status: QuestionStatus;
+  whyItMatters: string | null;
+  suggestedAction: string | null;
+  expectedEvidence: string[] | null;
+  suggestedAnswers: string[] | null;
+  suggestionSource: "CLAUDE" | "CODEX" | "HUMAN" | null;
+  duplicateOfQuestionId: string | null;
+  responses: QuestionResponse[];
+};
 type ExperimentStatus = "RUNNING" | "REVIEWING" | "COMPLETED" | "FAILED" | "CANCELLED" | "CHECKPOINTED";
 type ExperimentVerdict = "PROVEN" | "DISPROVEN" | "INCONCLUSIVE";
 type Experiment = {
@@ -282,6 +305,7 @@ type BrainstormTask = {
   runs?: Array<AgentRun & { role: "INDEPENDENT_ANALYSIS" | "CROSS_REVIEW"; targetProvider: AgentProvider | null }>;
   artifacts?: TaskArtifact[];
   evidence?: EvidenceItem[];
+  questionDetails?: QuestionDetail[];
   openQuestionCount: number;
   comparison?: {
     consensus: string[];
@@ -560,6 +584,34 @@ const evidenceContent = ref("");
 const editingEvidenceId = ref("");
 const editingEvidenceContent = ref("");
 const editingEvidenceType = ref<EvidenceItem["type"]>("FACT");
+const questionFilter = ref<"OPEN" | "ANSWERED" | "DEFERRED" | "DUPLICATE" | "ALL">("OPEN");
+const answeringQuestionId = ref("");
+const answerDraft = ref("");
+const confirmingDuplicateQuestionId = ref("");
+const duplicateTargetId = ref("");
+const questionActionError = ref("");
+const usingCustomAnswer = ref(false);
+const questionDetailByQuestionId = computed(() => {
+  const map = new Map<string, QuestionDetail>();
+  for (const detail of selectedTask.value?.questionDetails ?? []) map.set(detail.questionId, detail);
+  return map;
+});
+function questionDetailFor(item: EvidenceItem): QuestionDetail | undefined {
+  return questionDetailByQuestionId.value.get(item.id);
+}
+function questionContentById(questionId: string): string {
+  return selectedTask.value?.evidence?.find((item) => item.id === questionId)?.content ?? "(question no longer available)";
+}
+const nonQuestionEvidence = computed(() => (selectedTask.value?.evidence ?? []).filter((item) => item.type !== "QUESTION"));
+const allQuestions = computed(() => (selectedTask.value?.evidence ?? []).filter((item): item is EvidenceItem => item.type === "QUESTION"));
+function otherOpenQuestions(questionId: string): EvidenceItem[] {
+  return allQuestions.value.filter((item) => item.id !== questionId && (questionDetailFor(item)?.status ?? "OPEN") === "OPEN");
+}
+const filteredQuestions = computed(() => allQuestions.value.filter((item) => {
+  const status = questionDetailFor(item)?.status ?? "OPEN";
+  if (questionFilter.value === "ALL") return true;
+  return status === questionFilter.value;
+}));
 const brainstormReport = ref<BrainstormPlanReport | null>(null);
 const loadingBrainstormReport = ref(false);
 const brainstormReportError = ref("");
@@ -1895,6 +1947,83 @@ async function saveEvidence(item: EvidenceItem) {
   }
 }
 
+async function questionAction(questionId: string, path: string, body?: Record<string, unknown>, method: "POST" | "DELETE" = "POST") {
+  if (!selectedTask.value) return;
+  questionActionError.value = "";
+  const response = await fetch(`/api/tasks/${selectedTask.value.id}/questions/${questionId}${path}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    questionActionError.value = result.message ?? "Could not update this question.";
+    return false;
+  }
+  await selectTask(selectedTask.value.id);
+  return true;
+}
+
+function startAnswering(item: EvidenceItem) {
+  answeringQuestionId.value = item.id;
+  answerDraft.value = "";
+  confirmingDuplicateQuestionId.value = "";
+  // Suggested answers, when present, are offered as one-click multiple-choice options first; the
+  // free-text box only opens by default when there's nothing to choose from.
+  usingCustomAnswer.value = !questionDetailFor(item)?.suggestedAnswers?.length;
+}
+
+function useCustomAnswer() {
+  usingCustomAnswer.value = true;
+}
+
+function cancelAnswering() {
+  answeringQuestionId.value = "";
+  answerDraft.value = "";
+  usingCustomAnswer.value = false;
+}
+
+async function submitAnswer(questionId: string) {
+  if (!answerDraft.value.trim()) return;
+  if (await questionAction(questionId, "/responses", { answer: answerDraft.value })) cancelAnswering();
+}
+
+async function selectSuggestedAnswer(questionId: string, answer: string) {
+  if (await questionAction(questionId, "/responses", { answer })) cancelAnswering();
+}
+
+async function deferQuestion(questionId: string) {
+  await questionAction(questionId, "/defer");
+}
+
+async function markQuestionNotApplicable(questionId: string) {
+  await questionAction(questionId, "/mark-not-applicable");
+}
+
+async function reopenQuestion(questionId: string) {
+  await questionAction(questionId, "/reopen");
+}
+
+function startConfirmingDuplicate(item: EvidenceItem) {
+  confirmingDuplicateQuestionId.value = item.id;
+  duplicateTargetId.value = "";
+  answeringQuestionId.value = "";
+}
+
+function cancelConfirmingDuplicate() {
+  confirmingDuplicateQuestionId.value = "";
+  duplicateTargetId.value = "";
+}
+
+async function confirmDuplicate(questionId: string) {
+  if (!duplicateTargetId.value) return;
+  if (await questionAction(questionId, "/confirm-duplicate", { duplicateOfQuestionId: duplicateTargetId.value })) cancelConfirmingDuplicate();
+}
+
+async function removeDuplicateLink(questionId: string) {
+  await questionAction(questionId, "/duplicate-link", undefined, "DELETE");
+}
+
 function analysisFor(provider: AgentProvider) {
   return selectedTask.value?.artifacts?.find((item) => item.kind === "ANALYSIS" && item.provider === provider)?.structuredData as BrainstormAnalysis | null | undefined;
 }
@@ -2880,10 +3009,102 @@ onUnmounted(() => {
                 <input v-model="evidenceContent" maxlength="5000" placeholder="Add a human correction, fact, question, decision, or experiment result…" />
                 <button class="ghost-button" type="submit" title="Save this note to the board so it's kept alongside the task for later.">Add record</button>
               </form>
-              <details v-if="selectedTask.evidence?.length" class="evidence-records" :open="selectedTask.status !== 'READY'">
-                <summary title="Open or close the saved evidence records. The form for adding a new record stays available above.">{{ selectedTask.evidence.length }} saved records</summary>
+
+              <div v-if="allQuestions.length" class="question-board">
+                <div class="subsection-heading" title="Every question an AI raised (or a human added), each with its own status so you can track what still needs an answer."><span>QUESTIONS</span><strong>{{ allQuestions.length }} total</strong></div>
+                <p v-if="questionActionError" class="error-text" role="alert">{{ questionActionError }}</p>
+                <div class="question-filters" role="tablist" aria-label="Filter questions by status">
+                  <button type="button" class="text-button" :class="{ active: questionFilter === 'OPEN' }" @click="questionFilter = 'OPEN'" title="Show only questions nobody has resolved yet.">Open</button>
+                  <button type="button" class="text-button" :class="{ active: questionFilter === 'ANSWERED' }" @click="questionFilter = 'ANSWERED'" title="Show only questions that already have a saved answer.">Answered</button>
+                  <button type="button" class="text-button" :class="{ active: questionFilter === 'DEFERRED' }" @click="questionFilter = 'DEFERRED'" title="Show only questions put off for later.">Deferred</button>
+                  <button type="button" class="text-button" :class="{ active: questionFilter === 'DUPLICATE' }" @click="questionFilter = 'DUPLICATE'" title="Show only questions confirmed as a duplicate of another one.">Duplicates</button>
+                  <button type="button" class="text-button" :class="{ active: questionFilter === 'ALL' }" @click="questionFilter = 'ALL'" title="Show every question regardless of status, including ones marked not applicable.">All records</button>
+                </div>
+                <div class="question-list">
+                  <article v-for="item in filteredQuestions" :key="item.id" class="question-card">
+                    <div class="question-card-heading">
+                      <span :class="['question-status', (questionDetailFor(item)?.status ?? 'OPEN').toLowerCase()]" title="OPEN = still needs a human decision. ANSWERED = resolved with a saved answer. DEFERRED = put off for later. NOT_APPLICABLE = no longer relevant. DUPLICATE = merged into another question.">{{ questionDetailFor(item)?.status ?? "OPEN" }}</span>
+                      <small :title="item.sourceProvider ? 'This question came from one of the AI runs, not typed by a person.' : 'This question was typed in by a human, not the AI.'">{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
+                    </div>
+                    <p class="question-text">{{ item.content }}</p>
+
+                    <p v-if="questionDetailFor(item)?.whyItMatters" class="question-suggestion"><strong>Why it matters</strong><br />{{ questionDetailFor(item)?.whyItMatters }}</p>
+                    <p v-if="questionDetailFor(item)?.suggestedAction" class="question-suggestion"><strong>Suggested next step</strong><br />{{ questionDetailFor(item)?.suggestedAction }}</p>
+                    <div v-if="questionDetailFor(item)?.expectedEvidence?.length" class="question-suggestion">
+                      <strong>Evidence needed</strong>
+                      <ul><li v-for="(evidenceHint, index) in questionDetailFor(item)?.expectedEvidence" :key="index">{{ evidenceHint }}</li></ul>
+                    </div>
+
+                    <p v-if="questionDetailFor(item)?.status === 'DUPLICATE'" class="question-duplicate-note">
+                      Duplicate of: <em>{{ questionContentById(questionDetailFor(item)?.duplicateOfQuestionId ?? "") }}</em>
+                    </p>
+
+                    <template v-if="(questionDetailFor(item)?.status ?? 'OPEN') === 'OPEN'">
+                      <template v-if="answeringQuestionId === item.id && !usingCustomAnswer">
+                        <div class="question-suggested-answers">
+                          <button
+                            v-for="(suggestion, index) in questionDetailFor(item)?.suggestedAnswers"
+                            :key="index"
+                            type="button"
+                            class="ghost-button question-suggested-answer"
+                            @click="selectSuggestedAnswer(item.id, suggestion)"
+                            title="Use this AI-suggested answer as-is and mark the question answered."
+                          >{{ suggestion }}</button>
+                        </div>
+                        <div class="question-actions">
+                          <button type="button" class="text-button" @click="useCustomAnswer" title="None of these fit — write your own answer instead.">Write my own answer</button>
+                          <button type="button" class="text-button" @click="cancelAnswering" title="Close this box without saving an answer.">Cancel</button>
+                        </div>
+                      </template>
+                      <template v-else-if="answeringQuestionId === item.id">
+                        <p v-if="questionDetailFor(item)?.suggestedAnswers?.length" class="form-hint">None of the suggested answers fit? Write your own below.</p>
+                        <textarea v-model="answerDraft" maxlength="5000" placeholder="Write the answer to this question…" title="The answer that resolves this question. It's saved permanently, even if you edit it again later."></textarea>
+                        <div class="question-actions">
+                          <button type="button" class="ghost-button" @click="submitAnswer(item.id)" title="Save this answer and mark the question answered.">Save as answered</button>
+                          <button v-if="questionDetailFor(item)?.suggestedAnswers?.length" type="button" class="text-button" @click="usingCustomAnswer = false" title="Go back to the suggested-answer choices.">Back to suggestions</button>
+                          <button type="button" class="text-button" @click="cancelAnswering" title="Close this box without saving an answer.">Cancel</button>
+                        </div>
+                      </template>
+                      <template v-else-if="confirmingDuplicateQuestionId === item.id">
+                        <select v-model="duplicateTargetId" title="Pick the other open question this one repeats. That other question stays open and counted; this one becomes a linked duplicate.">
+                          <option value="" disabled>Choose the question this duplicates…</option>
+                          <option v-for="candidate in otherOpenQuestions(item.id)" :key="candidate.id" :value="candidate.id">{{ candidate.content }}</option>
+                        </select>
+                        <div class="question-actions">
+                          <button type="button" class="ghost-button" @click="confirmDuplicate(item.id)" title="Confirm this question is the same as the one you picked.">Confirm duplicate</button>
+                          <button type="button" class="text-button" @click="cancelConfirmingDuplicate" title="Close this box without linking a duplicate.">Cancel</button>
+                        </div>
+                      </template>
+                      <div v-else class="question-actions">
+                        <button type="button" class="ghost-button" @click="startAnswering(item)" title="Write and save an answer to this question.">Write answer</button>
+                        <button type="button" class="text-button" @click="deferQuestion(item.id)" title="Put this question off for later without answering it now.">Defer</button>
+                        <button type="button" class="text-button" @click="markQuestionNotApplicable(item.id)" title="Mark this question as no longer relevant to this task.">Not applicable</button>
+                        <button v-if="otherOpenQuestions(item.id).length" type="button" class="text-button" @click="startConfirmingDuplicate(item)" title="Mark this as the same question as another open one.">Mark as duplicate</button>
+                      </div>
+                    </template>
+                    <div v-else class="question-actions">
+                      <button v-if="questionDetailFor(item)?.status === 'DUPLICATE'" type="button" class="text-button" @click="removeDuplicateLink(item.id)" title="Undo the duplicate link and treat this as its own open question again.">Remove duplicate link</button>
+                      <button v-else type="button" class="text-button" @click="reopenQuestion(item.id)" title="Reopen this question so it counts as unresolved again.">Reopen</button>
+                    </div>
+
+                    <details v-if="questionDetailFor(item)?.responses.length" class="question-history">
+                      <summary title="See every past answer, deferral, or status change for this question, in order.">History ({{ questionDetailFor(item)?.responses.length }})</summary>
+                      <ul>
+                        <li v-for="response in questionDetailFor(item)?.responses" :key="response.id">
+                          <strong>{{ response.resultingStatus }}</strong> — {{ response.answer }}
+                          <small>{{ new Date(response.createdAt).toLocaleString() }}</small>
+                        </li>
+                      </ul>
+                    </details>
+                  </article>
+                  <p v-if="!filteredQuestions.length" class="form-hint">No questions match this filter.</p>
+                </div>
+              </div>
+
+              <details v-if="nonQuestionEvidence.length" class="evidence-records" :open="selectedTask.status !== 'READY'">
+                <summary title="Open or close the saved evidence records. The form for adding a new record stays available above.">{{ nonQuestionEvidence.length }} saved records</summary>
                 <div class="evidence-list">
-                  <article v-for="item in selectedTask.evidence" :key="item.id" class="evidence-item">
+                  <article v-for="item in nonQuestionEvidence" :key="item.id" class="evidence-item">
                     <span>{{ item.type }}</span>
                     <template v-if="editingEvidenceId === item.id">
                       <div class="evidence-edit">

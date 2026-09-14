@@ -1,0 +1,1 @@
+ALTER TABLE `question_details` ADD `suggested_answers` text;

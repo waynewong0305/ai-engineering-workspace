@@ -409,6 +409,11 @@ export const questionDetails = sqliteTable("question_details", {
   whyItMatters: text("why_it_matters"),
   suggestedAction: text("suggested_action"),
   expectedEvidence: text("expected_evidence", { mode: "json" }).$type<string[] | null>(),
+  // Multiple-choice candidate answers a provider proposed for this question (never invented by a
+  // migration — only ever populated by a real analysis/cross-review or suggestion-generation run).
+  // The answer UI offers these as pickable options alongside a free-text "write your own" box; the
+  // human's final choice or edit is still recorded as a normal question_responses row either way.
+  suggestedAnswers: text("suggested_answers", { mode: "json" }).$type<string[] | null>(),
   suggestionSource: text("suggestion_source", { enum: ["CLAUDE", "CODEX", "HUMAN"] }),
   // Set together with status "DUPLICATE"; always points at a canonical (non-duplicate) question in
   // the same task — see the confirm-duplicate route's validation in routes/questions.ts.
