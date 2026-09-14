@@ -4,7 +4,7 @@ Last updated: 2026-09-14
 
 ## Current release boundary
 
-The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. Phase 8 is underway: automatic token capture/backfill, exact Claude run-output plan telemetry, exact Codex App Server plan telemetry, and versioned API-equivalent cost calculation are implemented; aggregate dashboards, budgets, cross-review breakdown, and Usage & Cost settings remain.
+The application currently supports local startup, tool readiness checks, SQLite-backed project registration, read-only Git inspection, saved validation-command configuration, deliberate read-only Claude Code/Codex repository-explanation runs, persisted brainstorm/architecture workflows with independent analysis, reciprocal review, comparison, web-decision audit, cancellation, and an evidence board, isolated Git worktree creation/inspection/rename/cleanup for Claude and Codex task work, a cross-cutting Claude/Codex usage-safety system, and **Phase 5 (build, validate, and review) is now fully implemented**: a worktree-scoped `WORKTREE_WRITE` builder run, honest validation-command execution, diff capture, a `READ_ONLY` reviewer run producing structured findings, a human-triggered finding-response/re-review round capped by a per-build maximum round count, a human-approved merge (commits the builder's outstanding worktree changes, merges into a target branch through a throwaway detached worktree that never touches the developer's own checkout, runs post-merge validation, and only then auto-cleans up the task worktree/branch when every §12 safety condition holds), and a generated pre-PR report summarizing the task, implementation, findings, tests, and merge state for the human's own final review. **Phase 6 (planning and ADRs) is now fully implemented**: architecture decision records (create, list, edit, reclassify status), isolated proof-of-concept experiments (hypothesis-driven builder/reviewer run whose verdict becomes an evidence-board item), and promoting an ADR into one or more linked `IMPLEMENTATION` tasks (each keeping a real link back to its ADR, and transitively to the originating architecture discussion and any related experiments). Phase 7 hardening is complete except for the deliberately deferred supervised frontend verification runner. Phase 8 is underway: automatic token capture/backfill, exact Claude run-output plan telemetry, exact Codex App Server plan telemetry, versioned API-equivalent cost calculation, and workspace/project/task/run dashboards with cross-review and efficiency breakdowns are implemented; task budgets and the Usage & Cost settings editor remain.
 
 Documentation consistency maintenance (2026-09-13): reconciled `AGENTS.md`, this status record,
 `IMPLEMENTATION_ROADMAP.md`, `PROJECT_SPEC.md`, `DEVELOPER_GUIDE.md`, and
@@ -1110,6 +1110,37 @@ spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implement
   foreign_key_check` remained clean. Live browser verification confirmed the revised Claude/Codex
   telemetry explanation and provider-specific Refresh tooltips render with no console warnings or
   errors; no extra real provider run was spent merely to make the conditional cost row appear.
+
+### Phase 8 third-slice completion record — usage dashboard and drill-down
+
+- Date: 2026-09-14
+- Added `GET /api/usage-records/dashboard` and the provider-neutral `usage-analytics.ts`
+  aggregation service. Today, rolling 7/30-day, current-month, all-time, and validated custom ISO
+  ranges can be combined with project/task filters. The response includes totals; provider, model,
+  workflow, and role groupings; top tasks; a daily timeline; efficiency ratios; latest task review
+  rounds; browser-policy counts; and each contributing run.
+- Token aggregation preserves provider semantics: Claude ordinary/cache/cache-creation counters are
+  mutually exclusive and summed, while Codex cached input remains a subset of input and is never
+  double-counted. Provider-reported counters remain labeled exact; a derived total is labeled
+  calculated at run level; missing counters or pricing remain unavailable and contribute no
+  invented value. Cross-review, code review, re-review, implementation response, and experiments
+  retain distinct workflow rows.
+- Added **10 — Usage & cost** as a top-level responsive dashboard with period/project/task filters,
+  source-aware summary cards, four breakdown panels, highest-usage tasks, timeline bars, efficiency
+  metrics, browser telemetry disclosure, and expandable run details. Selecting a brainstorm task
+  now also loads an all-time task-usage card with its workflow split and review-round context.
+- Tests added: 3 analytics service cases for provider token semantics, grouping, filtering,
+  efficiency, and workflow classification; 2 route cases for empty output and invalid/custom
+  periods; and 3 shared token-total tests. Full verification passed under Node 22.23.2: `npm test`
+  (225 workspace tests: 133 server + 61 agents + 31 Git, plus 9 policy-script tests), `npm run
+  typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (21 tables, no
+  schema drift), and `git diff --check`.
+- Local browser verification against the real database showed the task card and aggregate dashboard
+  with 4 historical runs, 22,194 measured tokens, provider/workflow/model/role breakdowns, honest
+  unavailable-cost counts, efficiency metrics, timeline, and expandable run rows. The 390 × 844
+  responsive viewport had no horizontal page overflow, and the browser console had no warnings or
+  errors. No model-backed frontend reviewer or provider usage was started for this deterministic
+  check.
 
 ## End-to-end workflow verification (cross-cutting)
 

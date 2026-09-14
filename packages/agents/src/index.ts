@@ -8,7 +8,13 @@ export { classifyAgentFailure, modelSubstitutionFailure } from "./failure-classi
 export type { ClassifiedAgentFailure } from "./failure-classification.js";
 export { ProcessSupervisor } from "./ProcessSupervisor.js";
 export type { SupervisedProcessEvent, SupervisedProcessInput } from "./ProcessSupervisor.js";
-export { billableUncachedInputTokens, extractRateLimitReadings, extractTokenUsage } from "./usage-extraction.js";
+export {
+  billableUncachedInputTokens,
+  extractRateLimitReadings,
+  extractTokenUsage,
+  totalInputTokens,
+  totalProcessedTokens,
+} from "./usage-extraction.js";
 export type { RateLimitWindowReading, TokenUsage } from "./usage-extraction.js";
 export type {
   AgentEvent,

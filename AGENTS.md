@@ -31,10 +31,11 @@ database backup/restore, cleanup diagnostics, and audit export are complete. Usa
 monitoring (Phase 8, spec in `USAGE_MONITORING_SPEC.md`) was pulled forward by explicit human
 instruction and has its first slices done: exact usage-safety readings from Claude's structured
 output and Codex's documented App Server account-rate-limit method, per-run token capture (both
-providers) with historical backfill, and versioned API-equivalent cost calculation. Codex's
+providers) with historical backfill, versioned API-equivalent cost calculation, and the
+workspace/project/task/run dashboard with cross-review and efficiency breakdowns. Codex's
 `exec --json` invocation still does not expose plan percentages, but `account/rateLimits/read`
-does without starting a model turn. Dashboards, cross-review breakdown, budgets, and settings UI
-remain — see `IMPLEMENTATION_STATUS.md`'s record for the full detail.
+does without starting a model turn. Task budgets and the Usage & Cost settings UI remain — see
+`IMPLEMENTATION_STATUS.md`'s record for the full detail.
 
 ## Source-of-truth specifications
 

@@ -32,6 +32,30 @@ export function billableUncachedInputTokens(provider: AgentProvider, usage: Toke
   );
 }
 
+/** Total processed tokens without double-counting provider-specific cache counters. */
+export function totalProcessedTokens(provider: AgentProvider, usage: TokenUsage): number | null {
+  if (usage.totalTokens !== undefined) return usage.totalTokens;
+  const reported = [usage.inputTokens, usage.cachedInputTokens, usage.cacheCreationTokens, usage.outputTokens]
+    .some((value) => value !== undefined);
+  if (!reported) return null;
+  if (provider === "CLAUDE") {
+    return (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0)
+      + (usage.cacheCreationTokens ?? 0) + (usage.outputTokens ?? 0);
+  }
+  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+}
+
+/** Total input denominator used by the dashboard's documented cache-hit-ratio formula. */
+export function totalInputTokens(provider: AgentProvider, usage: TokenUsage): number | null {
+  const reported = [usage.inputTokens, usage.cachedInputTokens, usage.cacheCreationTokens]
+    .some((value) => value !== undefined);
+  if (!reported) return null;
+  if (provider === "CLAUDE") {
+    return (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.cacheCreationTokens ?? 0);
+  }
+  return usage.inputTokens ?? 0;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }

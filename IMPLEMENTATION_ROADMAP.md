@@ -257,17 +257,18 @@ Codex App Server integration that fills that gap without changing the run invoca
 - [x] Centralized, versioned pricing registry and auditable API-equivalent cost calculation —
       append-only pricing versions, exact token × rate category breakdown, and no partial total
       when a required category or model price is unavailable
-- [ ] Workspace/project/task/run usage dashboard and drill-down UI, each value labeled with its
+- [x] Workspace/project/task/run usage dashboard and drill-down UI, each value labeled with its
       usage-source reliability (`EXACT`/`CALCULATED`/`ESTIMATED`/`UNAVAILABLE`)
-- [ ] Cross-review cost breakdown by role/workflow
+- [x] Cross-review cost breakdown by role/workflow
 - [ ] Task usage budgets (presets + custom) integrated with the existing max-review-round cap
 - [x] Historical backfill from recoverable provider-reported data only, with a backfill report
 - [ ] Usage & Cost settings
 
 Exit gate (unmet, tracks the remaining unchecked items above): small real Claude and Codex runs now
-both produce usage records with correctly labeled billing mode and usage-source reliability. The
-dashboard still does not exist, and API-equivalent figures remain unavailable until the append-only
-registry contains a verified price for the exact model ID; no vendor prices were guessed or silently
+both produce usage records with correctly labeled billing mode and usage-source reliability, and the
+dashboard exposes workspace/project/task/run totals plus cross-review breakdowns. Task budgets and
+the settings UI remain; API-equivalent figures stay unavailable until the append-only registry
+contains a verified price for the exact model ID, because no vendor prices are guessed or silently
 seeded.
 
 ## End-to-end workflow verification (cross-cutting, added 2026-09-13)

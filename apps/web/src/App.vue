@@ -63,6 +63,73 @@ type UsageRecord = {
     totalUsd: number;
   } | null;
 };
+type UsageBreakdown = {
+  key: string;
+  label: string;
+  runs: number;
+  tokens: number;
+  apiEquivalentCostUsd: number;
+  calculatedCostRuns: number;
+  unavailableCostRuns: number;
+};
+type UsageDashboard = {
+  range: { period: "today" | "7d" | "30d" | "month" | "all" | "custom"; from: string | null; to: string | null };
+  summary: {
+    runs: number;
+    totalTokens: number;
+    exactTokenRuns: number;
+    unavailableTokenRuns: number;
+    apiEquivalentCostUsd: number;
+    calculatedCostRuns: number;
+    unavailableCostRuns: number;
+    browserEnabledRuns: number;
+    averageTokensPerTask: number | null;
+  };
+  byProvider: UsageBreakdown[];
+  byModel: UsageBreakdown[];
+  byWorkflow: UsageBreakdown[];
+  byRole: UsageBreakdown[];
+  highestUsageTasks: Array<UsageBreakdown & { taskId: string; projectId: string }>;
+  timeline: Array<{
+    date: string;
+    runs: number;
+    tokens: number;
+    apiEquivalentCostUsd: number;
+    calculatedCostRuns: number;
+    unavailableCostRuns: number;
+  }>;
+  efficiency: {
+    tokensPerCompletedTask: number | null;
+    tokensPerReviewRound: number | null;
+    tokensPerAcceptedFinding: number | null;
+    tokensPerImplementationRun: number | null;
+    cacheHitRatio: number | null;
+  };
+  taskReviewRounds: { current: number; maximum: number } | null;
+  runs: Array<{
+    runId: string;
+    taskId: string | null;
+    projectId: string;
+    provider: AgentProvider;
+    model: string;
+    role: string;
+    workflow: string;
+    status: string;
+    tokens: number | null;
+    tokenSource: "EXACT" | "CALCULATED" | "UNAVAILABLE";
+    apiEquivalentCostUsd: number | null;
+    costSource: "CALCULATED" | "UNAVAILABLE";
+    inputTokens: number | null;
+    cachedInputTokens: number | null;
+    cacheCreationTokens: number | null;
+    outputTokens: number | null;
+    reasoningOutputTokens: number | null;
+    durationMs: number | null;
+    browserEnabled: boolean;
+    browserSearchCount: null;
+    createdAt: string;
+  }>;
+};
 type AgentRun = {
   id: string;
   projectId: string;
@@ -94,6 +161,18 @@ function formatUsd(value: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 8,
   });
+}
+
+function formatNumber(value: number | null): string {
+  return value === null ? "Unavailable" : Math.round(value).toLocaleString();
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? "Unavailable" : `${(value * 100).toFixed(1)}%`;
+}
+
+function formatAggregateCost(value: number, calculatedRuns: number): string {
+  return calculatedRuns ? formatUsd(value) : "Unavailable";
 }
 
 function costCategoryLabel(category: NonNullable<UsageRecord["costBreakdown"]>["categories"][number]["category"]): string {
@@ -525,9 +604,33 @@ const maintenance = ref<MaintenanceStatus | null>(null);
 const maintenanceLoading = ref(false);
 const maintenanceError = ref("");
 const maintenanceMessage = ref("");
+const usageDashboard = ref<UsageDashboard | null>(null);
+const usageDashboardLoading = ref(false);
+const usageDashboardError = ref("");
+const usageDashboardPeriod = ref<UsageDashboard["range"]["period"]>("7d");
+const usageDashboardProjectId = ref("");
+const usageDashboardTaskId = ref("");
+const usageDashboardFrom = ref("");
+const usageDashboardTo = ref("");
+const selectedTaskUsage = ref<UsageDashboard | null>(null);
+const selectedTaskUsageLoading = ref(false);
+
+const usageDashboardTaskOptions = computed(() => tasks.value.filter((task) =>
+  !usageDashboardProjectId.value || task.projectId === usageDashboardProjectId.value,
+));
+const usageTimelineMaximum = computed(() => Math.max(1, ...(usageDashboard.value?.timeline.map((point) => point.tokens) ?? [0])));
 
 function providerLabel(provider: AgentProvider) {
   return provider === "CLAUDE" ? "Claude Code" : "Codex";
+}
+
+function projectName(projectId: string): string {
+  return projects.value.find((project) => project.id === projectId)?.name ?? "Unknown project";
+}
+
+function taskName(taskId: string | null): string {
+  if (!taskId) return "Standalone run";
+  return tasks.value.find((task) => task.id === taskId)?.title ?? "Unknown task";
 }
 
 const USAGE_STATUS_RANK: Record<UsageStatus, number> = { SAFE: 0, WARNING: 1, UNAVAILABLE: 2, STALE: 2, CHECKPOINT_REQUIRED: 3, EXHAUSTED: 4 };
@@ -560,6 +663,45 @@ async function loadUsage() {
     usageError.value = error instanceof Error ? error.message : "Could not load provider usage.";
   } finally {
     usageLoading.value = false;
+  }
+}
+
+function onUsageDashboardProjectChange() {
+  if (!usageDashboardTaskOptions.value.some((task) => task.id === usageDashboardTaskId.value)) {
+    usageDashboardTaskId.value = "";
+  }
+}
+
+async function loadUsageDashboard() {
+  usageDashboardLoading.value = true;
+  usageDashboardError.value = "";
+  try {
+    const parameters = new URLSearchParams({ period: usageDashboardPeriod.value });
+    if (usageDashboardProjectId.value) parameters.set("projectId", usageDashboardProjectId.value);
+    if (usageDashboardTaskId.value) parameters.set("taskId", usageDashboardTaskId.value);
+    if (usageDashboardPeriod.value === "custom") {
+      if (!usageDashboardFrom.value || !usageDashboardTo.value) throw new Error("Choose both dates for a custom period.");
+      parameters.set("from", new Date(`${usageDashboardFrom.value}T00:00:00`).toISOString());
+      parameters.set("to", new Date(`${usageDashboardTo.value}T23:59:59.999`).toISOString());
+    }
+    const response = await fetch(`/api/usage-records/dashboard?${parameters}`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not load usage and cost history.");
+    usageDashboard.value = result;
+  } catch (error) {
+    usageDashboardError.value = error instanceof Error ? error.message : "Could not load usage and cost history.";
+  } finally {
+    usageDashboardLoading.value = false;
+  }
+}
+
+async function loadSelectedTaskUsage(taskId: string) {
+  selectedTaskUsageLoading.value = true;
+  try {
+    const response = await fetch(`/api/usage-records/dashboard?period=all&taskId=${encodeURIComponent(taskId)}`);
+    selectedTaskUsage.value = response.ok ? await response.json() : null;
+  } finally {
+    selectedTaskUsageLoading.value = false;
   }
 }
 
@@ -1190,7 +1332,7 @@ async function selectTask(taskId: string) {
   brainstormReport.value = null;
   brainstormReportError.value = "";
   experimentError.value = "";
-  await loadExperimentsForTask();
+  await Promise.all([loadExperimentsForTask(), loadSelectedTaskUsage(taskId)]);
   scheduleTaskRefresh();
 }
 
@@ -1703,7 +1845,7 @@ async function releaseMaintenanceLease(lease: MaintenanceLease) {
   }
 }
 
-const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions", "maintenance"];
+const NAV_SECTIONS = ["projects", "agent-runs", "brainstorm", "worktrees", "usage-safety", "build", "reviews", "decisions", "maintenance", "usage-dashboard"];
 const activeSection = ref(NAV_SECTIONS.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "projects");
 function updateActiveSection() {
   const hash = window.location.hash.slice(1);
@@ -1743,7 +1885,7 @@ onMounted(() => {
     if (element) sectionObserver.observe(element);
   }
 
-  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage(), loadMaintenance()]);
+  return Promise.all([loadHealth(), loadProjects(), loadAgentHealth(), loadTasks(), loadUsage(), loadMaintenance(), loadUsageDashboard()]);
 });
 onUnmounted(() => {
   eventSource?.close();
@@ -1777,6 +1919,7 @@ onUnmounted(() => {
         <a class="nav-item disabled" aria-disabled="true" title="Not built yet — this will be a dedicated place to browse past reviews. For now, reviews show up inside the Build tab."><span>07</span>Reviews</a>
         <a :class="['nav-item', { active: activeSection === 'decisions' }]" href="#decisions" title="Write down important decisions (like 'why did we choose X over Y') so you can look back and remember the reasoning later."><span>08</span>Decisions</a>
         <a :class="['nav-item', { active: activeSection === 'maintenance' }]" href="#maintenance" title="Back up or recover this app's local database, inspect cleanup warnings, and download an audit history."><span>09</span>Maintenance</a>
+        <a :class="['nav-item', { active: activeSection === 'usage-dashboard' }]" href="#usage-dashboard" title="See how many tokens each provider, model, workflow, task, and run used, with clearly labeled API-equivalent cost estimates."><span>10</span>Usage &amp; cost</a>
       </nav>
 
       <div class="sidebar-foot" title="Everything you see runs on this computer only. Nothing is uploaded to a server or shared with anyone else.">
@@ -2170,6 +2313,23 @@ onUnmounted(() => {
               <div :class="{ current: selectedTask.status === 'ANALYZING', complete: ['CROSS_REVIEW', 'READY'].includes(selectedTask.status) }" title="Claude and Codex are each thinking about the problem separately, without seeing each other's answers yet."><span>02</span><strong>Independent</strong></div>
               <div :class="{ current: selectedTask.status === 'CROSS_REVIEW', complete: selectedTask.status === 'READY' }" title="Now each AI reads the other's answer and points out anything it disagrees with or thinks is missing."><span>03</span><strong>Cross-review</strong></div>
               <div :class="{ current: selectedTask.status === 'READY', complete: selectedTask.status === 'READY' }" title="Everything is done. You can see both answers side by side and decide for yourself — the app never picks a winner for you."><span>04</span><strong>Compare</strong></div>
+            </div>
+
+            <div class="task-usage-card" title="All recorded provider usage for this task, including its independent analysis, cross-review, experiments, implementation, and review runs.">
+              <div class="subsection-heading"><span>TASK USAGE</span><strong>ALL TIME</strong></div>
+              <p v-if="selectedTaskUsageLoading" class="form-hint">Loading this task's usage…</p>
+              <template v-else-if="selectedTaskUsage">
+                <div class="task-usage-summary">
+                  <div><span>Runs</span><strong>{{ selectedTaskUsage.summary.runs.toLocaleString() }}</strong></div>
+                  <div><span>Tokens</span><strong>{{ selectedTaskUsage.summary.totalTokens.toLocaleString() }}</strong></div>
+                  <div><span>API-equivalent cost</span><strong>{{ formatAggregateCost(selectedTaskUsage.summary.apiEquivalentCostUsd, selectedTaskUsage.summary.calculatedCostRuns) }}</strong></div>
+                  <div><span>Review rounds</span><strong>{{ selectedTaskUsage.taskReviewRounds ? `${selectedTaskUsage.taskReviewRounds.current}/${selectedTaskUsage.taskReviewRounds.maximum}` : "None" }}</strong></div>
+                </div>
+                <div v-if="selectedTaskUsage.byWorkflow.length" class="task-usage-workflows">
+                  <span v-for="row in selectedTaskUsage.byWorkflow" :key="row.key">{{ row.label }} · {{ row.tokens.toLocaleString() }} tokens · {{ formatAggregateCost(row.apiEquivalentCostUsd, row.calculatedCostRuns) }}<template v-if="row.unavailableCostRuns"> · {{ row.unavailableCostRuns }} cost unavailable</template></span>
+                </div>
+                <small>Cost is a calculated API-equivalent estimate. Subscription charges are not inferred. {{ selectedTaskUsage.summary.unavailableCostRuns }} run(s) have no matching price.</small>
+              </template>
             </div>
 
             <div v-if="usageBlockedDecision" class="usage-checkpoint-block" role="alert" title="The app paused here to make sure you don't accidentally run out of your Claude/Codex plan without knowing.">
@@ -2989,6 +3149,143 @@ onUnmounted(() => {
             </div>
           </article>
         </div>
+      </section>
+
+      <section id="usage-dashboard" class="project-panel usage-dashboard-panel" aria-labelledby="usage-dashboard-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="section-index">10 — USAGE &amp; COST</p>
+            <h2 id="usage-dashboard-heading">See where provider usage went.</h2>
+            <p>Filter recorded runs, compare providers and workflows, and inspect exact or calculated token totals. Costs are API-equivalent estimates, never guessed subscription charges.</p>
+          </div>
+          <span class="safety-badge" title="Token totals identify whether they came directly from a provider, were calculated from exact counters, or were unavailable. Costs appear only when a matching versioned price exists.">LABELED SOURCES · NO GUESSING</span>
+        </div>
+
+        <form class="usage-dashboard-filters" @submit.prevent="loadUsageDashboard">
+          <label title="How much history to include in every card and table below.">
+            <span>Period</span>
+            <select v-model="usageDashboardPeriod" title="Choose a preset time period or select Custom to enter exact dates.">
+              <option value="today">Today</option>
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="month">This month</option>
+              <option value="all">All time</option>
+              <option value="custom">Custom dates</option>
+            </select>
+          </label>
+          <label title="Limit the dashboard to one registered project, or leave it on all projects.">
+            <span>Project</span>
+            <select v-model="usageDashboardProjectId" title="Choose one project or keep the combined workspace view." @change="onUsageDashboardProjectChange">
+              <option value="">All projects</option>
+              <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+            </select>
+          </label>
+          <label title="Limit the dashboard to one task. The list follows the selected project filter.">
+            <span>Task</span>
+            <select v-model="usageDashboardTaskId" title="Choose one task or keep all matching tasks and standalone runs.">
+              <option value="">All tasks and runs</option>
+              <option v-for="task in usageDashboardTaskOptions" :key="task.id" :value="task.id">{{ task.title }}</option>
+            </select>
+          </label>
+          <template v-if="usageDashboardPeriod === 'custom'">
+            <label title="The first local calendar day to include."><span>From</span><input v-model="usageDashboardFrom" type="date" title="Choose the first day to include." required /></label>
+            <label title="The last local calendar day to include."><span>To</span><input v-model="usageDashboardTo" type="date" title="Choose the last day to include." required /></label>
+          </template>
+          <button class="primary-button" type="submit" :disabled="usageDashboardLoading" title="Refresh every usage card and table using these filters.">{{ usageDashboardLoading ? "Loading…" : "Apply filters" }}</button>
+        </form>
+
+        <p v-if="usageDashboardError" class="form-message error-text" role="alert">{{ usageDashboardError }}</p>
+        <p v-if="usageDashboardLoading && !usageDashboard" class="empty-state">Loading usage history…</p>
+
+        <template v-if="usageDashboard">
+          <div class="usage-summary-grid">
+            <article><span>Recorded runs</span><strong>{{ usageDashboard.summary.runs.toLocaleString() }}</strong><small>{{ usageDashboard.summary.exactTokenRuns }} with exact provider counters · {{ usageDashboard.summary.unavailableTokenRuns }} unavailable</small></article>
+            <article><span>Total tokens</span><strong>{{ usageDashboard.summary.totalTokens.toLocaleString() }}</strong><small>Unavailable runs contribute no invented tokens.</small></article>
+            <article><span>API-equivalent cost</span><strong>{{ formatAggregateCost(usageDashboard.summary.apiEquivalentCostUsd, usageDashboard.summary.calculatedCostRuns) }}</strong><small>{{ usageDashboard.summary.calculatedCostRuns }} priced · {{ usageDashboard.summary.unavailableCostRuns }} unavailable</small></article>
+            <article><span>Average per task</span><strong>{{ formatNumber(usageDashboard.summary.averageTokensPerTask) }}</strong><small>Standalone runs are excluded from this average.</small></article>
+            <article><span>Browser-enabled runs</span><strong>{{ usageDashboard.summary.browserEnabledRuns.toLocaleString() }}</strong><small>Browser-search counts are unavailable in current provider telemetry.</small></article>
+          </div>
+
+          <p v-if="usageDashboard.summary.runs === 0" class="empty-state">No recorded usage matches these filters.</p>
+
+          <div v-else class="usage-dashboard-body">
+            <div class="usage-breakdown-grid">
+              <article v-for="group in [
+                { title: 'BY PROVIDER', rows: usageDashboard.byProvider },
+                { title: 'BY WORKFLOW', rows: usageDashboard.byWorkflow },
+                { title: 'BY MODEL', rows: usageDashboard.byModel },
+                { title: 'BY ROLE', rows: usageDashboard.byRole },
+              ]" :key="group.title" class="usage-breakdown-card">
+                <div class="subsection-heading"><span>{{ group.title }}</span><strong>{{ group.rows.length }} group(s)</strong></div>
+                <div v-for="row in group.rows" :key="row.key" class="usage-breakdown-row">
+                  <div><strong>{{ row.label }}</strong><small>{{ row.runs }} run(s)</small></div>
+                  <div><strong>{{ row.tokens.toLocaleString() }}</strong><small>{{ formatAggregateCost(row.apiEquivalentCostUsd, row.calculatedCostRuns) }}<template v-if="row.unavailableCostRuns"> · {{ row.unavailableCostRuns }} unavailable</template></small></div>
+                </div>
+              </article>
+            </div>
+
+            <div class="usage-dashboard-grid">
+              <article class="usage-dashboard-card">
+                <div class="subsection-heading"><span>HIGHEST-USAGE TASKS</span><strong>TOP {{ usageDashboard.highestUsageTasks.length }}</strong></div>
+                <p v-if="!usageDashboard.highestUsageTasks.length" class="form-hint">No task-linked usage in this period.</p>
+                <div v-for="row in usageDashboard.highestUsageTasks" :key="row.taskId" class="usage-breakdown-row">
+                  <div><strong>{{ row.label }}</strong><small>{{ projectName(row.projectId) }} · {{ row.runs }} run(s)</small></div>
+                  <div><strong>{{ row.tokens.toLocaleString() }}</strong><small>{{ formatAggregateCost(row.apiEquivalentCostUsd, row.calculatedCostRuns) }}<template v-if="row.unavailableCostRuns"> · {{ row.unavailableCostRuns }} unavailable</template></small></div>
+                </div>
+              </article>
+
+              <article class="usage-dashboard-card">
+                <div class="subsection-heading"><span>EFFICIENCY</span><strong>CALCULATED</strong></div>
+                <dl class="usage-efficiency-grid">
+                  <div><dt>Tokens / completed task</dt><dd>{{ formatNumber(usageDashboard.efficiency.tokensPerCompletedTask) }}</dd></div>
+                  <div><dt>Review tokens / round</dt><dd>{{ formatNumber(usageDashboard.efficiency.tokensPerReviewRound) }}</dd></div>
+                  <div><dt>Review tokens / accepted finding</dt><dd>{{ formatNumber(usageDashboard.efficiency.tokensPerAcceptedFinding) }}</dd></div>
+                  <div><dt>Tokens / implementation run</dt><dd>{{ formatNumber(usageDashboard.efficiency.tokensPerImplementationRun) }}</dd></div>
+                  <div><dt>Cache-hit ratio</dt><dd>{{ formatPercent(usageDashboard.efficiency.cacheHitRatio) }}</dd></div>
+                </dl>
+              </article>
+            </div>
+
+            <article class="usage-timeline-card">
+              <div class="subsection-heading"><span>DAILY TIMELINE</span><strong>{{ usageDashboard.timeline.length }} day(s)</strong></div>
+              <div v-for="point in usageDashboard.timeline" :key="point.date" class="usage-timeline-row">
+                <time :datetime="point.date">{{ point.date }}</time>
+                <div class="usage-timeline-track" :title="`${point.tokens.toLocaleString()} tokens across ${point.runs} run(s)`"><span :style="{ width: `${Math.max(2, point.tokens / usageTimelineMaximum * 100)}%` }"></span></div>
+                <strong>{{ point.tokens.toLocaleString() }}</strong>
+                <small>{{ formatAggregateCost(point.apiEquivalentCostUsd, point.calculatedCostRuns) }}<template v-if="point.unavailableCostRuns"> · {{ point.unavailableCostRuns }} unavailable</template></small>
+              </div>
+            </article>
+
+            <article class="usage-runs-card">
+              <div class="subsection-heading"><span>RUN DETAILS</span><strong>{{ usageDashboard.runs.length }} RUN(S)</strong></div>
+              <details v-for="run in usageDashboard.runs" :key="run.runId" class="usage-run-detail">
+                <summary :title="`Open the token and cost details for this ${providerLabel(run.provider)} run.`">
+                  <span>{{ providerLabel(run.provider) }} · {{ run.workflow.replaceAll('_', ' ') }}</span>
+                  <strong>{{ run.tokens === null ? "Tokens unavailable" : `${run.tokens.toLocaleString()} tokens` }}</strong>
+                  <small>{{ run.apiEquivalentCostUsd === null ? "Cost unavailable" : formatUsd(run.apiEquivalentCostUsd) }}</small>
+                </summary>
+                <dl class="usage-run-grid">
+                  <div><dt>Task</dt><dd>{{ taskName(run.taskId) }}</dd></div>
+                  <div><dt>Project</dt><dd>{{ projectName(run.projectId) }}</dd></div>
+                  <div><dt>Model</dt><dd>{{ run.model }}</dd></div>
+                  <div><dt>Role</dt><dd>{{ run.role }}</dd></div>
+                  <div><dt>Status</dt><dd>{{ run.status }}</dd></div>
+                  <div><dt>Recorded</dt><dd>{{ new Date(run.createdAt).toLocaleString() }}</dd></div>
+                  <div><dt>Input</dt><dd>{{ formatNumber(run.inputTokens) }}</dd></div>
+                  <div><dt>Cached input</dt><dd>{{ formatNumber(run.cachedInputTokens) }}</dd></div>
+                  <div><dt>Cache creation</dt><dd>{{ formatNumber(run.cacheCreationTokens) }}</dd></div>
+                  <div><dt>Output</dt><dd>{{ formatNumber(run.outputTokens) }}</dd></div>
+                  <div><dt>Reasoning output</dt><dd>{{ formatNumber(run.reasoningOutputTokens) }}</dd></div>
+                  <div><dt>Token source</dt><dd>{{ run.tokenSource }}</dd></div>
+                  <div><dt>Cost source</dt><dd>{{ run.costSource }}</dd></div>
+                  <div><dt>Duration</dt><dd>{{ run.durationMs === null ? "Unavailable" : `${(run.durationMs / 1000).toFixed(1)}s` }}</dd></div>
+                  <div><dt>Browser access</dt><dd>{{ run.browserEnabled ? "Enabled" : "Disabled" }}</dd></div>
+                  <div><dt>Browser searches</dt><dd>Unavailable</dd></div>
+                </dl>
+              </details>
+            </article>
+          </div>
+        </template>
       </section>
 
     </main>

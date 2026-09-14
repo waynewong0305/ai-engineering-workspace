@@ -632,6 +632,22 @@ Adding a pricing version never rewrites an old calculated amount. The explicit c
 fills only usage rows that have never received a cost snapshot. A token category with no configured
 rate makes the entire total unavailable—there is no hidden partial estimate.
 
+### Usage & cost dashboard
+
+Open **10 — Usage & cost** for the aggregate view. Choose Today, 7 days, 30 days, This month,
+All time, or a custom date range, then optionally limit the results to one project or task. The
+dashboard shows total runs and tokens, API-equivalent cost, provider/model/workflow/role
+breakdowns, highest-usage tasks, a daily timeline, browser-enabled runs, and token-efficiency
+ratios. Cross-review, code-review, re-review, implementation, implementation-response, experiment,
+and standalone explanation work remain separate workflow rows rather than being blended together.
+
+Every selected brainstorm task also has an all-time **Task usage** card with its total runs, tokens,
+API-equivalent cost, review-round count, and workflow split. Expand a row under **Run details** on
+the main dashboard for its model, role, token counters, source labels, duration, browser policy, and
+cost availability. Browser-search counts say **Unavailable** because the current provider telemetry
+does not expose a trustworthy count. Missing token or pricing data is never estimated as zero; the
+unavailable-run counts explain what could not be included.
+
 ## Reviews and human responsibility
 
 AI agreement does not mean the code is automatically correct. Two models may share the same blind spot, rely on the same false assumption, or miss behavior that only appears in production conditions.

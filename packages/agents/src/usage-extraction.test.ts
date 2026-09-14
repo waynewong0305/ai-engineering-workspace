@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { billableUncachedInputTokens, extractRateLimitReadings, extractTokenUsage } from "./usage-extraction.js";
+import {
+  billableUncachedInputTokens,
+  extractRateLimitReadings,
+  extractTokenUsage,
+  totalInputTokens,
+  totalProcessedTokens,
+} from "./usage-extraction.js";
 
 // Real shapes captured from the installed CLIs during Phase 8 Step 0 investigation (2026-09-13):
 // Claude 2.1.269's actual `--output-format stream-json` output, Codex 0.154.0's real local session
@@ -183,5 +189,25 @@ describe("billableUncachedInputTokens", () => {
     expect(billableUncachedInputTokens("CODEX", {
       inputTokens: 29_496, cachedInputTokens: 18_944, cacheCreationTokens: 0,
     })).toBe(10_552);
+  });
+});
+
+describe("token totals", () => {
+  it("derives Claude totals from its mutually exclusive input/cache counters", () => {
+    const usage = { inputTokens: 2, cachedInputTokens: 6_271, cacheCreationTokens: 3_555, outputTokens: 15 };
+    expect(totalProcessedTokens("CLAUDE", usage)).toBe(9_843);
+    expect(totalInputTokens("CLAUDE", usage)).toBe(9_828);
+  });
+
+  it("does not double-count Codex cached input, which is already included in input", () => {
+    const usage = { inputTokens: 12_340, cachedInputTokens: 4_000, outputTokens: 11 };
+    expect(totalProcessedTokens("CODEX", usage)).toBe(12_351);
+    expect(totalInputTokens("CODEX", usage)).toBe(12_340);
+  });
+
+  it("prefers a provider-reported total and returns null when no token counter exists", () => {
+    expect(totalProcessedTokens("CODEX", { inputTokens: 2, outputTokens: 3, totalTokens: 9 })).toBe(9);
+    expect(totalProcessedTokens("CLAUDE", {})).toBeNull();
+    expect(totalInputTokens("CLAUDE", {})).toBeNull();
   });
 });

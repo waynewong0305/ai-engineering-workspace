@@ -2,8 +2,9 @@
 
 Status: **IN PROGRESS**. The human explicitly pulled this phase forward on 2026-09-13; per-run
 token capture, historical backfill, automatic Claude plan-usage readings, and the centralized
-pricing/API-equivalent-cost slice are complete. The dashboard, cross-review breakdown, budgets,
-and Usage & Cost settings remain. This document is the authoritative, self-contained spec for that work;
+pricing/API-equivalent-cost slice, aggregate dashboard, task/run drill-down, and cross-review
+breakdown are complete. Task budgets and the Usage & Cost settings editor remain. This document is
+the authoritative, self-contained spec for that work;
 `IMPLEMENTATION_ROADMAP.md` and `IMPLEMENTATION_STATUS.md` only link here rather than duplicating it
 (per this repo's own documentation policy).
 
