@@ -155,6 +155,20 @@ retries. No API or schema change. Verified under Node 22.23.2 with `npm test` (1
 `git diff --check`; all passed. The hot-reloaded local brainstorm UI rendered the updated task
 detail without console warnings or errors; no paid provider run was started for manual verification.
 
+Later addition (2026-09-14): completed brainstorm results no longer break the task pane on narrow
+screens or turn it into an unnecessarily long wall of generated content. Independent outputs,
+reciprocal reviews, the comparison, and saved evidence records remain expanded while work is active
+but start collapsed once the task reaches `READY`; each native disclosure remains available from a
+plain-language, keyboard-accessible heading, and the add-evidence form stays visible. Generated
+URLs, repository paths, raw output, and list content now wrap inside zero-minimum-width grid tracks
+instead of widening comparison, review, analysis, or evidence cards beyond their container. This is
+a frontend-only change with no provider run, API, or schema change. Verified under Node 22.23.2
+with `npm test` (143 server tests, 65 agent-package tests, 31 Git-package tests, and 9 policy-script
+tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate`
+(no schema changes), and `git diff --check`; all passed. Manual browser verification used the real
+completed task at desktop and narrow widths, opened every disclosure, found zero overflowing
+descendants in the task pane, and found no browser warnings or errors.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

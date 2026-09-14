@@ -304,6 +304,12 @@ The workflow is:
 
 The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. While analysis or cross-review is active, status and newly completed results update quietly in place; the task usage card, budget form, experiments, and generated report are not reset on every status check. You can cancel while analysis or cross-review is active. If the server restarts during active provider work, startup recovery marks the abandoned records failed, releases their usage leases, and preserves completed output and artifacts for inspection.
 
+When a task reaches **READY**, its independent outputs, reciprocal reviews, comparison, and saved
+evidence records start collapsed so the completed screen stays short and navigable. Select any
+section heading to open it; the evidence form remains available even while its saved records are
+collapsed. Long generated URLs and repository paths wrap within their cards on narrow screens
+instead of making the page wider than the viewport.
+
 To permanently remove a plan, open it and select **Delete task** beside its status. The confirmation
 names the local history that will be removed: provider runs, generated reports and comparison,
 evidence, experiments, builds, and decisions owned by that task. Deletion never changes the

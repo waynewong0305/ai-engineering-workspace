@@ -2822,8 +2822,8 @@ onUnmounted(() => {
               <button class="ghost-button" type="button" @click="markProviderExhausted(entry.provider)" title="Confirm that yes, this really was a usage limit, so the Usage safety page reflects it correctly.">Mark as exhausted</button>
             </div>
 
-            <div v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section">
-              <div class="subsection-heading" title="Each AI's own answer, written without seeing what the other one said — so you get two truly independent opinions."><span>INDEPENDENT OUTPUTS</span><strong>Kept separate until both completed</strong></div>
+            <details v-if="analysisFor('CLAUDE') || analysisFor('CODEX')" class="analysis-section result-section" :open="selectedTask.status !== 'READY'">
+              <summary class="subsection-heading" title="Open or close each AI's independent answer. These start collapsed when analysis is complete so the finished task stays easy to navigate."><span>INDEPENDENT OUTPUTS</span><strong>Kept separate until both completed</strong></summary>
               <div class="analysis-grid">
                 <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="analysis-card">
                   <header><span>{{ provider === 'CLAUDE' ? 'Claude' : 'Codex' }}</span><small>{{ runStatus(provider, 'INDEPENDENT_ANALYSIS') }}</small></header>
@@ -2842,10 +2842,10 @@ onUnmounted(() => {
                   </details>
                 </article>
               </div>
-            </div>
+            </details>
 
-            <div v-if="reviewFor('CLAUDE') || reviewFor('CODEX')" class="review-section">
-              <div class="subsection-heading" title="Each AI double-checks the other's answer — pointing out mistakes, missing evidence, or things it disagrees with."><span>RECIPROCAL REVIEWS</span><strong>Each reviews the other</strong></div>
+            <details v-if="reviewFor('CLAUDE') || reviewFor('CODEX')" class="review-section result-section" :open="selectedTask.status !== 'READY'">
+              <summary class="subsection-heading" title="Open or close the reviews where each AI checks the other's answer. These start collapsed when analysis is complete."><span>RECIPROCAL REVIEWS</span><strong>Each reviews the other</strong></summary>
               <div class="analysis-grid">
                 <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="review-card">
                   <header><span>{{ provider === 'CLAUDE' ? 'Claude critiques Codex' : 'Codex critiques Claude' }}</span></header>
@@ -2856,10 +2856,10 @@ onUnmounted(() => {
                   <ul><li v-for="item in reviewFor(provider)?.missingEvidence" :key="item">{{ item }}</li></ul>
                 </article>
               </div>
-            </div>
+            </details>
 
-            <div v-if="selectedTask.comparison" class="comparison-section">
-              <div class="subsection-heading" title="A plain side-by-side summary of where the two AIs agreed, disagreed, and what's still unclear. The app deliberately does not pick a 'winner' for you."><span>TRANSPARENT COMPARISON</span><strong>No automatic winner</strong></div>
+            <details v-if="selectedTask.comparison" class="comparison-section result-section" :open="selectedTask.status !== 'READY'">
+              <summary class="subsection-heading" title="Open or close the side-by-side summary of agreements, disagreements, and open questions. The app does not pick a winner for you."><span>TRANSPARENT COMPARISON</span><strong>No automatic winner</strong></summary>
               <div class="comparison-grid">
                 <article v-for="(items, label) in selectedTask.comparison" :key="label">
                   <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
@@ -2867,7 +2867,7 @@ onUnmounted(() => {
                   <p v-else>No item was asserted by the structured reviews.</p>
                 </article>
               </div>
-            </div>
+            </details>
 
             <div class="evidence-board">
               <div class="subsection-heading" title="A running list of facts, guesses, open questions, and decisions about this task — written by you or pulled from what the AIs found."><span>ASSUMPTION / EVIDENCE BOARD</span><strong>{{ selectedTask.evidence?.length ?? 0 }} records</strong></div>
@@ -2880,27 +2880,30 @@ onUnmounted(() => {
                 <input v-model="evidenceContent" maxlength="5000" placeholder="Add a human correction, fact, question, decision, or experiment result…" />
                 <button class="ghost-button" type="submit" title="Save this note to the board so it's kept alongside the task for later.">Add record</button>
               </form>
-              <div class="evidence-list">
-                <article v-for="item in selectedTask.evidence" :key="item.id" class="evidence-item">
-                  <span>{{ item.type }}</span>
-                  <template v-if="editingEvidenceId === item.id">
-                    <div class="evidence-edit">
-                      <select v-model="editingEvidenceType">
-                        <option value="FACT">Fact</option><option value="ASSUMPTION">Assumption</option>
-                        <option value="QUESTION">Question</option><option value="DECISION">Decision</option>
-                        <option value="EXPERIMENT_RESULT">Experiment result</option>
-                      </select>
-                      <input v-model="editingEvidenceContent" />
-                    </div>
-                    <button class="ghost-button" type="button" @click="saveEvidence(item)" title="Save your changes to this note.">Save</button>
-                  </template>
-                  <template v-else>
-                    <p>{{ item.content }}</p>
-                    <small :title="item.sourceProvider ? 'This note came from one of the AI runs, not typed by a person.' : 'This note was typed in by a human, not the AI.'">{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
-                    <button class="text-button" type="button" @click="editEvidence(item)" title="Change the wording or type of this note.">Edit</button>
-                  </template>
-                </article>
-              </div>
+              <details v-if="selectedTask.evidence?.length" class="evidence-records" :open="selectedTask.status !== 'READY'">
+                <summary title="Open or close the saved evidence records. The form for adding a new record stays available above.">{{ selectedTask.evidence.length }} saved records</summary>
+                <div class="evidence-list">
+                  <article v-for="item in selectedTask.evidence" :key="item.id" class="evidence-item">
+                    <span>{{ item.type }}</span>
+                    <template v-if="editingEvidenceId === item.id">
+                      <div class="evidence-edit">
+                        <select v-model="editingEvidenceType">
+                          <option value="FACT">Fact</option><option value="ASSUMPTION">Assumption</option>
+                          <option value="QUESTION">Question</option><option value="DECISION">Decision</option>
+                          <option value="EXPERIMENT_RESULT">Experiment result</option>
+                        </select>
+                        <input v-model="editingEvidenceContent" />
+                      </div>
+                      <button class="ghost-button" type="button" @click="saveEvidence(item)" title="Save your changes to this note.">Save</button>
+                    </template>
+                    <template v-else>
+                      <p>{{ item.content }}</p>
+                      <small :title="item.sourceProvider ? 'This note came from one of the AI runs, not typed by a person.' : 'This note was typed in by a human, not the AI.'">{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
+                      <button class="text-button" type="button" @click="editEvidence(item)" title="Change the wording or type of this note.">Edit</button>
+                    </template>
+                  </article>
+                </div>
+              </details>
             </div>
 
             <div class="worktree-usages">
