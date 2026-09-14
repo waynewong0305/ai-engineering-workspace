@@ -165,10 +165,10 @@ export function registerAdrRoutes(app: FastifyInstance, db: WorkspaceDatabase) {
       id: randomUUID(), projectId: adr.projectId, title, problemStatement,
       type: "IMPLEMENTATION", status: "DRAFT", riskLevel,
       webAccessPolicy: "DISABLED", webAccessPermitted: false, webAccessDecidedAt: now, webAccessDecidedBy: "USER",
-      originAdrId: adr.id, planPhase: planPhase ?? null, errorMessage: null, createdAt: now, updatedAt: now,
+      originAdrId: adr.id, planPhase: planPhase ?? null, planRevisionRound: 1, errorMessage: null, createdAt: now, updatedAt: now,
     };
     db.insert(tasks).values(task).run();
-    return reply.code(201).send({ ...task, runs: [], artifacts: [], evidence: [], comparison: null, openQuestionCount: 0 });
+    return reply.code(201).send({ ...task, runs: [], artifacts: [], evidence: [], comparison: null, comparisonHistory: [], openQuestionCount: 0 });
   });
 
   app.get<{ Params: { id: string } }>("/api/adrs/:id/promoted-tasks", async (request, reply) => {

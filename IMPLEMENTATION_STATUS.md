@@ -272,6 +272,83 @@ field; 65 agent-package tests; 31 Git-package tests), `npm run typecheck`, `npm 
 check:agent-policy`, `npm run db:generate` (reports only migration `0018`), `npm run db:migrate`
 against the real local database, and `git diff --check`; all passed.
 
+Later addition (2026-09-15): plan revision with versioning, step 3 of 7 of the auditable-
+question-resolution effort (originally a 6-step plan; this step was inserted and the original steps
+3-6 renumbered to 5-7 to make room, after the human raised it while reviewing step 2 live). This step
+exists because the human asked whether answering all a plan's open questions could trigger the model
+to revise the plan — confirmed as a human-triggered action (not automatic), gated by the same
+usage-safety/budget checks as every other provider call, keeping every past plan version rather than
+overwriting it.
+- **Schema**: `task_comparisons` changed from a single `taskId`-primary-keyed row per task to a
+  genuinely versioned, append-only table (`id` primary key, `taskId` + `version` unique together,
+  same `content`/`generatedAt`) — migration `0019_dazzling_genesis.sql`. This is a real structural
+  rebuild (SQLite can't drop a primary key via `ALTER TABLE`), not a plain `ADD COLUMN`, so
+  drizzle-kit generated a `CREATE __new_task_comparisons` / copy / `DROP` / `RENAME` sequence — its
+  generated `INSERT` referenced `id`/`version` columns that don't exist on the *old* table shape and
+  would have failed outright, so it was hand-fixed to backfill `version = 1` for every pre-existing
+  row and a random-hex `id` (SQLite has no UUID function; nothing in this app parses id format, only
+  treats it as an opaque key, and every new row going forward still gets a real `randomUUID()` from
+  Node). `tasks` also gained `planRevisionRound` (starts at 1, incremented per revision). Given the
+  destructive shape of this change, the migration was tested end-to-end against a **WAL-consistent**
+  copy of the real local database (`sqlite3 ... .backup`, not a plain `cp` — a naive file copy while
+  the dev server holds an open WAL-mode connection silently produces a stale, inconsistent snapshot,
+  caught during this verification, not shipped) before being applied for real; content/timestamp
+  equality, `PRAGMA foreign_key_check`, and `PRAGMA integrity_check` were all confirmed clean on both
+  the test copy and the real database afterward.
+- **`BrainstormWorkflow`** (`apps/server/src/services/brainstorm-workflow.ts`): `runAnalysisPhase`/
+  `runCrossReviewPhase` gained an optional `{ force, template, promptVersion, extraValues }` param
+  (all defaulted to today's behavior, so `start`/`resume` needed no changes) — `force: true` skips
+  the existing-artifact lookup that otherwise treats a prior round's artifact as "already done" and
+  makes a second run against a `READY` task silently no-op, which is otherwise exactly what would
+  happen if `reviseWithAnswers` reused these methods unmodified. New public `reviseWithAnswers`:
+  silent no-op unless `status === "READY"` (matching `start`/`resume`'s own convention — the route is
+  the stricter, human-facing guard, matching `/resume`'s established pattern), gathers every
+  `ANSWERED` question's latest response into a `Q: ...\nA: ...` block, forces a fresh analysis round
+  with a new prompt/version that folds that block in, forces a fresh cross-review round (reusing
+  `cross-review:v1` unchanged — it reviews whatever the fresh analysis says regardless of which
+  prompt produced it), and inserts the resulting comparison as `version = max(existing) + 1` (the
+  same `max(...)`-per-scope pattern `adrs.ts` already uses for ADR numbering). Status transitions
+  reuse the existing `READY → ANALYZING → CROSS_REVIEW → READY` enum unchanged, so the existing UI
+  stage tracker and `cancel()`'s allowed-status list needed no changes either.
+- New prompt `prompts/brainstorm-analysis-revise.md` (`brainstorm-analysis-revise:v1`) — the original
+  `brainstorm-analysis.md` plus one added `RESOLVED_QUESTIONS` section instructing the model not to
+  re-raise an answered question as an unknown. Same `BrainstormAnalysis` JSON shape, so no parser
+  change was needed.
+- New `POST /api/tasks/:id/revise` (404 unknown task, 409 not `READY`, 400 zero answered questions,
+  otherwise the same usage-safety/budget pre-checks and fire-and-forget `202` pattern as `/start`).
+  `GET /api/tasks/:id` gained `comparisonHistory` (every version, ascending); `comparison` now means
+  "latest version" (`orderBy(desc(version)).limit(1)` equivalent) — backward compatible with existing
+  frontend code. `brainstorm-report.ts` and the ADR-promotion task-creation response were updated for
+  the same schema change (latest-version lookup, `comparisonHistory: []`/`planRevisionRound: 1` on a
+  freshly created task); `buildBrainstormPlanReport` also gained a `comparisonVersion` field (unused
+  by the frontend until the step-4 report rework, kept for correctness now that "the" comparison is
+  no longer a singleton).
+- UI (`apps/web/src/App.vue`): a "Revise plan with answers" button in the comparison section, shown
+  only when the task is `READY` and at least one question is `ANSWERED` (a plain-language hint
+  explains why otherwise); once more than one version exists, the summary shows "Version N of M" and
+  a collapsed "N earlier version(s)" disclosure lists every prior comparison with its own generated
+  timestamp, never discarding one. Reuses the existing `.question-actions`/`.question-history`
+  classes rather than inventing new ones for what is structurally the same "action row" / "audit
+  disclosure" pattern already established in step 2.
+- Tests: new `apps/server/src/routes/plan-revision.test.ts` (4 tests) — a full revise round trip
+  (version increments to 2, the fake adapter's captured prompt contains both the question text and
+  the saved answer, the old version's content is byte-for-byte unchanged and still reachable);
+  refusing revision on a non-`READY` task; refusing revision with zero answered questions (and
+  confirming nothing changed); 404 for an unknown task. Deliberately **not** independently retested:
+  a usage-safety checkpoint mid-revision — `reviseWithAnswers` reuses the exact same
+  `handleWorkflowError`/`checkpoint()` code path `start`/`resume` already exercise in
+  `brainstorm-workflow-usage-safety.test.ts`, unmodified, so the incremental risk of a silent
+  regression there is low; noted here rather than silently skipped.
+- Verified under Node 22.23.2 with `npm test` (156 server tests, up from 152; 65 agent-package tests;
+  31 Git-package tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
+  db:generate` (reports only migration `0019`), `npm run db:migrate` against the real local database
+  (see the migration-safety note above), and `git diff --check`; all passed. Manual browser
+  verification against the real task: confirmed the button is hidden with an explanatory hint when no
+  question is answered, appears once a question is answered (via the real UI, no fake data), and the
+  state reverts correctly on reopen — deliberately did **not** click "Revise plan with answers" for
+  real, since doing so spends real Claude/Codex provider usage on the human's real task; verified at
+  desktop and 375px mobile width with no horizontal overflow.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

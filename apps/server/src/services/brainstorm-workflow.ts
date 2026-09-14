@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { AgentAdapter, AgentProvider, AgentRunInput } from "@aiew/agents";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, max } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
   agentRuns,
   evidenceItems,
   projects,
+  questionDetails,
+  questionResponses,
   taskArtifacts,
   taskComparisons,
   tasks,
@@ -25,9 +27,11 @@ import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js
 import { UsageBudgetCheckpointError, type UsageBudgetService } from "./usage-settings.js";
 
 const ANALYSIS_VERSION = "brainstorm-analysis:v1";
+const REVISE_ANALYSIS_VERSION = "brainstorm-analysis-revise:v1";
 const REVIEW_VERSION = "cross-review:v1";
 const promptRoot = fileURLToPath(new URL("../../../../prompts/", import.meta.url));
 const analysisTemplate = readFileSync(`${promptRoot}brainstorm-analysis.md`, "utf8");
+const reviseAnalysisTemplate = readFileSync(`${promptRoot}brainstorm-analysis-revise.md`, "utf8");
 const reviewTemplate = readFileSync(`${promptRoot}cross-review.md`, "utf8");
 
 type WorkflowOptions = {
@@ -35,6 +39,15 @@ type WorkflowOptions = {
   claudeEffort?: string;
   timeoutMs?: number;
 };
+
+/**
+ * Both phase methods default to today's plain behavior (reuse whatever artifacts already exist for
+ * a provider, original template/version) so `start`/`resume` need no changes. `reviseWithAnswers`
+ * passes `force: true` so a fresh round always re-runs both providers instead of treating a prior
+ * round's artifact as "already done" — the actual fix for the otherwise no-op problem of re-entering
+ * a READY task — plus a different analysis template/version and extra prompt values.
+ */
+type PhaseOptions = { force?: boolean; template?: string; promptVersion?: string; extraValues?: Record<string, string> };
 
 function replace(template: string, values: Record<string, string>) {
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (placeholder, key: string) => values[key] ?? placeholder);
@@ -195,16 +208,19 @@ export class BrainstormWorkflow {
     repositoryPath: string,
     projectContext: string | null,
     options: WorkflowOptions,
+    phaseOptions: PhaseOptions = {},
   ): Promise<StoredAnalysis[] | null> {
     await this.assertPhaseReady(["CLAUDE", "CODEX"]);
-    const analysisPrompt = replace(analysisTemplate, {
+    const analysisPrompt = replace(phaseOptions.template ?? analysisTemplate, {
       TITLE: task.title,
       TYPE: task.type,
       RISK_LEVEL: task.riskLevel,
       PROJECT_CONTEXT: projectContext ?? "No project context was supplied.",
       PROBLEM_STATEMENT: task.problemStatement,
+      ...phaseOptions.extraValues,
     });
-    const existing = this.db.select().from(taskArtifacts).where(and(
+    const promptVersion = phaseOptions.promptVersion ?? ANALYSIS_VERSION;
+    const existing = phaseOptions.force ? [] : this.db.select().from(taskArtifacts).where(and(
       eq(taskArtifacts.taskId, task.id), eq(taskArtifacts.kind, "ANALYSIS"),
     )).all();
     const analysesByProvider = new Map<AgentProvider, StoredAnalysis>(existing.flatMap((artifact) => artifact.structuredData
@@ -223,11 +239,11 @@ export class BrainstormWorkflow {
     };
     if (parallel) {
       const runs = await Promise.all(missingProviders.map((provider) =>
-        this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options)));
+        this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, promptVersion, analysisPrompt, options)));
       if (runs.some((run) => !storeRun(run))) return null;
     } else {
       for (const provider of missingProviders) {
-        const run = await this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, ANALYSIS_VERSION, analysisPrompt, options);
+        const run = await this.run(task, repositoryPath, provider, "INDEPENDENT_ANALYSIS", null, promptVersion, analysisPrompt, options);
         if (!storeRun(run)) return null;
       }
     }
@@ -242,10 +258,11 @@ export class BrainstormWorkflow {
     repositoryPath: string,
     analyses: StoredAnalysis[],
     options: WorkflowOptions,
+    phaseOptions: PhaseOptions = {},
   ) {
     await this.assertPhaseReady(["CLAUDE", "CODEX"]);
     const byProvider = new Map(analyses.map((entry) => [entry.provider, entry]));
-    const existing = this.db.select().from(taskArtifacts).where(and(
+    const existing = phaseOptions.force ? [] : this.db.select().from(taskArtifacts).where(and(
       eq(taskArtifacts.taskId, task.id), eq(taskArtifacts.kind, "CROSS_REVIEW"),
     )).all();
     const reviewsByProvider = new Map<AgentProvider, StoredReview>(existing.flatMap((artifact) => artifact.structuredData
@@ -289,8 +306,59 @@ export class BrainstormWorkflow {
       analyses.map((entry) => entry.data!),
       reviews.map((entry) => entry.data!),
     );
-    this.db.insert(taskComparisons).values({ taskId: task.id, content: comparison, generatedAt: new Date().toISOString() }).run();
+    const nextVersion = (this.db.select({ highest: max(taskComparisons.version) }).from(taskComparisons)
+      .where(eq(taskComparisons.taskId, task.id)).get()?.highest ?? 0) + 1;
+    this.db.insert(taskComparisons).values({
+      id: randomUUID(), taskId: task.id, version: nextVersion, content: comparison, generatedAt: new Date().toISOString(),
+    }).run();
     this.updateStatus(task.id, "READY");
+  }
+
+  /**
+   * Human-triggered: once one or more questions are answered, revise the plan with those answers
+   * folded in rather than leaving the original analysis looking stale. Unlike `start`/`resume`, this
+   * always re-runs both providers (`force: true`) — a READY task already has ANALYSIS/CROSS_REVIEW
+   * artifacts from the prior round, and the ordinary phase methods would otherwise treat those as
+   * "already done" and skip re-running anyone. Every past `taskComparisons` version stays reachable;
+   * this never overwrites one. See routes/tasks.ts's `/revise` route for the human-facing guards
+   * (only a READY task, only with at least one answered question) — this method itself stays a
+   * silent no-op otherwise, matching `start`/`resume`'s own convention.
+   */
+  async reviseWithAnswers(taskId: string, options: WorkflowOptions = {}) {
+    const task = this.db.select().from(tasks).where(eq(tasks.id, taskId)).get();
+    if (!task || task.status !== "READY") return;
+    const project = this.db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+    if (!project) return this.fail(task.id, "The registered project no longer exists.");
+    const resolvedQuestions = this.gatherResolvedQuestionsText(task.id);
+    if (!resolvedQuestions) return;
+
+    this.db.update(tasks).set({ planRevisionRound: task.planRevisionRound + 1, updatedAt: new Date().toISOString() }).where(eq(tasks.id, task.id)).run();
+    this.updateStatus(task.id, "ANALYZING");
+    try {
+      const analyses = await this.runAnalysisPhase(task, project.repositoryPath, project.projectContext, options, {
+        force: true, template: reviseAnalysisTemplate, promptVersion: REVISE_ANALYSIS_VERSION,
+        extraValues: { RESOLVED_QUESTIONS: resolvedQuestions },
+      });
+      if (!analyses) return;
+      await this.runCrossReviewPhase(task, project.repositoryPath, analyses, options, { force: true });
+    } catch (error) {
+      this.handleWorkflowError(task.id, error);
+    }
+  }
+
+  /** One `Q: ...\nA: ...` block per ANSWERED question, latest response's answer text. Empty string ("nothing to revise with") when no question has been answered yet. */
+  private gatherResolvedQuestionsText(taskId: string): string {
+    const answered = this.db.select().from(questionDetails).where(and(
+      eq(questionDetails.taskId, taskId), eq(questionDetails.status, "ANSWERED"),
+    )).all();
+    if (!answered.length) return "";
+    const blocks = answered.map((detail) => {
+      const question = this.db.select({ content: evidenceItems.content }).from(evidenceItems).where(eq(evidenceItems.id, detail.questionId)).get();
+      const latestResponse = this.db.select().from(questionResponses).where(eq(questionResponses.questionId, detail.questionId))
+        .orderBy(desc(questionResponses.createdAt)).get();
+      return `Q: ${question?.content ?? "(question no longer available)"}\nA: ${latestResponse?.answer ?? "(no answer recorded)"}`;
+    });
+    return blocks.join("\n\n");
   }
 
   private handleWorkflowError(taskId: string, error: unknown) {

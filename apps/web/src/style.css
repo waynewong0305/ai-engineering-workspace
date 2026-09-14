@@ -436,6 +436,7 @@ legend small { margin-left: 8px; }
 .comparison-grid article:first-child { border-color: rgba(168, 255, 138, 0.3); }
 .comparison-grid h4 { margin-top: 0; color: var(--cyan); }
 .comparison-grid p { margin: 0; font-size: 12px; }
+.comparison-grid .comparison-version-label { grid-column: 1 / -1; margin: 0 0 2px; font-size: 11px; }
 
 .evidence-form { display: grid; grid-template-columns: 180px minmax(0, 1fr) auto; gap: 10px; margin-top: 14px; }
 .evidence-form textarea { min-height: 46px; height: 46px; }

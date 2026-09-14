@@ -301,6 +301,7 @@ The workflow is:
 6. Claude critiques Codex's analysis.
 7. The comparison screen groups consensus, disagreements, open questions, missing evidence, and recommended experiments.
 8. You correct facts and assumptions, add evidence or decisions, and decide which disagreement matters.
+9. Once you've answered one or more of the plan's questions, a **Revise plan with answers** button appears on the comparison screen. Clicking it asks both AIs to redo their independent analysis and cross-review with your answers folded in — a second, explicit round that spends provider usage the same as the original analysis, gated by the same usage-safety checks. It never overwrites the earlier plan: once more than one version exists, the comparison heading shows **Version N of M**, and every earlier version stays available in a collapsed disclosure below, each with its own timestamp.
 
 The task screen persists and reconstructs the draft, stage, runs, artifacts, comparison, and evidence after a browser refresh. While analysis or cross-review is active, status and newly completed results update quietly in place; the task usage card, budget form, experiments, and generated report are not reset on every status check. You can cancel while analysis or cross-review is active. If the server restarts during active provider work, startup recovery marks the abandoned records failed, releases their usage leases, and preserves completed output and artifacts for inspection.
 

@@ -134,6 +134,13 @@
       "when": 1789401691053,
       "tag": "0018_peaceful_redwing",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1789402701818,
+      "tag": "0019_dazzling_genesis",
+      "breakpoints": true
     }
   ]
 }

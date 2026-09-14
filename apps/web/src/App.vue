@@ -314,6 +314,7 @@ type BrainstormTask = {
     missingEvidence: string[];
     recommendedExperiments: string[];
   } | null;
+  comparisonHistory?: Array<{ id: string; version: number; generatedAt: string; content: NonNullable<BrainstormTask["comparison"]> }>;
 };
 type WorktreeProposal = {
   provider: AgentProvider;
@@ -1853,6 +1854,35 @@ async function resumeBrainstorm() {
   }
 }
 
+const canReviseWithAnswers = computed(() =>
+  selectedTask.value?.status === "READY" && (selectedTask.value.questionDetails ?? []).some((detail) => detail.status === "ANSWERED"));
+
+async function reviseBrainstormPlan() {
+  if (!selectedTask.value) return;
+  startingTask.value = true;
+  taskError.value = "";
+  taskMessage.value = "";
+  usageBlockedDecision.value = null;
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/revise`, { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      if (result.code === "BUDGET_CHECKPOINT") {
+        selectedTaskBudget.value = { budget: result.decision.budget, progress: result.decision.progress };
+        copyBudgetToForm(selectedTaskBudget.value);
+      }
+      throw new Error(result.message ?? "Could not revise the plan.");
+    }
+    taskMessage.value = "Revising the plan with the answers recorded so far.";
+    await selectTask(selectedTask.value.id);
+  } catch (error) {
+    taskError.value = error instanceof Error ? error.message : "Could not revise the plan.";
+  } finally {
+    startingTask.value = false;
+  }
+}
+
 async function cancelBrainstorm() {
   if (!selectedTask.value) return;
   const response = await fetch(`/api/tasks/${selectedTask.value.id}/cancel`, { method: "POST" });
@@ -2988,7 +3018,7 @@ onUnmounted(() => {
             </details>
 
             <details v-if="selectedTask.comparison" class="comparison-section result-section" :open="selectedTask.status !== 'READY'">
-              <summary class="subsection-heading" title="Open or close the side-by-side summary of agreements, disagreements, and open questions. The app does not pick a winner for you."><span>TRANSPARENT COMPARISON</span><strong>No automatic winner</strong></summary>
+              <summary class="subsection-heading" title="Open or close the side-by-side summary of agreements, disagreements, and open questions. The app does not pick a winner for you."><span>TRANSPARENT COMPARISON</span><strong>{{ (selectedTask.comparisonHistory?.length ?? 1) > 1 ? `Version ${selectedTask.comparisonHistory!.length} of ${selectedTask.comparisonHistory!.length} · No automatic winner` : "No automatic winner" }}</strong></summary>
               <div class="comparison-grid">
                 <article v-for="(items, label) in selectedTask.comparison" :key="label">
                   <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
@@ -2996,6 +3026,28 @@ onUnmounted(() => {
                   <p v-else>No item was asserted by the structured reviews.</p>
                 </article>
               </div>
+              <div class="question-actions">
+                <button
+                  v-if="canReviseWithAnswers"
+                  type="button"
+                  class="ghost-button"
+                  :disabled="startingTask"
+                  @click="reviseBrainstormPlan"
+                  title="Ask both AIs to redo their analysis and cross-review with the answers you've saved so far folded in. This starts two new provider runs and keeps this version of the plan on record — it never overwrites it."
+                >Revise plan with answers</button>
+                <small v-else-if="selectedTask.status === 'READY'" class="form-hint" title="Answer at least one open question above before the plan can be revised.">Answer a question to enable revising this plan.</small>
+              </div>
+              <details v-if="(selectedTask.comparisonHistory?.length ?? 0) > 1" class="question-history">
+                <summary title="Every earlier version of this plan, kept on record rather than overwritten.">{{ selectedTask.comparisonHistory!.length - 1 }} earlier version(s)</summary>
+                <div class="comparison-grid" v-for="version in [...selectedTask.comparisonHistory!].reverse().slice(1)" :key="version.id">
+                  <p class="form-hint comparison-version-label">Version {{ version.version }} · generated {{ new Date(version.generatedAt).toLocaleString() }}</p>
+                  <article v-for="(items, label) in version.content" :key="label">
+                    <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
+                    <ul v-if="items.length"><li v-for="item in items" :key="item">{{ item }}</li></ul>
+                    <p v-else>No item was asserted by the structured reviews.</p>
+                  </article>
+                </div>
+              </details>
             </details>
 
             <div class="evidence-board">

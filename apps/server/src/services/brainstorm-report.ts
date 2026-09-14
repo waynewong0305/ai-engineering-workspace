@@ -1,5 +1,5 @@
 import type { AgentProvider } from "@aiew/agents";
-import { asc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
 import {
   evidenceItems,
@@ -38,6 +38,7 @@ export type BrainstormPlanReport = {
     parseError: string | null;
   }[];
   comparison: TaskComparison | null;
+  comparisonVersion: number | null;
   evidence: EvidenceItemRecord[];
   humanDecisionRequired: true;
   recommendedNextAction: string;
@@ -75,7 +76,10 @@ export function buildBrainstormPlanReport(db: WorkspaceDatabase, taskId: string)
   if (!task) return null;
 
   const artifacts = db.select().from(taskArtifacts).where(eq(taskArtifacts.taskId, task.id)).orderBy(asc(taskArtifacts.createdAt)).all();
-  const comparison = db.select().from(taskComparisons).where(eq(taskComparisons.taskId, task.id)).get()?.content ?? null;
+  // Latest version is "current" — every earlier revision stays in the table, never overwritten (see
+  // BrainstormWorkflow.reviseWithAnswers), but this report always summarizes the most recent plan.
+  const latestComparison = db.select().from(taskComparisons).where(eq(taskComparisons.taskId, task.id)).orderBy(desc(taskComparisons.version)).get();
+  const comparison = latestComparison?.content ?? null;
   const evidence = db.select().from(evidenceItems).where(eq(evidenceItems.taskId, task.id)).orderBy(asc(evidenceItems.createdAt)).all();
 
   return {
@@ -104,6 +108,7 @@ export function buildBrainstormPlanReport(db: WorkspaceDatabase, taskId: string)
         parseError: artifact.parseError,
       })),
     comparison,
+    comparisonVersion: latestComparison?.version ?? null,
     evidence,
     humanDecisionRequired: true,
     recommendedNextAction: recommendNextAction(task, comparison !== null),

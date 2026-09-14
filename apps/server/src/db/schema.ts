@@ -51,6 +51,10 @@ export const tasks = sqliteTable("tasks", {
   // time, not a separate relational "plan" entity — a deliberate scope reduction.
   originAdrId: text("origin_adr_id"),
   planPhase: text("plan_phase"),
+  // Starts at 1 (the original brainstorm/cross-review round); BrainstormWorkflow.reviseWithAnswers
+  // increments this and tags the resulting task_comparisons row with the same number as its
+  // version, so "how many times has this plan been revised" never needs deriving from artifacts.
+  planRevisionRound: integer("plan_revision_round").notNull().default(1),
   errorMessage: text("error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -368,11 +372,24 @@ export type TaskComparison = {
   recommendedExperiments: string[];
 };
 
+/**
+ * Append-only and versioned per task (was a single `taskId`-primary-keyed row; a second brainstorm
+ * round would have collided). `version` mirrors `tasks.planRevisionRound`/`adrs.number`'s own
+ * per-scope-sequential-numbering pattern (`max(version) + 1` for the task) rather than overwriting
+ * — BrainstormWorkflow.reviseWithAnswers relies on every past plan staying reachable.
+ */
 export const taskComparisons = sqliteTable("task_comparisons", {
-  taskId: text("task_id").primaryKey().references(() => tasks.id, { onDelete: "cascade" }),
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
   content: text("content", { mode: "json" }).$type<TaskComparison>().notNull(),
   generatedAt: text("generated_at").notNull(),
-});
+}, (table) => [
+  uniqueIndex("task_comparisons_task_version_idx").on(table.taskId, table.version),
+  index("task_comparisons_task_idx").on(table.taskId),
+]);
+
+export type TaskComparisonRecord = typeof taskComparisons.$inferSelect;
 
 export type EvidenceType = "FACT" | "ASSUMPTION" | "QUESTION" | "DECISION" | "EXPERIMENT_RESULT";
 

@@ -107,12 +107,16 @@ export function registerTaskRoutes(
       list.push(response);
       responsesByQuestionId.set(response.questionId, list);
     }
+    const comparisonHistory = db.select().from(taskComparisons).where(eq(taskComparisons.taskId, task.id)).orderBy(asc(taskComparisons.version)).all();
     return {
       ...task,
       runs: db.select().from(agentRuns).where(eq(agentRuns.taskId, task.id)).orderBy(asc(agentRuns.createdAt)).all(),
       artifacts: db.select().from(taskArtifacts).where(eq(taskArtifacts.taskId, task.id)).orderBy(asc(taskArtifacts.createdAt)).all(),
       evidence,
-      comparison: db.select().from(taskComparisons).where(eq(taskComparisons.taskId, task.id)).get()?.content ?? null,
+      // "Current" plan is always the highest version; every earlier version stays reachable via
+      // comparisonHistory rather than being overwritten (see BrainstormWorkflow.reviseWithAnswers).
+      comparison: comparisonHistory.at(-1)?.content ?? null,
+      comparisonHistory,
       questionDetails: details.map((detail) => ({ ...detail, responses: responsesByQuestionId.get(detail.questionId) ?? [] })),
       openQuestionCount: evidence.filter((item) => item.type === "QUESTION" && isQuestionOpen(detailsByQuestionId.get(item.id))).length,
     };
@@ -155,7 +159,7 @@ export function registerTaskRoutes(
       const budget = request.body.budget === undefined && request.body.budgetPreset === undefined
         ? usageBudgets.getOrCreate(task.id)
         : usageBudgets.set(task.id, budgetInput);
-      return reply.code(201).send({ ...task, budget, runs: [], artifacts: [], evidence: [], comparison: null, openQuestionCount: 0 });
+      return reply.code(201).send({ ...task, budget, runs: [], artifacts: [], evidence: [], comparison: null, comparisonHistory: [], openQuestionCount: 0 });
     } catch (error) {
       db.delete(tasks).where(eq(tasks.id, task.id)).run();
       return reply.code(400).send({ message: error instanceof Error ? error.message : "The task budget is invalid." });
@@ -218,6 +222,29 @@ export function registerTaskRoutes(
     }
     void workflow.resume(task.id);
     return reply.code(202).send({ message: "Resuming the checkpointed workflow.", taskId: task.id });
+  });
+
+  app.post<{ Params: { id: string } }>("/api/tasks/:id/revise", async (request, reply) => {
+    const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
+    if (!task) return reply.code(404).send({ message: "Task not found." });
+    if (task.status !== "READY") return reply.code(409).send({ message: "Only a ready plan can be revised." });
+    const hasAnsweredQuestion = db.select({ questionId: questionDetails.questionId }).from(questionDetails)
+      .where(and(eq(questionDetails.taskId, task.id), eq(questionDetails.status, "ANSWERED"))).get();
+    if (!hasAnsweredQuestion) {
+      return reply.code(400).send({ message: "Answer at least one question before revising the plan." });
+    }
+    const usageDecision = (["CLAUDE", "CODEX"] as const)
+      .map((provider) => usageSafety.evaluate(provider, { combined: true }))
+      .find((decision) => !decision.allowed);
+    if (usageDecision) {
+      return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    const budgetDecision = usageBudgets.evaluate(task.id);
+    if (!budgetDecision.allowed) {
+      return reply.code(409).send({ message: budgetDecision.reason, code: "BUDGET_CHECKPOINT", decision: budgetDecision });
+    }
+    void workflow.reviseWithAnswers(task.id);
+    return reply.code(202).send({ message: "Revising the plan with the answers recorded so far.", taskId: task.id });
   });
 
   app.get<{ Params: { id: string } }>("/api/tasks/:id/report", async (request, reply) => {
