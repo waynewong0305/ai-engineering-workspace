@@ -1,8 +1,10 @@
 import type { AgentAdapter } from "./AgentAdapter.js";
+import { ClaudeUsageProbeClient, type ClaudeUsageReader } from "./ClaudeUsageProbeClient.js";
 import { firstLine, runCommand } from "./cli-utils.js";
 import { JsonLineDecoder } from "./JsonLineDecoder.js";
 import { ProcessSupervisor } from "./ProcessSupervisor.js";
 import type { AgentEvent, AgentHealth, AgentRunInput } from "./types.js";
+import type { RateLimitWindowReading } from "./usage-extraction.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null;
@@ -23,10 +25,22 @@ function extractClaudeText(value: unknown): string | null {
 export class ClaudeAdapter implements AgentAdapter {
   readonly name = "CLAUDE" as const;
 
+  /**
+   * Unlike Codex's account/rateLimits/read, Claude has no side-channel usage endpoint — readUsage
+   * below is a real (minimal, cheapest-model) run, so UsageSafetyService must never call it from its
+   * automatic pre-flight path, only from an explicit human-initiated refresh.
+   */
+  readonly spendsProviderUsageToRead = true;
+
   constructor(
     private readonly supervisor = new ProcessSupervisor(),
     private readonly executable = "claude",
+    private readonly usageReader: ClaudeUsageReader = new ClaudeUsageProbeClient(executable),
   ) {}
+
+  readUsage(): Promise<RateLimitWindowReading[]> {
+    return this.usageReader.readRateLimits();
+  }
 
   async healthCheck(): Promise<AgentHealth> {
     const version = await runCommand(this.executable, ["--version"]);

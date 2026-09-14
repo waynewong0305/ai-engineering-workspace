@@ -938,6 +938,12 @@ async function createPricingVersion() {
 }
 
 async function refreshUsage(provider: AgentProvider) {
+  if (provider === "CLAUDE") {
+    const confirmed = window.confirm(
+      "Unlike Codex, Claude has no free way to check usage on demand. Refreshing will send one minimal request to the cheapest Claude model just to read your current usage, which will use a small amount of your Claude usage. Continue?",
+    );
+    if (!confirmed) return;
+  }
   refreshingProvider.value = provider;
   usageError.value = "";
   try {
@@ -3041,10 +3047,13 @@ onUnmounted(() => {
             <p>
               A provider subscription allowance (what this page tracks) is not the same thing as an API token rate
               limit: this is about the Claude Code / ChatGPT plan allowance a run can exhaust, not per-request
-              tokens-per-minute limits. Claude reports this automatically in run output (CLI_REPORTED · EXACT),
-              while Codex is read on demand through its local App Server (APP_SERVER · EXACT). The app refreshes
-              supported readings before every provider call and after each run. If a supported reader is unavailable,
-              use a manual snapshot; it remains clearly labeled as an estimate.
+              tokens-per-minute limits. Claude reports this automatically in its own run output (CLI_REPORTED · EXACT),
+              while Codex can be read on demand, for free, through its local App Server (APP_SERVER · EXACT) — the app
+              refreshes Codex's reading automatically before every provider call and after each run. Claude has no
+              free equivalent, so its automatic pre-flight check never spends usage on your behalf; use the manual
+              Refresh button when you want an up-to-date Claude reading sooner than its next real run, which will use
+              a small amount of Claude usage to get it. If a supported reader is unavailable, use a manual snapshot;
+              it remains clearly labeled as an estimate.
             </p>
           </div>
           <span class="safety-badge" title="Before the app spends any of your Claude/Codex usage, it checks how much is left — every single time, not just once.">CHECK BEFORE EVERY CALL</span>
@@ -3058,7 +3067,7 @@ onUnmounted(() => {
           <article v-for="provider in (['CLAUDE', 'CODEX'] as AgentProvider[])" :key="provider" class="usage-card">
             <header>
               <strong>{{ providerLabel(provider) }}</strong>
-              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" :title="provider === 'CLAUDE' ? 'Claude usage updates when its run output reports a fresh reading; this button checks whether an on-demand reader is available.' : 'Ask Codex App Server for the current ChatGPT plan-usage windows without starting a model run.'">
+              <button class="text-button" type="button" :disabled="refreshingProvider !== null" @click="refreshUsage(provider)" :title="provider === 'CLAUDE' ? 'Unlike Codex, Claude has no free on-demand usage check. Clicking this sends one minimal request to the cheapest Claude model just to read current usage; it will use a small amount of your Claude usage, so use it sparingly.' : 'Ask Codex App Server for the current ChatGPT plan-usage windows without starting a model run.'">
                 {{ refreshingProvider === provider ? "Refreshing…" : "Refresh" }}
               </button>
             </header>

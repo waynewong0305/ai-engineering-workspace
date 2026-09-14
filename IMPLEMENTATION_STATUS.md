@@ -1204,6 +1204,43 @@ spec at `USAGE_MONITORING_SPEC.md`; the checklist below is the current implement
   390 × 844 mobile viewport had no horizontal overflow; the viewport override was reset afterward.
   No model-backed frontend reviewer or provider run was started.
 
+### Phase 8 addendum — opt-in Claude usage probe
+
+- Date: 2026-09-14
+- Motivation: a human asked why the Usage Safety panel's Claude "Refresh" button couldn't behave
+  like Codex's (free, on-demand, via App Server). Unlike Codex, Claude has no documented
+  side-channel usage endpoint at all — its only documented source is the `rate_limit_event` a real
+  run's structured output emits — so an on-demand Claude reading is only obtainable by spending a
+  real, if minimal, provider turn. This was treated as a deliberate, human-approved trade-off, not a
+  gap to silently close: it must never run automatically.
+- Added `packages/agents/src/ClaudeUsageProbeClient.ts`: a bounded, one-shot `claude -p` run using
+  the cheapest available model (`claude-haiku-4-5-20251001`), a minimal one-line prompt, no tools
+  beyond the existing read-only set, `--no-session-persistence`, and an early exit the instant a
+  `rate_limit_event` is parsed from its stream-json output (reusing `extractRateLimitReadings`
+  rather than duplicating parsing logic).
+- `ClaudeAdapter` now implements `readUsage()` via that probe and declares the new
+  `AgentAdapter.spendsProviderUsageToRead` flag. `UsageSafetyService.refresh()` gained an `auto`
+  option: `assertReady`'s automatic pre-flight refresh (called before every provider-consuming
+  action) passes `auto: true` and now skips any reader whose adapter sets that flag, so Claude's
+  probe is never invoked as a byproduct of normal use. The manual `/api/usage/:provider/refresh`
+  route (the UI's "Refresh" button) calls it with the default `auto: false` and still triggers the
+  probe.
+- Updated the Usage Safety panel: the Claude "Refresh" button now works (previously a no-op that
+  reported no on-demand reader), gated behind a `window.confirm` naming the real cost, with its
+  tooltip and the section's explanatory copy updated to state plainly that Claude's on-demand check
+  is not free the way Codex's is.
+- Added 3 tests for `ClaudeUsageProbeClient` (extraction, cheapest-model/no-session args, bounded
+  timeout), 1 `ClaudeAdapter` test asserting the reader delegates and the new flag is set, and 1
+  `UsageSafetyService` test proving the automatic path skips a usage-spending reader while a manual
+  refresh still calls it. Full verification passed under Node 22.23.2: `npm test`, `npm run
+  typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema
+  drift), and `git diff --check`.
+- Known limitation: the probe's early-exit-on-first-reading only saves cost if the real CLI emits
+  `rate_limit_event` before the model finishes its reply; this was not re-verified against a live
+  Claude Code CLI account in this session (no test spends real usage per policy), so the button's
+  actual cost per click has not been measured against a real provider — only that it is bounded to
+  one minimal turn on the cheapest model.
+
 ## End-to-end workflow verification (cross-cutting)
 
 Not one of the phases above: every earlier phase's tests exercise one route or service at a time with fake data seeded directly. Nothing proved the pieces actually work *together*, in the order a real user would drive them, using only the app's own HTTP surface.

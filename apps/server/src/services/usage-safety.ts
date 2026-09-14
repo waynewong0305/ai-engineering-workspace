@@ -18,9 +18,13 @@ import {
 
 /**
  * Default safety policy. Claude reports exact plan usage in its run output; Codex exposes the same
- * account windows through its documented App Server protocol. Thresholds remain deliberately
- * configurable rather than tuned against one provider response shape, since provider tooling can
- * still drift between versions and must be re-verified before being trusted indefinitely.
+ * account windows through its documented App Server protocol, and can be polled for free at any
+ * time. Claude has no free equivalent — its adapter's `readUsage` is a real, minimal, cheapest-model
+ * probe run, so it is only ever invoked from an explicit human-initiated refresh, never from the
+ * automatic pre-flight check (see `refresh`'s `auto` option and `AgentAdapter.spendsProviderUsageToRead`).
+ * Thresholds remain deliberately configurable rather than tuned against one provider response shape,
+ * since provider tooling can still drift between versions and must be re-verified before being
+ * trusted indefinitely.
  */
 export const DEFAULT_USAGE_POLICY = {
   warningThresholdPercent: 75,
@@ -237,9 +241,17 @@ export class UsageSafetyService {
     return { CLAUDE: this.getProviderUsage("CLAUDE"), CODEX: this.getProviderUsage("CODEX") };
   }
 
-  /** Poll a provider only when its adapter exposes a documented, machine-readable usage source. */
-  async refresh(provider: UsageProvider) {
-    const readUsage = this.adapters.get(provider)?.readUsage;
+  /**
+   * Poll a provider only when its adapter exposes a documented, machine-readable usage source.
+   * `auto` marks the automatic pre-flight call `assertReady` makes before every provider-consuming
+   * action; when an adapter's reader spends real provider usage to answer (Claude's does — see
+   * `AgentAdapter.spendsProviderUsageToRead`), that automatic path skips it rather than silently
+   * spending usage on every call. An explicit human-initiated refresh (the default, `auto: false`)
+   * still calls it.
+   */
+  async refresh(provider: UsageProvider, options: { auto?: boolean } = {}) {
+    const adapter = this.adapters.get(provider);
+    const readUsage = adapter?.readUsage;
     if (!readUsage) {
       return {
         provider,
@@ -247,8 +259,15 @@ export class UsageSafetyService {
         message: `${provider} has no supported on-demand usage reader. Existing readings were left unchanged.`,
       };
     }
+    if (options.auto && adapter?.spendsProviderUsageToRead) {
+      return {
+        provider,
+        updated: false,
+        message: `${provider}'s on-demand usage reader spends real provider usage, so it is never called automatically. Use the manual refresh action to check now.`,
+      };
+    }
     try {
-      const readings = await readUsage.call(this.adapters.get(provider));
+      const readings = await readUsage.call(adapter);
       if (!readings.length) {
         return {
           provider,
@@ -454,7 +473,7 @@ export class UsageSafetyService {
   }
 
   async assertReady(provider: UsageProvider, options: { combined: boolean }): Promise<UsageEvaluation> {
-    await this.refresh(provider);
+    await this.refresh(provider, { auto: true });
     const decision = this.evaluate(provider, options);
     if (!decision.allowed) {
       this.recordCheckpoint(provider, decision.windowId, decision.status, decision.reason);

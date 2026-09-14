@@ -19,10 +19,15 @@ function service(adapters: AgentAdapter[] = []) {
   return new UsageSafetyService(db, new Map(adapters.map((adapter) => [adapter.name, adapter])));
 }
 
-function adapterWithUsage(provider: AgentProvider, readings: RateLimitWindowReading[]): AgentAdapter {
+function adapterWithUsage(
+  provider: AgentProvider,
+  readings: RateLimitWindowReading[],
+  options: { spendsProviderUsageToRead?: boolean } = {},
+): AgentAdapter {
   return {
     name: provider,
     readUsage: async () => readings,
+    spendsProviderUsageToRead: options.spendsProviderUsageToRead,
   } as AgentAdapter;
 }
 
@@ -248,5 +253,19 @@ describe("UsageSafetyService", () => {
 
     await expect(usage.assertReady("CODEX", { combined: false })).rejects.toThrow(UsageCheckpointError);
     expect(usage.getProviderUsage("CODEX")[0]).toMatchObject({ usedPercent: 95, status: "CHECKPOINT_REQUIRED" });
+  });
+
+  it("never auto-refreshes a reader that spends real provider usage (e.g. Claude's), but a manual refresh still calls it", async () => {
+    const usage = service([adapterWithUsage("CLAUDE", [{
+      windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 40, resetAt: null,
+    }], { spendsProviderUsageToRead: true })]);
+
+    // assertReady's automatic pre-flight refresh must skip a reader that costs real usage.
+    await usage.assertReady("CLAUDE", { combined: false });
+    expect(usage.getProviderUsage("CLAUDE")[0]!.status).toBe("UNAVAILABLE");
+
+    // An explicit, human-initiated refresh (the manual "Refresh" button) still calls it.
+    await expect(usage.refresh("CLAUDE")).resolves.toMatchObject({ updated: true });
+    expect(usage.getProviderUsage("CLAUDE")[0]).toMatchObject({ usedPercent: 40, source: "APP_SERVER" });
   });
 });

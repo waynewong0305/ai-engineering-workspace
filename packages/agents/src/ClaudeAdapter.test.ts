@@ -49,6 +49,13 @@ const baseInput: Omit<AgentRunInput, "permissionProfile"> = {
 };
 
 describe("ClaudeAdapter", () => {
+  it("exposes a usage reader that delegates and flags that it spends real provider usage", async () => {
+    const readings = [{ windowId: "5H", windowLabel: "5-hour usage window", usedPercent: 12, resetAt: null }];
+    const adapter = new ClaudeAdapter(new CapturingSupervisor(), "claude", { readRateLimits: async () => readings });
+    expect(adapter.spendsProviderUsageToRead).toBe(true);
+    await expect(adapter.readUsage()).resolves.toEqual(readings);
+  });
+
   it("uses plan mode and a read-only tool list for READ_ONLY", async () => {
     const executable = await createFakeClaudeExecutable();
     const supervisor = new CapturingSupervisor();

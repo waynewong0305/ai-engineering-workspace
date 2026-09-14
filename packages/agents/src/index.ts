@@ -1,5 +1,7 @@
 export type { AgentAdapter } from "./AgentAdapter.js";
 export { ClaudeAdapter } from "./ClaudeAdapter.js";
+export { CLAUDE_USAGE_PROBE_MODEL, ClaudeUsageProbeClient } from "./ClaudeUsageProbeClient.js";
+export type { ClaudeUsageReader } from "./ClaudeUsageProbeClient.js";
 export { CodexAdapter } from "./CodexAdapter.js";
 export { CodexAppServerClient, extractCodexAppServerRateLimits } from "./CodexAppServerClient.js";
 export type { CodexUsageReader } from "./CodexAppServerClient.js";
