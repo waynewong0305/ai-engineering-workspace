@@ -409,6 +409,7 @@ export type EvidenceItemRecord = typeof evidenceItems.$inferSelect;
 export type QuestionStatus = "OPEN" | "ANSWERED" | "DEFERRED" | "NOT_APPLICABLE" | "DUPLICATE";
 export type QuestionSuggestionSource = "CLAUDE" | "CODEX" | "HUMAN";
 export type QuestionResponseSource = "HUMAN" | "EXPERIMENT" | "PROVIDER";
+export type QuestionPriority = "BLOCKING" | "HIGH" | "MEDIUM" | "LOW";
 
 /**
  * One row per QUESTION-typed evidence item (1:1 via `questionId`, never a separate id) — the
@@ -432,6 +433,10 @@ export const questionDetails = sqliteTable("question_details", {
   // human's final choice or edit is still recorded as a normal question_responses row either way.
   suggestedAnswers: text("suggested_answers", { mode: "json" }).$type<string[] | null>(),
   suggestionSource: text("suggestion_source", { enum: ["CLAUDE", "CODEX", "HUMAN"] }),
+  // Nullable, blank until a v2 analysis/cross-review or suggestion-generation run sets it — never
+  // invented. "BLOCKING" is what the report and ADR-promotion warning treat as worth stopping for;
+  // every other value (or null) is informational only, per the human's "warn, never prohibit" ask.
+  priority: text("priority", { enum: ["BLOCKING", "HIGH", "MEDIUM", "LOW"] }),
   // Set together with status "DUPLICATE"; always points at a canonical (non-duplicate) question in
   // the same task — see the confirm-duplicate route's validation in routes/questions.ts.
   duplicateOfQuestionId: text("duplicate_of_question_id").references(() => evidenceItems.id, { onDelete: "set null" }),

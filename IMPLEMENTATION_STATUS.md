@@ -349,6 +349,67 @@ overwriting it.
   real, since doing so spends real Claude/Codex provider usage on the human's real task; verified at
   desktop and 375px mobile width with no horizontal overflow.
 
+Later addition (2026-09-15): brainstorm report overhaul, step 4 of 7 of the auditable-
+question-resolution effort. This step exists because, while reviewing the plan-revision UI live, the
+human flagged the generated report as thin (a bare `{{ evidence.length }} record(s).` line, no
+per-question detail at all), sparsely formatted (unstyled `<p><strong>` stacks — the container class
+was `.pre-pr-report`, which turned out to have **zero CSS rules anywhere in `style.css`**, shared
+confusingly with the real build pre-PR report), and missing whole sections — most notably, each
+analysis's own `facts`/`assumptions`/`unknowns`/`options` were stored but never rendered at all, only
+`summary` and `recommendation`.
+- Schema: `question_details` gained `priority` (`BLOCKING`/`HIGH`/`MEDIUM`/`LOW`, nullable — migration
+  `0020_organic_rictor.sql`, a plain additive column with no FK). Blank for every question until a
+  future `v2` analysis/cross-review or suggestion-generation run sets one; until then
+  `blockingQuestionsRemain` and the ADR-promotion warning below always read `false`/`0` for existing
+  data, which is correct, not a bug — the report never invents a priority no provider assigned.
+- `apps/server/src/services/brainstorm-report.ts`: `evidence` restructured from a flat, unfiltered
+  `EvidenceItemRecord[]` into `{ facts, assumptions, decisions, experimentResults, questions: { open,
+  answered, deferred, notApplicable, duplicateGroups } }` — each question entry carries its content,
+  provenance, priority, suggestion fields, and full response history (joined from
+  `question_details`/`question_responses`, both denormalized by `taskId` from step 1 so no extra join
+  through `evidence_items` was needed). New `architectureDecisions` and `experiments` fields use the
+  exact same project-scoped ADR-linkage query `pre-pr-report.ts` already established
+  (`relatedTaskIds`/`taskId` filter) — duplicated rather than extracted into a shared helper, per this
+  project's own stated preference for a few similar lines over a premature abstraction. New
+  `comparisonVersion` (from step 3) and `blockingQuestionsRemain` (`open.some(priority ===
+  "BLOCKING")`). `GET /api/tasks/:id/report` itself is unchanged; only what it returns is richer.
+- `apps/server/src/routes/adrs.ts`: new `openBlockingQuestionCount(db, taskId)` helper, attached to
+  every ADR response (create, get, list by project, list by task, update) — counts only `OPEN`
+  questions with `priority = "BLOCKING"` on the ADR's originating task. `/promote` itself is
+  deliberately **not** blocked by this, per the human's "warn, never prohibit" requirement from the
+  original enhancement plan; the UI shows a non-blocking warning banner above the Promote form when
+  nonzero and still lets the human submit.
+- UI (`apps/web/src/App.vue`, `apps/web/src/style.css`): the report's container moved from the
+  shared, unstyled `.pre-pr-report` class to a new dedicated `.plan-report` with real section styling
+  (`.plan-report-section-heading`, `.plan-report-warning`, `.plan-report-list`) — the build pre-PR
+  report's own template/class was deliberately left untouched, since no complaint was raised about
+  it. The report now reuses the page's own existing `.analysis-grid`/`.analysis-card`/`.review-card`/
+  `.option-block`/`.comparison-grid`/`.question-list`/`.question-card` classes (the same ones the live
+  task view already uses) instead of inventing new ones, so an analysis's full facts/assumptions/
+  options render with real structure, each question renders as the same card style from step 2, and a
+  duplicate group shows its canonical question with every duplicate listed under it. A
+  `blockingQuestionsRemain` warning banner appears above the analyses when true; the ADR Decisions
+  screen shows the equivalent warning above its Promote form.
+- Tests: extended the existing `tasks.test.ts` report test rather than moving it to a new file (it
+  was already colocated with the task/evidence fixtures it needs) — now also answers a question and
+  creates a real ADR mid-test, then asserts: `comparisonVersion`, the question ending up in
+  `evidence.questions.answered` (not `open`) with its actual response recorded, an empty
+  `duplicateGroups`/`experiments` (honest-empty check), a populated `architectureDecisions` entry, and
+  `blockingQuestionsRemain: false` (since nothing sets `priority` yet). Deliberately **not**
+  independently tested: `blockingQuestionsRemain: true` and a populated `experiments` list — neither
+  is reachable through the public API yet (no route sets `priority`, and a real experiment fixture
+  needs a full worktree + builder/reviewer run for what is otherwise a one-line `.filter`/`.map`
+  already proven correct by the symmetric, tested ADR-linkage code); both will get natural coverage
+  once step 5/7 (priority-setting) and any future experiment-focused report test exercise them.
+- Verified under Node 22.23.2 with `npm test` (156 server tests, same count — the report test grew
+  richer rather than adding new files; 65 agent-package tests; 31 Git-package tests), `npm run
+  typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (reports only
+  migration `0020`), `npm run db:migrate` against the real local database, and `git diff --check`;
+  all passed. Manual browser verification against the real task's real report: confirmed facts/
+  assumptions/options now render in full (previously silently dropped), the questions breakdown shows
+  all 18 real questions correctly bucketed as open, and the report has no horizontal overflow at
+  desktop or 375px mobile width.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

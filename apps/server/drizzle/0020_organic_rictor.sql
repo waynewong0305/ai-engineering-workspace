@@ -1,0 +1,1 @@
+ALTER TABLE `question_details` ADD `priority` text;

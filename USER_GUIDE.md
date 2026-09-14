@@ -345,12 +345,14 @@ Consensus is useful evidence that two analyses overlap; it is not proof. A disag
 
 The **BRAINSTORM PLAN REPORT** section on a task's detail pane generates a summary on demand (select **Generate report**), the same on-demand pattern as the build workflow's pre-PR report. It includes:
 
-- the task's type, risk level, and current status;
-- the problem statement;
-- each provider's independent analysis (summary and recommendation), or its parse error if the structured output couldn't be read;
+- the task's type, risk level, current status, and plan version (once the plan has been revised more than once — see "Revise plan with answers" above);
+- the problem statement, with a warning banner if any unresolved question is marked blocking priority;
+- each provider's independent analysis in full — summary, facts, assumptions, every option with its advantages/disadvantages/risks, and recommendation — or its parse error if the structured output couldn't be read;
 - each provider's cross-review of the other, or its parse error;
 - the comparison (consensus, disagreements, open questions, missing evidence, recommended experiments) once one has been generated;
-- the evidence board's record count; and
+- every question, broken out by status — open, answered (with its accepted answer), deferred, not applicable, and confirmed duplicate groups (each showing its canonical question and every question grouped under it);
+- fact/assumption/decision/experiment-result counts from the rest of the evidence board;
+- any architecture decisions and experiments linked to this task; and
 - a recommended next action based on the task's current status (for example, resuming a checkpointed task, or reviewing consensus before starting a build).
 
 You can generate this report at any point in the workflow, not only once the task reaches READY — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed so far, never fabricating what hasn't happened yet. The report always states **Human decision required: YES**: it's a plan to review, not an approved decision — see "Reviews and human responsibility" below.

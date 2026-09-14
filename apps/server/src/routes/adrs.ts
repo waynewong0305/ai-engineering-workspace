@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { asc, desc, eq, max } from "drizzle-orm";
+import { and, asc, desc, eq, max } from "drizzle-orm";
 import type { WorkspaceDatabase } from "../db/database.js";
-import { adrs, projects, tasks, type AdrRecord, type AdrStatus, type RiskLevel, type TaskRecord } from "../db/schema.js";
+import { adrs, projects, questionDetails, tasks, type AdrRecord, type AdrStatus, type RiskLevel, type TaskRecord } from "../db/schema.js";
 
 const ADR_STATUSES = new Set<AdrStatus>(["PROPOSED", "ACCEPTED", "REJECTED", "SUPERSEDED"]);
 const RISK_LEVELS = new Set<RiskLevel>(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
@@ -46,19 +46,34 @@ function stringArray(value: unknown): string[] | null {
   return value.map((item) => item.trim()).filter(Boolean);
 }
 
+/**
+ * "Before promoting a high-risk architecture plan, show a warning when blocking questions
+ * remain—but do not automatically prohibit promotion." Counts only OPEN questions with priority
+ * BLOCKING on the ADR's originating task — always 0 for legacy data until a v2 analysis/cross-review
+ * or suggestion-generation run actually sets a priority, which is correct, not a bug.
+ */
+function openBlockingQuestionCount(db: WorkspaceDatabase, taskId: string) {
+  return db.select({ questionId: questionDetails.questionId }).from(questionDetails).where(and(
+    eq(questionDetails.taskId, taskId), eq(questionDetails.status, "OPEN"), eq(questionDetails.priority, "BLOCKING"),
+  )).all().length;
+}
+
 export function registerAdrRoutes(app: FastifyInstance, db: WorkspaceDatabase) {
   app.get<{ Params: { id: string } }>("/api/projects/:id/adrs", async (request, reply) => {
     if (!db.select({ id: projects.id }).from(projects).where(eq(projects.id, request.params.id)).get()) {
       return reply.code(404).send({ message: "Project not found." });
     }
-    return db.select().from(adrs).where(eq(adrs.projectId, request.params.id)).orderBy(asc(adrs.number)).all();
+    return db.select().from(adrs).where(eq(adrs.projectId, request.params.id)).orderBy(asc(adrs.number)).all()
+      .map((adr) => ({ ...adr, openBlockingQuestionCount: openBlockingQuestionCount(db, adr.taskId) }));
   });
 
   app.get<{ Params: { id: string } }>("/api/tasks/:id/adrs", async (request, reply) => {
     if (!db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, request.params.id)).get()) {
       return reply.code(404).send({ message: "Task not found." });
     }
-    return db.select().from(adrs).where(eq(adrs.taskId, request.params.id)).orderBy(asc(adrs.number)).all();
+    const count = openBlockingQuestionCount(db, request.params.id);
+    return db.select().from(adrs).where(eq(adrs.taskId, request.params.id)).orderBy(asc(adrs.number)).all()
+      .map((adr) => ({ ...adr, openBlockingQuestionCount: count }));
   });
 
   app.post<{ Params: { id: string }; Body: CreateAdrBody }>("/api/tasks/:id/adrs", async (request, reply) => {
@@ -94,13 +109,13 @@ export function registerAdrRoutes(app: FastifyInstance, db: WorkspaceDatabase) {
       relatedTaskIds, status: "PROPOSED", createdAt: now, updatedAt: now,
     };
     db.insert(adrs).values(record).run();
-    return reply.code(201).send(record);
+    return reply.code(201).send({ ...record, openBlockingQuestionCount: openBlockingQuestionCount(db, task.id) });
   });
 
   app.get<{ Params: { id: string } }>("/api/adrs/:id", async (request, reply) => {
     const adr = db.select().from(adrs).where(eq(adrs.id, request.params.id)).get();
     if (!adr) return reply.code(404).send({ message: "ADR not found." });
-    return adr;
+    return { ...adr, openBlockingQuestionCount: openBlockingQuestionCount(db, adr.taskId) };
   });
 
   app.patch<{ Params: { id: string }; Body: CreateAdrBody }>("/api/adrs/:id", async (request, reply) => {
@@ -131,7 +146,8 @@ export function registerAdrRoutes(app: FastifyInstance, db: WorkspaceDatabase) {
       risks: risks ?? null, rejectedAlternatives: rejectedAlternatives ?? null, requiredFollowUp: requiredFollowUp ?? null,
       relatedTaskIds, status, updatedAt: new Date().toISOString(),
     }).where(eq(adrs.id, current.id)).run();
-    return db.select().from(adrs).where(eq(adrs.id, current.id)).get();
+    const updated = db.select().from(adrs).where(eq(adrs.id, current.id)).get()!;
+    return { ...updated, openBlockingQuestionCount: openBlockingQuestionCount(db, updated.taskId) };
   });
 
   /**

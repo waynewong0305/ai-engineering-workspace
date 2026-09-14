@@ -463,6 +463,29 @@ describe("brainstorm task routes", () => {
     }
     expect(detail.status).toBe("READY");
 
+    const emptyReport = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}/report` })).json();
+    expect(emptyReport.comparisonVersion).toBe(1);
+    expect(emptyReport.evidence.questions.open.length).toBeGreaterThan(0);
+    expect(emptyReport.evidence.questions.answered).toEqual([]);
+    expect(emptyReport.evidence.facts.length).toBeGreaterThan(0);
+    expect(emptyReport.architectureDecisions).toEqual([]);
+    expect(emptyReport.experiments).toEqual([]);
+    expect(emptyReport.blockingQuestionsRemain).toBe(false);
+
+    const question = emptyReport.evidence.questions.open[0];
+    const answered = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/${question.id}/responses`,
+      payload: { answer: "Roughly 4,000 writes per second at peak." },
+    });
+    expect(answered.statusCode).toBe(200);
+    await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/adrs`,
+      payload: {
+        title: "Adopt explicit tenant-to-shard mapping", context: "Context.", optionsConsidered: "Options.",
+        decision: "Use a versioned mapping table.", reasons: "Reasons.", consequences: "Consequences.",
+      },
+    });
+
     const response = await app.inject({ method: "GET", url: `/api/tasks/${task.id}/report` });
     expect(response.statusCode).toBe(200);
     const report = response.json();
@@ -472,8 +495,20 @@ describe("brainstorm task routes", () => {
     expect(report.analyses).toHaveLength(2);
     expect(report.analyses.map((entry: { provider: string }) => entry.provider).sort()).toEqual(["CLAUDE", "CODEX"]);
     expect(report.analyses.every((entry: { data: unknown }) => entry.data !== null)).toBe(true);
+    expect(report.analyses[0].data.facts.length).toBeGreaterThan(0);
     expect(report.crossReviews).toHaveLength(2);
     expect(report.comparison).toMatchObject({ consensus: ["Measure workload before selecting a shard key."] });
+    expect(report.comparisonVersion).toBe(1);
+    expect(report.evidence.questions.answered).toHaveLength(1);
+    expect(report.evidence.questions.answered[0]).toMatchObject({
+      id: question.id, content: question.content, responses: [{ answer: "Roughly 4,000 writes per second at peak.", resultingStatus: "ANSWERED" }],
+    });
+    expect(report.evidence.questions.open.some((entry: { id: string }) => entry.id === question.id)).toBe(false);
+    expect(report.evidence.questions.duplicateGroups).toEqual([]);
+    expect(report.architectureDecisions).toHaveLength(1);
+    expect(report.architectureDecisions[0]).toMatchObject({ number: 1, title: "Adopt explicit tenant-to-shard mapping", status: "PROPOSED" });
+    expect(report.experiments).toEqual([]);
+    expect(report.blockingQuestionsRemain).toBe(false);
     expect(report.humanDecisionRequired).toBe(true);
     expect(typeof report.recommendedNextAction).toBe("string");
     expect(report.recommendedNextAction.length).toBeGreaterThan(0);

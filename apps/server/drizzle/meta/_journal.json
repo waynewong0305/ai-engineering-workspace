@@ -141,6 +141,13 @@
       "when": 1789402701818,
       "tag": "0019_dazzling_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789403551115,
+      "tag": "0020_organic_rictor",
+      "breakpoints": true
     }
   ]
 }

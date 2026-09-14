@@ -282,6 +282,7 @@ type Adr = {
   requiredFollowUp: string | null;
   relatedTaskIds: string[];
   status: AdrStatus;
+  openBlockingQuestionCount: number;
 };
 type PromotedTask = {
   id: string;
@@ -439,6 +440,15 @@ type PrePrReport = {
   recommendedNextAction: string;
 };
 
+type QuestionReportEntry = {
+  id: string;
+  content: string;
+  sourceProvider: AgentProvider | null;
+  priority: "BLOCKING" | "HIGH" | "MEDIUM" | "LOW" | null;
+  whyItMatters: string | null;
+  suggestedAction: string | null;
+  responses: { answer: string; resultingStatus: QuestionStatus; source: QuestionResponseSource; createdAt: string }[];
+};
 type BrainstormPlanReport = {
   generatedAt: string;
   taskId: string;
@@ -450,7 +460,23 @@ type BrainstormPlanReport = {
   analyses: { provider: AgentProvider; data: BrainstormAnalysis | null; rawOutput: string; parseError: string | null }[];
   crossReviews: { provider: AgentProvider; targetProvider: AgentProvider | null; data: CrossReview | null; rawOutput: string; parseError: string | null }[];
   comparison: BrainstormTask["comparison"];
-  evidence: EvidenceItem[];
+  comparisonVersion: number | null;
+  evidence: {
+    facts: EvidenceItem[];
+    assumptions: EvidenceItem[];
+    decisions: EvidenceItem[];
+    experimentResults: EvidenceItem[];
+    questions: {
+      open: QuestionReportEntry[];
+      answered: QuestionReportEntry[];
+      deferred: QuestionReportEntry[];
+      notApplicable: QuestionReportEntry[];
+      duplicateGroups: { canonical: QuestionReportEntry; duplicates: QuestionReportEntry[] }[];
+    };
+  };
+  architectureDecisions: { id: string; number: number; title: string; status: AdrStatus; decision: string }[];
+  experiments: { id: string; hypothesis: string; builderProvider: AgentProvider; reviewerProvider: AgentProvider; status: ExperimentStatus; verdict: ExperimentVerdict | null; conclusion: string | null }[];
+  blockingQuestionsRemain: boolean;
   humanDecisionRequired: true;
   recommendedNextAction: string;
 };
@@ -3180,38 +3206,108 @@ onUnmounted(() => {
             </div>
 
             <div class="worktree-usages">
-              <div class="subsection-heading" title="A single readable document that pulls together the problem, both analyses, both reviews, and the comparison — handy to save or share before you decide anything."><span>BRAINSTORM PLAN REPORT</span></div>
+              <div class="subsection-heading" title="A single readable document that pulls together the problem, both analyses, both reviews, the comparison, questions, decisions, and experiments — handy to save or share before you decide anything."><span>BRAINSTORM PLAN REPORT</span></div>
               <p v-if="brainstormReportError" class="error-text" role="alert">{{ brainstormReportError }}</p>
               <button class="ghost-button" type="button" :disabled="loadingBrainstormReport" @click="loadBrainstormReport" title="Build the report now from everything gathered so far for this task.">
                 {{ loadingBrainstormReport ? "Generating…" : "Generate report" }}
               </button>
-              <div v-if="brainstormReport" class="pre-pr-report">
-                <p class="form-hint">Generated {{ new Date(brainstormReport.generatedAt).toLocaleString() }} · {{ brainstormReport.taskType }} · risk {{ brainstormReport.riskLevel }} · status {{ brainstormReport.status }}</p>
+              <div v-if="brainstormReport" class="plan-report">
+                <p class="form-hint">Generated {{ new Date(brainstormReport.generatedAt).toLocaleString() }} · {{ brainstormReport.taskType }} · risk {{ brainstormReport.riskLevel }} · status {{ brainstormReport.status }}{{ brainstormReport.comparisonVersion ? ` · plan version ${brainstormReport.comparisonVersion}` : "" }}</p>
                 <p><strong>Problem</strong><br />{{ brainstormReport.problemStatement }}</p>
-                <template v-for="entry in brainstormReport.analyses" :key="'analysis-' + entry.provider">
-                  <p><strong>{{ providerLabel(entry.provider) }} analysis</strong><br />
+
+                <p v-if="brainstormReport.blockingQuestionsRemain" class="plan-report-warning" role="alert" title="One or more questions marked BLOCKING priority are still unresolved. This is a warning, not a hard stop — you can still act on this plan.">
+                  Blocking questions remain unresolved — review the OPEN questions below before promoting this plan.
+                </p>
+
+                <h4 class="plan-report-section-heading">Independent analyses</h4>
+                <div class="analysis-grid">
+                  <article v-for="entry in brainstormReport.analyses" :key="'analysis-' + entry.provider" class="analysis-card">
+                    <header><span>{{ providerLabel(entry.provider) }}</span></header>
                     <template v-if="entry.data">
-                      {{ entry.data.summary }}<br />
-                      Recommendation: {{ entry.data.recommendation ?? "None given." }}
+                      <p>{{ entry.data.summary }}</p>
+                      <h4>Facts</h4>
+                      <ul v-if="entry.data.facts.length"><li v-for="item in entry.data.facts" :key="item">{{ item }}</li></ul>
+                      <p v-else>None recorded.</p>
+                      <h4>Assumptions</h4>
+                      <ul v-if="entry.data.assumptions.length"><li v-for="item in entry.data.assumptions" :key="item">{{ item }}</li></ul>
+                      <p v-else>None recorded.</p>
+                      <h4>Options</h4>
+                      <div v-for="option in entry.data.options" :key="option.name" class="option-block">
+                        <strong>{{ option.name }}</strong><p>{{ option.description }}</p>
+                        <small>{{ option.advantages.length }} advantages · {{ option.disadvantages.length }} disadvantages · {{ option.risks.length }} risks</small>
+                      </div>
+                      <h4>Recommendation</h4><p>{{ entry.data.recommendation ?? "None given." }}</p>
                     </template>
-                    <template v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</template>
-                  </p>
+                    <p v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</p>
+                  </article>
+                </div>
+
+                <h4 class="plan-report-section-heading">Cross-reviews</h4>
+                <div class="analysis-grid">
+                  <article v-for="entry in brainstormReport.crossReviews" :key="'review-' + entry.provider" class="review-card">
+                    <header><span>{{ providerLabel(entry.provider) }} reviewing {{ entry.targetProvider ? providerLabel(entry.targetProvider) : "unknown" }}</span></header>
+                    <p v-if="entry.data">{{ entry.data.summary }}</p>
+                    <p v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</p>
+                  </article>
+                </div>
+
+                <h4 class="plan-report-section-heading">Comparison</h4>
+                <div v-if="brainstormReport.comparison" class="comparison-grid">
+                  <article v-for="(items, label) in brainstormReport.comparison" :key="String(label)">
+                    <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
+                    <ul v-if="items.length"><li v-for="item in items" :key="item">{{ item }}</li></ul>
+                    <p v-else>None asserted.</p>
+                  </article>
+                </div>
+                <p v-else class="form-hint">Not available yet.</p>
+
+                <h4 class="plan-report-section-heading">Questions</h4>
+                <p class="form-hint">{{ brainstormReport.evidence.questions.open.length }} open · {{ brainstormReport.evidence.questions.answered.length }} answered · {{ brainstormReport.evidence.questions.deferred.length }} deferred · {{ brainstormReport.evidence.questions.notApplicable.length }} not applicable · {{ brainstormReport.evidence.questions.duplicateGroups.length }} duplicate group(s)</p>
+                <div class="question-list">
+                  <article v-for="entry in brainstormReport.evidence.questions.open" :key="entry.id" class="question-card">
+                    <div class="question-card-heading"><span class="question-status open">OPEN</span><small v-if="entry.priority">{{ entry.priority }}</small></div>
+                    <p class="question-text">{{ entry.content }}</p>
+                    <p v-if="entry.whyItMatters" class="question-suggestion"><strong>Why it matters</strong><br />{{ entry.whyItMatters }}</p>
+                    <p v-if="entry.suggestedAction" class="question-suggestion"><strong>Suggested next step</strong><br />{{ entry.suggestedAction }}</p>
+                  </article>
+                  <article v-for="entry in brainstormReport.evidence.questions.answered" :key="entry.id" class="question-card">
+                    <div class="question-card-heading"><span class="question-status answered">ANSWERED</span></div>
+                    <p class="question-text">{{ entry.content }}</p>
+                    <p class="question-suggestion"><strong>Answer</strong><br />{{ entry.responses.at(-1)?.answer }}</p>
+                  </article>
+                  <article v-for="entry in brainstormReport.evidence.questions.deferred" :key="entry.id" class="question-card">
+                    <div class="question-card-heading"><span class="question-status deferred">DEFERRED</span></div>
+                    <p class="question-text">{{ entry.content }}</p>
+                  </article>
+                  <article v-for="entry in brainstormReport.evidence.questions.notApplicable" :key="entry.id" class="question-card">
+                    <div class="question-card-heading"><span class="question-status not_applicable">NOT APPLICABLE</span></div>
+                    <p class="question-text">{{ entry.content }}</p>
+                  </article>
+                  <article v-for="group in brainstormReport.evidence.questions.duplicateGroups" :key="group.canonical.id" class="question-card">
+                    <div class="question-card-heading"><span class="question-status duplicate">DUPLICATE GROUP</span></div>
+                    <p class="question-text">{{ group.canonical.content }}</p>
+                    <p class="question-suggestion"><strong>Also asked as</strong></p>
+                    <ul><li v-for="duplicate in group.duplicates" :key="duplicate.id">{{ duplicate.content }}</li></ul>
+                  </article>
+                </div>
+
+                <h4 class="plan-report-section-heading">Other evidence</h4>
+                <p class="form-hint">{{ brainstormReport.evidence.facts.length }} fact(s) · {{ brainstormReport.evidence.assumptions.length }} assumption(s) · {{ brainstormReport.evidence.decisions.length }} decision(s) · {{ brainstormReport.evidence.experimentResults.length }} experiment result(s)</p>
+
+                <template v-if="brainstormReport.architectureDecisions.length">
+                  <h4 class="plan-report-section-heading">Architecture decisions</h4>
+                  <ul class="plan-report-list">
+                    <li v-for="adr in brainstormReport.architectureDecisions" :key="adr.id">ADR-{{ String(adr.number).padStart(4, '0') }} — {{ adr.title }} ({{ adr.status }})</li>
+                  </ul>
                 </template>
-                <template v-for="entry in brainstormReport.crossReviews" :key="'review-' + entry.provider">
-                  <p><strong>{{ providerLabel(entry.provider) }} review of {{ entry.targetProvider ? providerLabel(entry.targetProvider) : "unknown" }}</strong><br />
-                    <template v-if="entry.data">{{ entry.data.summary }}</template>
-                    <template v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</template>
-                  </p>
+
+                <template v-if="brainstormReport.experiments.length">
+                  <h4 class="plan-report-section-heading">Experiments</h4>
+                  <ul class="plan-report-list">
+                    <li v-for="experiment in brainstormReport.experiments" :key="experiment.id">{{ experiment.hypothesis }} — {{ experiment.verdict ?? experiment.status }}</li>
+                  </ul>
                 </template>
-                <template v-if="brainstormReport.comparison">
-                  <p v-for="(items, label) in brainstormReport.comparison" :key="String(label)">
-                    <strong>{{ String(label).replace(/([A-Z])/g, ' $1') }}</strong><br />
-                    <template v-if="items.length">{{ items.join("; ") }}</template>
-                    <template v-else>None asserted.</template>
-                  </p>
-                </template>
-                <p v-else><strong>Comparison</strong><br />Not available yet.</p>
-                <p><strong>Evidence board</strong><br />{{ brainstormReport.evidence.length }} record(s).</p>
+
                 <p><strong>Human decision required</strong><br />YES — this is a plan to review, not an approved decision.</p>
                 <p><strong>Recommended next action</strong><br />{{ brainstormReport.recommendedNextAction }}</p>
               </div>
@@ -3767,6 +3863,9 @@ onUnmounted(() => {
                 {{ promoted.title }} — {{ promoted.status }}<template v-if="promoted.planPhase"> ({{ promoted.planPhase }})</template>
               </li>
             </ul>
+            <p v-if="promoteForms[adr.id] && adr.openBlockingQuestionCount > 0" class="plan-report-warning" role="alert" title="One or more questions marked BLOCKING priority are still unresolved on the task this decision came from. This is a warning, not a hard stop — you can still promote this decision to a task.">
+              {{ adr.openBlockingQuestionCount }} blocking question{{ adr.openBlockingQuestionCount === 1 ? "" : "s" }} remain unresolved on the originating task — review before promoting.
+            </p>
             <form v-if="promoteForms[adr.id]" class="promote-form" @submit.prevent="promoteAdr(adr)" title="Turn this decision into a real, actionable task in your task list — so deciding on something and actually doing it stay clearly separate steps.">
               <input v-model="promoteForms[adr.id]!.title" placeholder="New task title (e.g. Create shard registry schema)" maxlength="300" required />
               <input v-model="promoteForms[adr.id]!.problemStatement" placeholder="Problem statement for the new task" required />
