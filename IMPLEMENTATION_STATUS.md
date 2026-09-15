@@ -541,6 +541,71 @@ separate provider run, per the human's own earlier decision when this need first
   task in the human's real project, and the automated tests above already prove the exact backend
   behavior end to end; offered as an explicit next step rather than run automatically.
 
+Later addition (2026-09-15): human-confirmed duplicate grouping — step 7 of 8 of the
+auditable-question-resolution effort. The human confirmed, looking at their own real 18-question
+task, that the actual candidate duplicate pairs (e.g. "What is the actual current infrastructure..."
+vs. "What database engine/version, hosting provider...") are semantically similar but share almost no
+literal wording — a text-similarity heuristic would catch typo-level duplicates but miss these real
+pairs entirely — so "possible duplicate" detection is AI-judged via an explicit, usage-safety-gated
+action (the human's own choice when offered a free-heuristic vs. AI-judged tradeoff), while
+exact-normalized matches stay a free, instant, no-provider-call action per the original spec's "may be
+grouped automatically."
+- **Free exact-match grouping** (no provider call, no schema change): new
+  `normalizeQuestionText()` in `apps/server/src/routes/questions.ts` (lowercase, trim, collapse
+  whitespace, strip trailing `.?!`). New `POST /api/tasks/:id/questions/group-exact-duplicates`
+  groups every currently-`OPEN` question by normalized text; for each group of 2+, the
+  earliest-created becomes canonical and every other member is transitioned exactly like the
+  existing per-pair confirm-duplicate action (status `DUPLICATE`, `duplicateOfQuestionId`, a
+  `question_responses` audit row) — extracted the existing confirm-duplicate route's core into a
+  shared `confirmDuplicateInternal()` so both routes share one validated code path instead of a
+  second copy. Returns `{ groupedCount }`, so "zero found" is reported honestly rather than the
+  button silently doing nothing.
+- **AI-judged possible-duplicate suggestions** (new provider call, schema addition): modeled directly
+  on step 4.5's `report-synthesis.ts` — same single-provider, structured-JSON, persist-quietly-as-an-
+  artifact shape, not the streaming-console pattern. `taskArtifacts.kind` gained
+  `"DUPLICATE_SUGGESTIONS"`; `agentRuns.role`/`usageRecords.role` gained `"DUPLICATE_DETECTION"` (both
+  confirmed TS-level only via `db:generate` reporting no schema changes). New type
+  `DuplicateSuggestions = { groups: { canonicalQuestionId, duplicateQuestionIds: string[] }[] }`. New
+  `prompts/duplicate-detection.md` (`duplicate-detection:v1`) sends every currently-`OPEN` question as
+  an ordinal-numbered list and asks for conservative groupings (explicitly: related-but-distinct
+  questions must not be grouped). New `apps/server/src/services/duplicate-detection.ts` builds the
+  ordinal→questionId map from a deterministic `orderBy(asc(evidenceItems.createdAt))` query (caught
+  during test-writing that omitting this would make ordinal assignment depend on SQLite's unspecified
+  default row order), runs one `AgentRunManager`-managed call, and parses the result with the same
+  no-invented-data rigor as every other structured parser here: every ordinal referenced as canonical
+  or duplicate must be one actually sent, and no ordinal may appear in more than one group (a question
+  can't be simultaneously canonical in one group and a duplicate in another) — any violation fails the
+  whole response and stores `parseError`, never a partial or reinterpreted result. New `POST
+  /api/tasks/:id/questions/detect-duplicates` (body `{ provider }`, single-provider
+  `usageSafety.evaluate(provider, { combined: false })` pre-check, 202 fire-and-forget) mirrors
+  `/report/synthesize`'s exact shape.
+- UI (`apps/web/src/App.vue`): "Group exact duplicates" button and a provider picker + "Find possible
+  duplicates (AI)" button sit together below the question filter tabs. Once a `DUPLICATE_SUGGESTIONS`
+  artifact appears (discovered via the same task-polling the synthesis feature already uses), each
+  suggested duplicate's question card shows a "Possible duplicate of: `<canonical question text>`"
+  hint with **Confirm** (calls the existing step-1 confirm-duplicate action with the suggested
+  canonical id — no new confirm endpoint needed) and **Dismiss** (purely client-side, tracked in a
+  `Set` of dismissed question ids — the stored artifact itself is never mutated, so a later re-scan and
+  a dismissal both stay honest independently).
+- Tests (`apps/server/src/routes/questions.test.ts`, 9 pre-existing + 5 new = 14, all passing): exact-
+  match grouping groups two differently-cased/punctuated duplicates, leaves a unique question alone,
+  and is idempotent on a second call; a 404 for an unknown task. AI-judged path: a
+  `FakeDuplicateDetectionAdapter` proves the happy path creates the right `taskArtifacts` row and that
+  confirming a suggested group through the pre-existing confirm-duplicate route works unchanged; an
+  out-of-range ordinal fails the parse cleanly with existing `question_details`/evidence left
+  untouched; provider/task validation returns 400/404 correctly.
+- Verified under Node 22.23.2 with `npm test` (165 server tests, up from 160), `npm run typecheck`,
+  `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema drift), and `git diff
+  --check`; all passed. Live browser verification against the real 18-question "Database horizontal
+  scaling" task: the new controls render correctly below the filter tabs at both desktop and 375px
+  mobile width with no horizontal overflow; clicking "Group exact duplicates" (free, no provider cost)
+  against the real data reported exactly "No exact-match duplicates were found" — the correct, expected
+  outcome given the real duplicates are semantically-not-lexically similar, confirmed as honest
+  reporting rather than a silently-empty result. Per this effort's established discipline, the
+  AI-judged scan itself (a real provider call against the real task) was verified for correct
+  gating/rendering only, not triggered for real, since the human did not request an actual run this
+  time (unlike step 4.5's synthesis, which they explicitly asked to run once for real).
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

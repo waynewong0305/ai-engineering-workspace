@@ -60,7 +60,7 @@ export function buildApp(options: { databasePath?: string; adapters?: AgentAdapt
   registerPricingRoutes(app, db);
   registerUsageRecordRoutes(app, db);
   registerAdrRoutes(app, db);
-  registerQuestionRoutes(app, db);
+  registerQuestionRoutes(app, db, adapters, runManager, usageSafety);
   registerExperimentRoutes(app, db, adapters, runManager, usageSafety, worktreeService, worktreeUsageManager, usageBudgets);
   registerMaintenanceRoutes(app, db, sqlite, databasePath);
   registerFrontendReviewApprovalRoutes(app, db);

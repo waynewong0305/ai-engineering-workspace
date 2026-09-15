@@ -214,12 +214,15 @@ type ReportSynthesis = {
   keyRisks: string[];
   recommendation: string;
 };
+type DuplicateSuggestions = {
+  groups: { canonicalQuestionId: string; duplicateQuestionIds: string[] }[];
+};
 type TaskArtifact = {
   id: string;
-  kind: "ANALYSIS" | "CROSS_REVIEW" | "REPORT_SYNTHESIS";
+  kind: "ANALYSIS" | "CROSS_REVIEW" | "REPORT_SYNTHESIS" | "DUPLICATE_SUGGESTIONS";
   provider: AgentProvider;
   targetProvider: AgentProvider | null;
-  structuredData: BrainstormAnalysis | CrossReview | ReportSynthesis | null;
+  structuredData: BrainstormAnalysis | CrossReview | ReportSynthesis | DuplicateSuggestions | null;
   rawOutput: string;
   parseError: string | null;
 };
@@ -650,6 +653,11 @@ const brainstormReportError = ref("");
 const synthesisProvider = ref<AgentProvider>("CLAUDE");
 const generatingSynthesis = ref(false);
 const synthesisError = ref("");
+const duplicateDetectionProvider = ref<AgentProvider>("CLAUDE");
+const detectingDuplicates = ref(false);
+const duplicateDetectionError = ref("");
+const groupingExactDuplicates = ref(false);
+const dismissedDuplicateSuggestionIds = ref(new Set<string>());
 const experimentsForTask = ref<Experiment[]>([]);
 const experimentHypothesis = ref("");
 const experimentBuilderProvider = ref<AgentProvider>("CLAUDE");
@@ -1822,6 +1830,69 @@ async function generateReportSynthesis() {
   }
 }
 
+const duplicateSuggestions = computed(() =>
+  (selectedTask.value?.artifacts?.find((artifact) => artifact.kind === "DUPLICATE_SUGGESTIONS")?.structuredData as DuplicateSuggestions | undefined) ?? null);
+
+/** The suggestion (if any, and not yet dismissed) naming this OPEN question as a duplicate of another. */
+function duplicateSuggestionFor(questionId: string): { canonicalQuestionId: string } | null {
+  if (dismissedDuplicateSuggestionIds.value.has(questionId)) return null;
+  const group = duplicateSuggestions.value?.groups.find((entry) => entry.duplicateQuestionIds.includes(questionId));
+  return group ? { canonicalQuestionId: group.canonicalQuestionId } : null;
+}
+
+function dismissDuplicateSuggestion(questionId: string) {
+  dismissedDuplicateSuggestionIds.value = new Set([...dismissedDuplicateSuggestionIds.value, questionId]);
+}
+
+async function groupExactDuplicates() {
+  if (!selectedTask.value) return;
+  groupingExactDuplicates.value = true;
+  duplicateDetectionError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/questions/group-exact-duplicates`, { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not group exact duplicates.");
+    taskMessage.value = result.groupedCount > 0
+      ? `Grouped ${result.groupedCount} exact-match duplicate(s).`
+      : "No exact-match duplicates were found.";
+    await selectTask(selectedTask.value.id);
+  } catch (error) {
+    duplicateDetectionError.value = error instanceof Error ? error.message : "Could not group exact duplicates.";
+  } finally {
+    groupingExactDuplicates.value = false;
+  }
+}
+
+async function detectPossibleDuplicates() {
+  if (!selectedTask.value) return;
+  detectingDuplicates.value = true;
+  duplicateDetectionError.value = "";
+  const taskId = selectedTask.value.id;
+  try {
+    const response = await fetch(`/api/tasks/${taskId}/questions/detect-duplicates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: duplicateDetectionProvider.value }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      throw new Error(result.message ?? "Could not scan for possible duplicates.");
+    }
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (selectedTask.value?.id !== taskId) return;
+      await refreshSelectedTaskStatus(taskId);
+      if (selectedTask.value?.artifacts?.some((artifact) => artifact.kind === "DUPLICATE_SUGGESTIONS")) return;
+    }
+    duplicateDetectionError.value = "The duplicate scan is taking longer than expected — check back shortly.";
+  } catch (error) {
+    duplicateDetectionError.value = error instanceof Error ? error.message : "Could not scan for possible duplicates.";
+  } finally {
+    detectingDuplicates.value = false;
+  }
+}
+
 const reportSummary = computed(() => {
   const report = brainstormReport.value;
   if (!report) return null;
@@ -2279,6 +2350,11 @@ function cancelConfirmingDuplicate() {
 async function confirmDuplicate(questionId: string) {
   if (!duplicateTargetId.value) return;
   if (await questionAction(questionId, "/confirm-duplicate", { duplicateOfQuestionId: duplicateTargetId.value })) cancelConfirmingDuplicate();
+}
+
+/** Confirming an AI-suggested duplicate directly, bypassing the manual target picker above. */
+async function confirmSuggestedDuplicate(questionId: string, targetId: string) {
+  await questionAction(questionId, "/confirm-duplicate", { duplicateOfQuestionId: targetId });
 }
 
 async function removeDuplicateLink(questionId: string) {
@@ -3303,6 +3379,21 @@ onUnmounted(() => {
                   <button type="button" class="text-button" :class="{ active: questionFilter === 'DUPLICATE' }" @click="questionFilter = 'DUPLICATE'" title="Show only questions confirmed as a duplicate of another one.">Duplicates</button>
                   <button type="button" class="text-button" :class="{ active: questionFilter === 'ALL' }" @click="questionFilter = 'ALL'" title="Show every question regardless of status, including ones marked not applicable.">All records</button>
                 </div>
+
+                <div class="question-duplicate-controls">
+                  <button type="button" class="text-button" :disabled="groupingExactDuplicates" @click="groupExactDuplicates" title="Free and instant: automatically merges any open questions that are worded almost identically (case, spacing, and punctuation aside). Does not use any AI provider.">
+                    {{ groupingExactDuplicates ? "Grouping…" : "Group exact duplicates" }}
+                  </button>
+                  <select v-model="duplicateDetectionProvider" title="Which AI should look for questions asking the same thing in different words.">
+                    <option value="CLAUDE">Claude</option>
+                    <option value="CODEX">Codex</option>
+                  </select>
+                  <button type="button" class="text-button" :disabled="detectingDuplicates" @click="detectPossibleDuplicates" title="Ask the selected AI to find open questions that ask substantively the same thing even when worded differently. This spends a small amount of that provider's usage; nothing is grouped until you confirm each suggestion.">
+                    {{ detectingDuplicates ? "Scanning…" : "Find possible duplicates (AI)" }}
+                  </button>
+                </div>
+                <p v-if="duplicateDetectionError" class="error-text" role="alert">{{ duplicateDetectionError }}</p>
+
                 <div class="question-list">
                   <article v-for="item in filteredQuestions" :key="item.id" class="question-card">
                     <div class="question-card-heading">
@@ -3310,6 +3401,14 @@ onUnmounted(() => {
                       <small :title="item.sourceProvider ? 'This question came from one of the AI runs, not typed by a person.' : 'This question was typed in by a human, not the AI.'">{{ item.sourceProvider ? `From ${item.sourceProvider}` : "Human record" }}</small>
                     </div>
                     <p class="question-text">{{ item.content }}</p>
+
+                    <div v-if="duplicateSuggestionFor(item.id)" class="question-duplicate-suggestion">
+                      <p>Possible duplicate of: <em>{{ questionContentById(duplicateSuggestionFor(item.id)!.canonicalQuestionId) }}</em></p>
+                      <div class="question-actions">
+                        <button type="button" class="ghost-button" @click="confirmSuggestedDuplicate(item.id, duplicateSuggestionFor(item.id)!.canonicalQuestionId)" title="Confirm this AI suggestion — merges this question into the one shown above.">Confirm</button>
+                        <button type="button" class="text-button" @click="dismissDuplicateSuggestion(item.id)" title="This is not actually a duplicate — hide this suggestion (it doesn't change anything saved).">Dismiss</button>
+                      </div>
+                    </div>
 
                     <p v-if="questionDetailFor(item)?.whyItMatters" class="question-suggestion"><strong>Why it matters</strong><br />{{ questionDetailFor(item)?.whyItMatters }}</p>
                     <p v-if="questionDetailFor(item)?.suggestedAction" class="question-suggestion"><strong>Suggested next step</strong><br />{{ questionDetailFor(item)?.suggestedAction }}</p>

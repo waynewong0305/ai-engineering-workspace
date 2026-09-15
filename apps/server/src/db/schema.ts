@@ -98,7 +98,7 @@ export const agentRuns = sqliteTable("agent_runs", {
   taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
   worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS"] }).notNull().default("REPOSITORY_EXPLANATION"),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS", "DUPLICATE_DETECTION"] }).notNull().default("REPOSITORY_EXPLANATION"),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   prompt: text("prompt").notNull(),
   promptVersion: text("prompt_version").notNull(),
@@ -186,7 +186,7 @@ export const usageRecords = sqliteTable("usage_records", {
   taskId: text("task_id"),
   projectId: text("project_id").notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS"] }).notNull(),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS", "DUPLICATE_DETECTION"] }).notNull(),
   modelRequested: text("model_requested"),
   modelActual: text("model_actual"),
   inputTokens: integer("input_tokens"),
@@ -371,15 +371,24 @@ export type ReportSynthesis = {
   recommendation: string;
 };
 
+/**
+ * AI-judged groupings of OPEN questions asking substantively the same thing — a suggestion only,
+ * never applied automatically. `canonicalQuestionId`/`duplicateQuestionIds` are evidenceItems ids;
+ * confirming a suggestion still goes through the normal confirm-duplicate route, one at a time.
+ */
+export type DuplicateSuggestions = {
+  groups: { canonicalQuestionId: string; duplicateQuestionIds: string[] }[];
+};
+
 export const taskArtifacts = sqliteTable("task_artifacts", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
-  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT", "REPORT_SYNTHESIS"] }).notNull(),
+  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT", "REPORT_SYNTHESIS", "DUPLICATE_SUGGESTIONS"] }).notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   structuredData: text("structured_data", { mode: "json" })
-    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact | ReportSynthesis>(),
+    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact | ReportSynthesis | DuplicateSuggestions>(),
   rawOutput: text("raw_output").notNull(),
   parseError: text("parse_error"),
   createdAt: text("created_at").notNull(),

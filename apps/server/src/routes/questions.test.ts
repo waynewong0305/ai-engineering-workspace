@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { AgentAdapter, AgentEvent, AgentHealth, AgentProvider, AgentRunInput } from "@aiew/agents";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app.js";
 
@@ -232,5 +233,136 @@ describe("question lifecycle routes", () => {
 
     const reopenAfterDelete = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/questions/${question.id}/reopen` });
     expect(reopenAfterDelete.statusCode).toBe(404);
+  });
+});
+
+describe("free exact-match duplicate grouping", () => {
+  it("groups only identically-normalized questions, keeps the earliest as canonical, and is idempotent", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const original = await createQuestion(app, task.id, "What is the current database-storage runway?");
+    const nearIdentical = await createQuestion(app, task.id, "  what is the CURRENT database-storage runway???  ");
+    const unique = await createQuestion(app, task.id, "What downtime is acceptable per tenant?");
+
+    const response = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/questions/group-exact-duplicates` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ groupedCount: 1 });
+
+    const task2 = await getTask(app, task.id);
+    const originalDetail = task2.questionDetails.find((d: { questionId: string }) => d.questionId === original.id);
+    const nearIdenticalDetail = task2.questionDetails.find((d: { questionId: string }) => d.questionId === nearIdentical.id);
+    const uniqueDetail = task2.questionDetails.find((d: { questionId: string }) => d.questionId === unique.id);
+    expect(originalDetail.status).toBe("OPEN");
+    expect(nearIdenticalDetail).toMatchObject({ status: "DUPLICATE", duplicateOfQuestionId: original.id });
+    expect(uniqueDetail.status).toBe("OPEN");
+    expect(task2.openQuestionCount).toBe(2);
+
+    const again = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/questions/group-exact-duplicates` });
+    expect(again.json()).toEqual({ groupedCount: 0 });
+  });
+
+  it("404s for an unknown task", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const response = await app.inject({ method: "POST", url: "/api/tasks/does-not-exist/questions/group-exact-duplicates" });
+    expect(response.statusCode).toBe(404);
+  });
+});
+
+describe("AI-judged possible-duplicate suggestions", () => {
+  class FakeDuplicateDetectionAdapter implements AgentAdapter {
+    constructor(readonly name: AgentProvider, private readonly response: unknown) {}
+    async healthCheck(): Promise<AgentHealth> {
+      return {
+        provider: this.name, available: true, authenticated: true, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+        capabilities: { structuredOutput: true, sessionResume: false, dynamicModelDiscovery: false, availableModels: null, availableEffortLevels: null },
+      };
+    }
+    async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+      const occurredAt = new Date().toISOString();
+      yield { type: "started", runId: input.runId, occurredAt };
+      yield { type: "stdout", runId: input.runId, occurredAt, chunk: typeof this.response === "string" ? this.response : JSON.stringify(this.response) };
+      yield {
+        type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+        metadata: {
+          provider: this.name, requestedModel: input.model.requested, actualModel: `fake-${this.name.toLowerCase()}`,
+          effort: null, cliVersion: `fake-${this.name.toLowerCase()} 1.0`, promptVersion: input.promptVersion, webAccessPermitted: false,
+        },
+      };
+    }
+    async cancel() {}
+  }
+
+  async function waitForArtifact(app: ReturnType<typeof buildApp>, taskId: string, kind: string) {
+    let task;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      task = await getTask(app, taskId);
+      const artifact = task.artifacts.find((a: { kind: string }) => a.kind === kind);
+      if (artifact) return artifact;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`${kind} artifact never appeared.`);
+  }
+
+  it("produces a taskArtifacts row grouping the questions the fake model named, confirmable through the existing route", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeDuplicateDetectionAdapter("CLAUDE", { groups: [{ canonicalOrdinal: 1, duplicateOrdinals: [3] }] })],
+    });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const q1 = await createQuestion(app, task.id, "What is the actual current infrastructure?");
+    await createQuestion(app, task.id, "What downtime is acceptable per tenant?");
+    const q3 = await createQuestion(app, task.id, "What database engine and hosting provider is in use?");
+
+    const response = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/detect-duplicates`, payload: { provider: "CLAUDE" },
+    });
+    expect(response.statusCode).toBe(202);
+
+    const artifact = await waitForArtifact(app, task.id, "DUPLICATE_SUGGESTIONS");
+    expect(artifact.parseError).toBeNull();
+    expect(artifact.structuredData).toEqual({ groups: [{ canonicalQuestionId: q1.id, duplicateQuestionIds: [q3.id] }] });
+
+    const confirm = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/${q3.id}/confirm-duplicate`, payload: { duplicateOfQuestionId: q1.id },
+    });
+    expect(confirm.statusCode).toBe(200);
+    expect(confirm.json()).toMatchObject({ status: "DUPLICATE", duplicateOfQuestionId: q1.id });
+  });
+
+  it("fails cleanly on an out-of-range ordinal, leaving existing question state untouched", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeDuplicateDetectionAdapter("CLAUDE", { groups: [{ canonicalOrdinal: 1, duplicateOrdinals: [99] }] })],
+    });
+    apps.push(app);
+    const { task } = await createTask(app);
+    await createQuestion(app, task.id, "Question one.");
+    await createQuestion(app, task.id, "Question two.");
+
+    await app.inject({ method: "POST", url: `/api/tasks/${task.id}/questions/detect-duplicates`, payload: { provider: "CLAUDE" } });
+    const artifact = await waitForArtifact(app, task.id, "DUPLICATE_SUGGESTIONS");
+    expect(artifact.structuredData).toBeNull();
+    expect(artifact.parseError).toBeTruthy();
+
+    const after = await getTask(app, task.id);
+    expect(after.openQuestionCount).toBe(2);
+    expect(after.questionDetails.every((d: { status: string }) => d.status === "OPEN")).toBe(true);
+  });
+
+  it("400s an invalid provider and 404s an unknown task", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const invalidProvider = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/detect-duplicates`, payload: { provider: "GPT4" },
+    });
+    expect(invalidProvider.statusCode).toBe(400);
+    const unknownTask = await app.inject({
+      method: "POST", url: "/api/tasks/does-not-exist/questions/detect-duplicates", payload: { provider: "CLAUDE" },
+    });
+    expect(unknownTask.statusCode).toBe(404);
   });
 });
