@@ -79,6 +79,27 @@ class FakeBrainstormAdapter implements AgentAdapter {
   async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
     const stage = input.promptVersion;
     const occurredAt = new Date().toISOString();
+    // report-synthesis is a genuinely single-provider call, not part of the dual-provider
+    // parallelism this fake adapter otherwise verifies — skip recordStart/waitForPair entirely so
+    // a synthesis-only test doesn't hang waiting for a second provider that never starts.
+    if (stage.startsWith("report-synthesis")) {
+      yield { type: "started", runId: input.runId, occurredAt };
+      yield {
+        type: "stdout", runId: input.runId, occurredAt, chunk: JSON.stringify({
+          executiveSummary: "Sharding is viable but needs a shard-map layer before cutover.",
+          keyRisks: ["Cross-tenant migration downtime", "No existing shard-routing code"],
+          recommendation: "Build a tenant-to-shard registry before touching production traffic.",
+        }),
+      };
+      yield {
+        type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+        metadata: {
+          provider: this.name, requestedModel: input.model.requested, actualModel: `fake-${this.name.toLowerCase()}`,
+          effort: null, cliVersion: `fake-${this.name.toLowerCase()} 1.0`, promptVersion: stage, webAccessPermitted: false,
+        },
+      };
+      return;
+    }
     recordStart(stage, this.name);
     yield { type: "started", runId: input.runId, occurredAt };
     await waitForPair(stage);
@@ -518,6 +539,63 @@ describe("brainstorm task routes", () => {
     const app = buildApp({ databasePath: ":memory:", adapters: [] });
     apps.push(app);
     const response = await app.inject({ method: "GET", url: "/api/tasks/does-not-exist/report" });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("generates an on-demand AI synthesis of the report as its own task artifact", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeBrainstormAdapter("CLAUDE"), new FakeBrainstormAdapter("CODEX")],
+    });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const task = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Database sharding", type: "ARCHITECTURE", riskLevel: "HIGH",
+        problemStatement: "How should this system support database sharding?", webAccessPermitted: false,
+      },
+    })).json();
+    await acknowledgeUnknownUsage(app);
+    await app.inject({ method: "POST", url: `/api/tasks/${task.id}/start`, payload: {} });
+    let detail;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      detail = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+      if (["READY", "FAILED"].includes(detail.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(detail.status).toBe("READY");
+
+    const invalidProvider = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/report/synthesize`, payload: { provider: "GPT4" } });
+    expect(invalidProvider.statusCode).toBe(400);
+
+    const response = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/report/synthesize`, payload: { provider: "CLAUDE" } });
+    expect(response.statusCode).toBe(202);
+
+    let withSynthesis;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      withSynthesis = (await app.inject({ method: "GET", url: `/api/tasks/${task.id}` })).json();
+      if (withSynthesis.artifacts.some((artifact: { kind: string }) => artifact.kind === "REPORT_SYNTHESIS")) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const synthesisArtifact = withSynthesis.artifacts.find((artifact: { kind: string }) => artifact.kind === "REPORT_SYNTHESIS");
+    expect(synthesisArtifact).toMatchObject({
+      provider: "CLAUDE",
+      structuredData: {
+        executiveSummary: "Sharding is viable but needs a shard-map layer before cutover.",
+        keyRisks: ["Cross-tenant migration downtime", "No existing shard-routing code"],
+        recommendation: "Build a tenant-to-shard registry before touching production traffic.",
+      },
+      parseError: null,
+    });
+  });
+
+  it("404s a synthesis request for an unknown task", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const response = await app.inject({ method: "POST", url: "/api/tasks/does-not-exist/report/synthesize", payload: { provider: "CLAUDE" } });
     expect(response.statusCode).toBe(404);
   });
 });

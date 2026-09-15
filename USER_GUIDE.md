@@ -357,6 +357,10 @@ The **BRAINSTORM PLAN REPORT** section on a task's detail pane generates a summa
 
 You can generate this report at any point in the workflow, not only once the task reaches READY — a task that's still running, checkpointed, failed, or cancelled still exports whatever completed so far, never fabricating what hasn't happened yet. The report always states **Human decision required: YES**: it's a plan to review, not an approved decision — see "Reviews and human responsibility" below.
 
+The report is laid out as a genuine document, not a copy of the task page: an **Executive Summary** panel always leads with the problem, question/comparison counts, and the recommended next action, and every deeper section (analyses, cross-reviews, comparison, questions, decisions, experiments) starts collapsed so you can skim first and expand only what you need. Once generated, **Copy as Markdown** puts the whole report on your clipboard and **Download .md** saves it as a file — both are exact, portable copies of what's on screen, ready to paste into Slack, a PR description, or a doc.
+
+From the Executive Summary panel you can also ask one AI (Claude or Codex — **Generate AI summary**) to write a short synthesis: a plain-language executive summary, the key risks worth worrying about, and a concrete recommendation, going beyond a reformatting of what's already in the report. This is entirely separate from generating the report itself, spends a small amount of that provider's usage, and never runs automatically — you always choose the provider and click the button yourself.
+
 ## Feature planning
 
 The planning path is:

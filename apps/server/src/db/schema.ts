@@ -98,7 +98,7 @@ export const agentRuns = sqliteTable("agent_runs", {
   taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
   worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW"] }).notNull().default("REPOSITORY_EXPLANATION"),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS"] }).notNull().default("REPOSITORY_EXPLANATION"),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   prompt: text("prompt").notNull(),
   promptVersion: text("prompt_version").notNull(),
@@ -186,7 +186,7 @@ export const usageRecords = sqliteTable("usage_records", {
   taskId: text("task_id"),
   projectId: text("project_id").notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW"] }).notNull(),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS"] }).notNull(),
   modelRequested: text("model_requested"),
   modelActual: text("model_actual"),
   inputTokens: integer("input_tokens"),
@@ -348,15 +348,22 @@ export type ExperimentVerdictArtifact = {
   conclusion: string;
 };
 
+/** A short, synthesized read on the current plan report — deliberately not just a reformatting of what buildBrainstormPlanReport already computed. Human-triggered, never automatic; see routes/tasks.ts's /report/synthesize. */
+export type ReportSynthesis = {
+  executiveSummary: string;
+  keyRisks: string[];
+  recommendation: string;
+};
+
 export const taskArtifacts = sqliteTable("task_artifacts", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
-  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT"] }).notNull(),
+  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT", "REPORT_SYNTHESIS"] }).notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   structuredData: text("structured_data", { mode: "json" })
-    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact>(),
+    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact | ReportSynthesis>(),
   rawOutput: text("raw_output").notNull(),
   parseError: text("parse_error"),
   createdAt: text("created_at").notNull(),

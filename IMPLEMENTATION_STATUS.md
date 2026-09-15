@@ -410,6 +410,69 @@ analysis's own `facts`/`assumptions`/`unknowns`/`options` were stored but never 
   all 18 real questions correctly bucketed as open, and the report has no horizontal overflow at
   desktop or 375px mobile width.
 
+Later addition (2026-09-15): report Markdown export, document-style layout, and on-demand AI
+synthesis — step 4.5 of the auditable-question-resolution effort, inserted immediately after step 4
+shipped. Live review found the "overhauled" report still just re-rendered the same dashboard
+components already visible on the live task page, with no way to leave the app and no synthesis
+beyond reformatting what was already on screen. Confirmed with the human: all three of Markdown
+export, a genuinely document-styled layout, and an on-demand (never automatic) AI-generated synthesis
+were wanted.
+- **Markdown export** (`apps/web/src/App.vue`): `formatReportAsMarkdown` is a pure client-side
+  function walking the exact same `brainstormReport` object already rendered on screen — no backend
+  change, no extra request. "Copy as Markdown" uses `navigator.clipboard.writeText`; "Download .md"
+  builds a `Blob`/object URL and a synthetic `<a download>` click. Verified end-to-end against the
+  real task by monkey-patching `URL.createObjectURL` in the live page to capture the generated text
+  (clipboard access itself was blocked in the automated browser context, confirming the error-handling
+  path works, so the actual content was verified via the download path instead) — produced a complete,
+  correctly-structured document including both full analyses, all 18 real questions, and the real
+  comparison categories.
+- **Document-style layout** (`apps/web/src/App.vue`, `apps/web/src/style.css`): a new always-visible
+  Executive Summary panel (`.plan-report-summary`) now leads the report — question-status counts,
+  comparison-category counts, the blocking-question warning, and the recommended next action, all
+  computed from data already in the report (new `reportSummary` computed). Every deep section
+  (analyses, cross-reviews, comparison, questions, ADRs, experiments) became a collapsed-by-default
+  `<details class="result-section">` reusing the exact same `.subsection-heading`/+−-indicator pattern
+  already established elsewhere on the page (`.comparison-section`, `.analysis-section`) — no new
+  disclosure mechanism invented. This is the concrete structural difference from the live dashboard
+  (skim first, expand on demand) that step 4 alone didn't provide.
+- **On-demand AI synthesis** (new provider call): modeled on `ExperimentWorkflow.parseVerdict`'s
+  small-structured-JSON pattern (`extractJson`/`record`/`strings` from `structured-output.ts`) rather
+  than the free-text, SSE-streamed repository-explanation pattern — a short result belongs quietly in
+  the report, not in a live console. New `taskArtifacts.kind`/`agentRuns.role`/`usageRecords.role`
+  value `"REPORT_SYNTHESIS"` (TypeScript-level enum widening only, confirmed via `db:generate`
+  reporting no schema changes, consistent with every prior enum addition in this project) and type
+  `ReportSynthesis = { executiveSummary, keyRisks, recommendation }`. New prompt
+  `prompts/report-synthesis.md` (`report-synthesis:v1`), explicitly instructed not to just restate
+  the input. New `apps/server/src/services/report-synthesis.ts` (`generateReportSynthesis`) — a
+  standalone function, not a `BrainstormWorkflow` method, since this isn't a phase of that workflow's
+  state machine: loads the current report via the existing `buildBrainstormPlanReport`, builds the
+  prompt from analysis summaries/comparison/question counts (not full per-question detail, to keep
+  the prompt a reasonable size), runs one `AgentRunManager`-managed call, and stores the parsed result
+  (or a `parseError`, never a fabricated result) as a `taskArtifacts` row. New `POST
+  /api/tasks/:id/report/synthesize` — single-provider usage-safety pre-check (`combined: false`,
+  matching `/api/agent-runs`' own repository-explanation pre-check exactly), 400 for an invalid/missing
+  provider, 202 fire-and-forget. The frontend finds the result the same way `analysisFor`/`reviewFor`
+  already filter `selectedTask.artifacts` by kind — no new field needed on `GET /api/tasks/:id`. UI: a
+  provider picker + "Generate AI summary" button inside the Executive Summary panel, separate from the
+  free "Generate report" button; a short poll loop (reusing the existing `refreshSelectedTaskStatus`,
+  deliberately not touching the separate `brainstormReport` ref so the on-screen report doesn't
+  flicker while this runs) discovers the artifact once ready.
+- Tests: extended `apps/server/src/routes/tasks.test.ts`'s shared `FakeBrainstormAdapter` with a
+  `report-synthesis`-prefixed branch that skips the existing dual-provider `recordStart`/`waitForPair`
+  machinery entirely (that machinery is specifically for proving the brainstorm workflow's two
+  providers start together; a single-provider synthesis call would otherwise hang/fail waiting for a
+  second provider that never starts). New tests: a full synthesis round trip (invalid provider → 400,
+  valid call → 202 → poll until the `REPORT_SYNTHESIS` artifact appears with the exact parsed
+  `structuredData` and `parseError: null`), and 404 for an unknown task.
+- Verified under Node 22.23.2 with `npm test` (158 server tests, up from 156; 65 agent-package tests;
+  31 Git-package tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
+  db:generate` (confirms no schema drift), and `git diff --check`; all passed. Manual browser
+  verification against the real task: the Executive Summary panel, collapsed sections, and
+  Copy/Download controls all render and behave correctly; the "Generate AI summary" button was
+  deliberately **not** clicked for real (it spends real Claude/Codex usage on the human's real task,
+  same discipline as step 3's "Revise plan" verification) — its gating, provider picker, and error
+  states were verified instead. No horizontal overflow at desktop or 375px mobile width.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

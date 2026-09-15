@@ -93,6 +93,7 @@ export function workflowForPrompt(promptVersion: string): { key: string; label: 
   if (promptVersion.startsWith("build:")) return { key: "IMPLEMENTATION", label: "Implementation" };
   if (promptVersion.startsWith("experiment-")) return { key: "EXPERIMENT", label: "Experiment" };
   if (promptVersion.startsWith("repository-explanation")) return { key: "REPOSITORY_EXPLANATION", label: "Repository explanation" };
+  if (promptVersion.startsWith("report-synthesis:")) return { key: "REPORT_SYNTHESIS", label: "Report synthesis" };
   return { key: "OTHER", label: "Other" };
 }
 

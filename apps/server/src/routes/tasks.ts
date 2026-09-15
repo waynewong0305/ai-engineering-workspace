@@ -23,6 +23,7 @@ import { AgentRunManager } from "../services/agent-run-manager.js";
 import { buildBrainstormPlanReport } from "../services/brainstorm-report.js";
 import { BrainstormWorkflow } from "../services/brainstorm-workflow.js";
 import { ensureQuestionDetails } from "../services/question-details.js";
+import { generateReportSynthesis } from "../services/report-synthesis.js";
 import { UsageSafetyService } from "../services/usage-safety.js";
 import { UsageBudgetService } from "../services/usage-settings.js";
 
@@ -251,6 +252,23 @@ export function registerTaskRoutes(
     const report = buildBrainstormPlanReport(db, request.params.id);
     if (!report) return reply.code(404).send({ message: "Task not found." });
     return report;
+  });
+
+  app.post<{ Params: { id: string }; Body: { provider?: unknown } }>("/api/tasks/:id/report/synthesize", async (request, reply) => {
+    const task = db.select().from(tasks).where(eq(tasks.id, request.params.id)).get();
+    if (!task) return reply.code(404).send({ message: "Task not found." });
+    const provider = text(request.body?.provider) as AgentProvider | null;
+    if (provider !== "CLAUDE" && provider !== "CODEX") return reply.code(400).send({ message: "provider must be CLAUDE or CODEX." });
+    const project = db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+    if (!project) return reply.code(404).send({ message: "The registered project no longer exists." });
+    // Single-provider action: only the selected provider's usage matters, per the standing policy
+    // (combined: false) — matching /api/agent-runs' own repository-explanation pre-check exactly.
+    const usageDecision = usageSafety.evaluate(provider, { combined: false });
+    if (!usageDecision.allowed) {
+      return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    void generateReportSynthesis(db, manager, adapters, task.id, task.projectId, project.repositoryPath, provider);
+    return reply.code(202).send({ message: "Generating an AI synthesis of this report.", taskId: task.id });
   });
 
   app.post<{ Params: { id: string } }>("/api/tasks/:id/cancel", async (request, reply) => {

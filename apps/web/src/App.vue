@@ -209,12 +209,17 @@ type CrossReview = {
   missingEvidence: string[];
   recommendedExperiments: string[];
 };
+type ReportSynthesis = {
+  executiveSummary: string;
+  keyRisks: string[];
+  recommendation: string;
+};
 type TaskArtifact = {
   id: string;
-  kind: "ANALYSIS" | "CROSS_REVIEW";
+  kind: "ANALYSIS" | "CROSS_REVIEW" | "REPORT_SYNTHESIS";
   provider: AgentProvider;
   targetProvider: AgentProvider | null;
-  structuredData: BrainstormAnalysis | CrossReview | null;
+  structuredData: BrainstormAnalysis | CrossReview | ReportSynthesis | null;
   rawOutput: string;
   parseError: string | null;
 };
@@ -642,6 +647,9 @@ const filteredQuestions = computed(() => allQuestions.value.filter((item) => {
 const brainstormReport = ref<BrainstormPlanReport | null>(null);
 const loadingBrainstormReport = ref(false);
 const brainstormReportError = ref("");
+const synthesisProvider = ref<AgentProvider>("CLAUDE");
+const generatingSynthesis = ref(false);
+const synthesisError = ref("");
 const experimentsForTask = ref<Experiment[]>([]);
 const experimentHypothesis = ref("");
 const experimentBuilderProvider = ref<AgentProvider>("CLAUDE");
@@ -1775,6 +1783,203 @@ async function loadBrainstormReport() {
   } finally {
     loadingBrainstormReport.value = false;
   }
+}
+
+/**
+ * A single explicit, usage-safety-gated provider call, separate from the free "Generate report"
+ * action — never triggered automatically. The result lands as a REPORT_SYNTHESIS task artifact
+ * discovered by polling the task the same way `refreshSelectedTaskStatus` already does elsewhere;
+ * it deliberately does not touch `brainstormReport` itself so the report on screen doesn't flicker
+ * while this runs.
+ */
+async function generateReportSynthesis() {
+  if (!selectedTask.value) return;
+  generatingSynthesis.value = true;
+  synthesisError.value = "";
+  const taskId = selectedTask.value.id;
+  try {
+    const response = await fetch(`/api/tasks/${taskId}/report/synthesize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: synthesisProvider.value }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      throw new Error(result.message ?? "Could not generate an AI summary.");
+    }
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (selectedTask.value?.id !== taskId) return;
+      await refreshSelectedTaskStatus(taskId);
+      if (selectedTask.value?.artifacts?.some((artifact) => artifact.kind === "REPORT_SYNTHESIS")) return;
+    }
+    synthesisError.value = "The AI summary is taking longer than expected — check back shortly.";
+  } catch (error) {
+    synthesisError.value = error instanceof Error ? error.message : "Could not generate an AI summary.";
+  } finally {
+    generatingSynthesis.value = false;
+  }
+}
+
+const reportSummary = computed(() => {
+  const report = brainstormReport.value;
+  if (!report) return null;
+  const q = report.evidence.questions;
+  return {
+    openCount: q.open.length,
+    blockingOpenCount: q.open.filter((entry) => entry.priority === "BLOCKING").length,
+    answeredCount: q.answered.length,
+    deferredCount: q.deferred.length,
+    notApplicableCount: q.notApplicable.length,
+    duplicateGroupCount: q.duplicateGroups.length,
+    consensusCount: report.comparison?.consensus.length ?? 0,
+    disagreementCount: report.comparison?.disagreements.length ?? 0,
+    missingEvidenceCount: report.comparison?.missingEvidence.length ?? 0,
+  };
+});
+
+const reportSynthesis = computed(() =>
+  (selectedTask.value?.artifacts?.find((artifact) => artifact.kind === "REPORT_SYNTHESIS")?.structuredData as ReportSynthesis | undefined) ?? null);
+
+function mdList(items: string[]): string {
+  return items.length ? items.map((item) => `- ${item}`).join("\n") : "_None recorded._";
+}
+
+/**
+ * Mirrors the on-page report section-for-section so the two never drift apart. Pure function of
+ * data already fetched for on-screen rendering — no extra request, no provider call.
+ */
+function formatReportAsMarkdown(report: BrainstormPlanReport): string {
+  const summary = reportSummary.value!;
+  const lines: string[] = [];
+  lines.push(`# Brainstorm Plan Report — ${report.taskTitle}`);
+  lines.push("");
+  lines.push(`Generated ${new Date(report.generatedAt).toLocaleString()} · ${report.taskType} · risk ${report.riskLevel} · status ${report.status}${report.comparisonVersion ? ` · plan version ${report.comparisonVersion}` : ""}`);
+  lines.push("");
+  lines.push("## Problem");
+  lines.push(report.problemStatement);
+  lines.push("");
+  if (report.blockingQuestionsRemain) {
+    lines.push("> ⚠️ Blocking questions remain unresolved — review the OPEN questions below before promoting this plan.");
+    lines.push("");
+  }
+  lines.push("## Executive summary");
+  lines.push(`- Questions: ${summary.openCount} open (${summary.blockingOpenCount} blocking), ${summary.answeredCount} answered, ${summary.deferredCount} deferred, ${summary.notApplicableCount} not applicable, ${summary.duplicateGroupCount} duplicate group(s)`);
+  lines.push(`- Comparison: ${summary.consensusCount} consensus point(s), ${summary.disagreementCount} disagreement(s), ${summary.missingEvidenceCount} missing-evidence item(s)`);
+  if (reportSynthesis.value) lines.push(`- AI summary: ${reportSynthesis.value.executiveSummary}`);
+  lines.push(`- Recommended next action: ${report.recommendedNextAction}`);
+  lines.push("");
+  if (reportSynthesis.value) {
+    lines.push("## AI-generated synthesis");
+    lines.push(reportSynthesis.value.executiveSummary);
+    lines.push("");
+    lines.push("**Key risks**");
+    lines.push(mdList(reportSynthesis.value.keyRisks));
+    lines.push("");
+    lines.push(`**Recommendation:** ${reportSynthesis.value.recommendation}`);
+    lines.push("");
+  }
+  lines.push("## Independent analyses");
+  for (const entry of report.analyses) {
+    lines.push(`### ${providerLabel(entry.provider)}`);
+    if (entry.data) {
+      lines.push(entry.data.summary);
+      lines.push("");
+      lines.push("**Facts**");
+      lines.push(mdList(entry.data.facts));
+      lines.push("");
+      lines.push("**Assumptions**");
+      lines.push(mdList(entry.data.assumptions));
+      lines.push("");
+      lines.push("**Options**");
+      for (const option of entry.data.options) {
+        lines.push(`1. **${option.name}** — ${option.description} (${option.advantages.length} advantages, ${option.disadvantages.length} disadvantages, ${option.risks.length} risks)`);
+      }
+      lines.push("");
+      lines.push(`**Recommendation:** ${entry.data.recommendation ?? "None given."}`);
+    } else {
+      lines.push(`Could not be parsed${entry.parseError ? `: ${entry.parseError}` : "."}`);
+    }
+    lines.push("");
+  }
+  lines.push("## Cross-reviews");
+  for (const entry of report.crossReviews) {
+    lines.push(`### ${providerLabel(entry.provider)} reviewing ${entry.targetProvider ? providerLabel(entry.targetProvider) : "unknown"}`);
+    lines.push(entry.data ? entry.data.summary : `Could not be parsed${entry.parseError ? `: ${entry.parseError}` : "."}`);
+    lines.push("");
+  }
+  lines.push("## Comparison");
+  if (report.comparison) {
+    for (const [label, items] of Object.entries(report.comparison)) {
+      lines.push(`### ${label.replace(/([A-Z])/g, " $1")}`);
+      lines.push(mdList(items));
+      lines.push("");
+    }
+  } else {
+    lines.push("Not available yet.");
+    lines.push("");
+  }
+  lines.push("## Questions");
+  lines.push(`${summary.openCount} open · ${summary.answeredCount} answered · ${summary.deferredCount} deferred · ${summary.notApplicableCount} not applicable · ${summary.duplicateGroupCount} duplicate group(s)`);
+  lines.push("");
+  const questionLine = (entry: QuestionReportEntry) => `- ${entry.priority ? `**[${entry.priority}]** ` : ""}${entry.content}`;
+  lines.push("**Open**");
+  lines.push(report.evidence.questions.open.length ? report.evidence.questions.open.map(questionLine).join("\n") : "_None._");
+  lines.push("");
+  lines.push("**Answered**");
+  lines.push(report.evidence.questions.answered.length
+    ? report.evidence.questions.answered.map((entry) => `- ${entry.content}\n  - Answer: ${entry.responses.at(-1)?.answer ?? ""}`).join("\n")
+    : "_None._");
+  lines.push("");
+  lines.push("**Deferred**");
+  lines.push(report.evidence.questions.deferred.length ? report.evidence.questions.deferred.map((entry) => `- ${entry.content}`).join("\n") : "_None._");
+  lines.push("");
+  lines.push("**Not applicable**");
+  lines.push(report.evidence.questions.notApplicable.length ? report.evidence.questions.notApplicable.map((entry) => `- ${entry.content}`).join("\n") : "_None._");
+  lines.push("");
+  lines.push("**Duplicate groups**");
+  lines.push(report.evidence.questions.duplicateGroups.length
+    ? report.evidence.questions.duplicateGroups.map((group) => `- ${group.canonical.content}\n${group.duplicates.map((dup) => `  - Also asked as: ${dup.content}`).join("\n")}`).join("\n")
+    : "_None._");
+  lines.push("");
+  lines.push("## Other evidence");
+  lines.push(`${report.evidence.facts.length} fact(s) · ${report.evidence.assumptions.length} assumption(s) · ${report.evidence.decisions.length} decision(s) · ${report.evidence.experimentResults.length} experiment result(s)`);
+  lines.push("");
+  if (report.architectureDecisions.length) {
+    lines.push("## Architecture decisions");
+    lines.push(report.architectureDecisions.map((adr) => `- ADR-${String(adr.number).padStart(4, "0")} — ${adr.title} (${adr.status})`).join("\n"));
+    lines.push("");
+  }
+  if (report.experiments.length) {
+    lines.push("## Experiments");
+    lines.push(report.experiments.map((experiment) => `- ${experiment.hypothesis} — ${experiment.verdict ?? experiment.status}`).join("\n"));
+    lines.push("");
+  }
+  lines.push("## Human decision required");
+  lines.push("YES — this is a plan to review, not an approved decision.");
+  return lines.join("\n");
+}
+
+async function copyReportAsMarkdown() {
+  if (!brainstormReport.value) return;
+  try {
+    await navigator.clipboard.writeText(formatReportAsMarkdown(brainstormReport.value));
+    taskMessage.value = "Report copied as Markdown.";
+  } catch {
+    brainstormReportError.value = "Could not copy the report — your browser may be blocking clipboard access.";
+  }
+}
+
+function downloadReportAsMarkdown() {
+  if (!brainstormReport.value) return;
+  const blob = new Blob([formatReportAsMarkdown(brainstormReport.value)], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `plan-report-${brainstormReport.value.taskId}.md`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function scheduleTaskRefresh() {
@@ -3208,108 +3413,144 @@ onUnmounted(() => {
             <div class="worktree-usages">
               <div class="subsection-heading" title="A single readable document that pulls together the problem, both analyses, both reviews, the comparison, questions, decisions, and experiments — handy to save or share before you decide anything."><span>BRAINSTORM PLAN REPORT</span></div>
               <p v-if="brainstormReportError" class="error-text" role="alert">{{ brainstormReportError }}</p>
-              <button class="ghost-button" type="button" :disabled="loadingBrainstormReport" @click="loadBrainstormReport" title="Build the report now from everything gathered so far for this task.">
-                {{ loadingBrainstormReport ? "Generating…" : "Generate report" }}
-              </button>
+              <div class="report-actions">
+                <button class="ghost-button" type="button" :disabled="loadingBrainstormReport" @click="loadBrainstormReport" title="Build the report now from everything gathered so far for this task.">
+                  {{ loadingBrainstormReport ? "Generating…" : "Generate report" }}
+                </button>
+                <button v-if="brainstormReport" class="text-button" type="button" @click="copyReportAsMarkdown" title="Copy this whole report as a Markdown document you can paste into Slack, a PR description, or a doc.">Copy as Markdown</button>
+                <button v-if="brainstormReport" class="text-button" type="button" @click="downloadReportAsMarkdown" title="Save this report as a .md file to your computer.">Download .md</button>
+              </div>
+
               <div v-if="brainstormReport" class="plan-report">
                 <p class="form-hint">Generated {{ new Date(brainstormReport.generatedAt).toLocaleString() }} · {{ brainstormReport.taskType }} · risk {{ brainstormReport.riskLevel }} · status {{ brainstormReport.status }}{{ brainstormReport.comparisonVersion ? ` · plan version ${brainstormReport.comparisonVersion}` : "" }}</p>
-                <p><strong>Problem</strong><br />{{ brainstormReport.problemStatement }}</p>
 
-                <p v-if="brainstormReport.blockingQuestionsRemain" class="plan-report-warning" role="alert" title="One or more questions marked BLOCKING priority are still unresolved. This is a warning, not a hard stop — you can still act on this plan.">
-                  Blocking questions remain unresolved — review the OPEN questions below before promoting this plan.
-                </p>
+                <div class="plan-report-summary">
+                  <h3 class="plan-report-summary-heading">Executive summary</h3>
+                  <p v-if="brainstormReport.blockingQuestionsRemain" class="plan-report-warning" role="alert" title="One or more questions marked BLOCKING priority are still unresolved. This is a warning, not a hard stop — you can still act on this plan.">
+                    Blocking questions remain unresolved — review the OPEN questions below before promoting this plan.
+                  </p>
+                  <p><strong>Problem</strong><br />{{ brainstormReport.problemStatement }}</p>
+                  <ul v-if="reportSummary" class="plan-report-list">
+                    <li>{{ reportSummary.openCount }} open question(s) ({{ reportSummary.blockingOpenCount }} blocking) · {{ reportSummary.answeredCount }} answered · {{ reportSummary.deferredCount }} deferred · {{ reportSummary.notApplicableCount }} not applicable · {{ reportSummary.duplicateGroupCount }} duplicate group(s)</li>
+                    <li>Comparison: {{ reportSummary.consensusCount }} consensus point(s) · {{ reportSummary.disagreementCount }} disagreement(s) · {{ reportSummary.missingEvidenceCount }} missing-evidence item(s)</li>
+                  </ul>
 
-                <h4 class="plan-report-section-heading">Independent analyses</h4>
-                <div class="analysis-grid">
-                  <article v-for="entry in brainstormReport.analyses" :key="'analysis-' + entry.provider" class="analysis-card">
-                    <header><span>{{ providerLabel(entry.provider) }}</span></header>
-                    <template v-if="entry.data">
-                      <p>{{ entry.data.summary }}</p>
-                      <h4>Facts</h4>
-                      <ul v-if="entry.data.facts.length"><li v-for="item in entry.data.facts" :key="item">{{ item }}</li></ul>
-                      <p v-else>None recorded.</p>
-                      <h4>Assumptions</h4>
-                      <ul v-if="entry.data.assumptions.length"><li v-for="item in entry.data.assumptions" :key="item">{{ item }}</li></ul>
-                      <p v-else>None recorded.</p>
-                      <h4>Options</h4>
-                      <div v-for="option in entry.data.options" :key="option.name" class="option-block">
-                        <strong>{{ option.name }}</strong><p>{{ option.description }}</p>
-                        <small>{{ option.advantages.length }} advantages · {{ option.disadvantages.length }} disadvantages · {{ option.risks.length }} risks</small>
-                      </div>
-                      <h4>Recommendation</h4><p>{{ entry.data.recommendation ?? "None given." }}</p>
-                    </template>
-                    <p v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</p>
-                  </article>
+                  <div class="report-synthesis-controls">
+                    <select v-model="synthesisProvider" title="Which AI should write the synthesis below.">
+                      <option value="CLAUDE">Claude</option>
+                      <option value="CODEX">Codex</option>
+                    </select>
+                    <button class="ghost-button" type="button" :disabled="generatingSynthesis" @click="generateReportSynthesis" title="Ask the selected AI to write a short synthesized summary, key risks, and recommendation for this plan — beyond just reformatting what's already here. This spends a small amount of that provider's usage.">
+                      {{ generatingSynthesis ? "Generating…" : "Generate AI summary" }}
+                    </button>
+                  </div>
+                  <p v-if="synthesisError" class="error-text" role="alert">{{ synthesisError }}</p>
+                  <div v-if="reportSynthesis" class="plan-report-synthesis">
+                    <p>{{ reportSynthesis.executiveSummary }}</p>
+                    <p><strong>Key risks</strong></p>
+                    <ul class="plan-report-list"><li v-for="risk in reportSynthesis.keyRisks" :key="risk">{{ risk }}</li></ul>
+                    <p><strong>Recommendation:</strong> {{ reportSynthesis.recommendation }}</p>
+                  </div>
+
+                  <p><strong>Recommended next action</strong><br />{{ brainstormReport.recommendedNextAction }}</p>
                 </div>
 
-                <h4 class="plan-report-section-heading">Cross-reviews</h4>
-                <div class="analysis-grid">
-                  <article v-for="entry in brainstormReport.crossReviews" :key="'review-' + entry.provider" class="review-card">
-                    <header><span>{{ providerLabel(entry.provider) }} reviewing {{ entry.targetProvider ? providerLabel(entry.targetProvider) : "unknown" }}</span></header>
-                    <p v-if="entry.data">{{ entry.data.summary }}</p>
-                    <p v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</p>
-                  </article>
-                </div>
+                <details class="result-section">
+                  <summary class="subsection-heading"><span>INDEPENDENT ANALYSES</span><strong>{{ brainstormReport.analyses.length }} analysis/analyses</strong></summary>
+                  <div class="analysis-grid">
+                    <article v-for="entry in brainstormReport.analyses" :key="'analysis-' + entry.provider" class="analysis-card">
+                      <header><span>{{ providerLabel(entry.provider) }}</span></header>
+                      <template v-if="entry.data">
+                        <p>{{ entry.data.summary }}</p>
+                        <h4>Facts</h4>
+                        <ul v-if="entry.data.facts.length"><li v-for="item in entry.data.facts" :key="item">{{ item }}</li></ul>
+                        <p v-else>None recorded.</p>
+                        <h4>Assumptions</h4>
+                        <ul v-if="entry.data.assumptions.length"><li v-for="item in entry.data.assumptions" :key="item">{{ item }}</li></ul>
+                        <p v-else>None recorded.</p>
+                        <h4>Options</h4>
+                        <div v-for="option in entry.data.options" :key="option.name" class="option-block">
+                          <strong>{{ option.name }}</strong><p>{{ option.description }}</p>
+                          <small>{{ option.advantages.length }} advantages · {{ option.disadvantages.length }} disadvantages · {{ option.risks.length }} risks</small>
+                        </div>
+                        <h4>Recommendation</h4><p>{{ entry.data.recommendation ?? "None given." }}</p>
+                      </template>
+                      <p v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</p>
+                    </article>
+                  </div>
+                </details>
 
-                <h4 class="plan-report-section-heading">Comparison</h4>
-                <div v-if="brainstormReport.comparison" class="comparison-grid">
-                  <article v-for="(items, label) in brainstormReport.comparison" :key="String(label)">
-                    <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
-                    <ul v-if="items.length"><li v-for="item in items" :key="item">{{ item }}</li></ul>
-                    <p v-else>None asserted.</p>
-                  </article>
-                </div>
-                <p v-else class="form-hint">Not available yet.</p>
+                <details class="result-section">
+                  <summary class="subsection-heading"><span>CROSS-REVIEWS</span><strong>Each reviews the other</strong></summary>
+                  <div class="analysis-grid">
+                    <article v-for="entry in brainstormReport.crossReviews" :key="'review-' + entry.provider" class="review-card">
+                      <header><span>{{ providerLabel(entry.provider) }} reviewing {{ entry.targetProvider ? providerLabel(entry.targetProvider) : "unknown" }}</span></header>
+                      <p v-if="entry.data">{{ entry.data.summary }}</p>
+                      <p v-else>Could not be parsed{{ entry.parseError ? `: ${entry.parseError}` : "." }}</p>
+                    </article>
+                  </div>
+                </details>
 
-                <h4 class="plan-report-section-heading">Questions</h4>
-                <p class="form-hint">{{ brainstormReport.evidence.questions.open.length }} open · {{ brainstormReport.evidence.questions.answered.length }} answered · {{ brainstormReport.evidence.questions.deferred.length }} deferred · {{ brainstormReport.evidence.questions.notApplicable.length }} not applicable · {{ brainstormReport.evidence.questions.duplicateGroups.length }} duplicate group(s)</p>
-                <div class="question-list">
-                  <article v-for="entry in brainstormReport.evidence.questions.open" :key="entry.id" class="question-card">
-                    <div class="question-card-heading"><span class="question-status open">OPEN</span><small v-if="entry.priority">{{ entry.priority }}</small></div>
-                    <p class="question-text">{{ entry.content }}</p>
-                    <p v-if="entry.whyItMatters" class="question-suggestion"><strong>Why it matters</strong><br />{{ entry.whyItMatters }}</p>
-                    <p v-if="entry.suggestedAction" class="question-suggestion"><strong>Suggested next step</strong><br />{{ entry.suggestedAction }}</p>
-                  </article>
-                  <article v-for="entry in brainstormReport.evidence.questions.answered" :key="entry.id" class="question-card">
-                    <div class="question-card-heading"><span class="question-status answered">ANSWERED</span></div>
-                    <p class="question-text">{{ entry.content }}</p>
-                    <p class="question-suggestion"><strong>Answer</strong><br />{{ entry.responses.at(-1)?.answer }}</p>
-                  </article>
-                  <article v-for="entry in brainstormReport.evidence.questions.deferred" :key="entry.id" class="question-card">
-                    <div class="question-card-heading"><span class="question-status deferred">DEFERRED</span></div>
-                    <p class="question-text">{{ entry.content }}</p>
-                  </article>
-                  <article v-for="entry in brainstormReport.evidence.questions.notApplicable" :key="entry.id" class="question-card">
-                    <div class="question-card-heading"><span class="question-status not_applicable">NOT APPLICABLE</span></div>
-                    <p class="question-text">{{ entry.content }}</p>
-                  </article>
-                  <article v-for="group in brainstormReport.evidence.questions.duplicateGroups" :key="group.canonical.id" class="question-card">
-                    <div class="question-card-heading"><span class="question-status duplicate">DUPLICATE GROUP</span></div>
-                    <p class="question-text">{{ group.canonical.content }}</p>
-                    <p class="question-suggestion"><strong>Also asked as</strong></p>
-                    <ul><li v-for="duplicate in group.duplicates" :key="duplicate.id">{{ duplicate.content }}</li></ul>
-                  </article>
-                </div>
+                <details class="result-section">
+                  <summary class="subsection-heading"><span>COMPARISON</span><strong>No automatic winner</strong></summary>
+                  <div v-if="brainstormReport.comparison" class="comparison-grid">
+                    <article v-for="(items, label) in brainstormReport.comparison" :key="String(label)">
+                      <h4>{{ String(label).replace(/([A-Z])/g, ' $1') }}</h4>
+                      <ul v-if="items.length"><li v-for="item in items" :key="item">{{ item }}</li></ul>
+                      <p v-else>None asserted.</p>
+                    </article>
+                  </div>
+                  <p v-else class="form-hint">Not available yet.</p>
+                </details>
 
-                <h4 class="plan-report-section-heading">Other evidence</h4>
-                <p class="form-hint">{{ brainstormReport.evidence.facts.length }} fact(s) · {{ brainstormReport.evidence.assumptions.length }} assumption(s) · {{ brainstormReport.evidence.decisions.length }} decision(s) · {{ brainstormReport.evidence.experimentResults.length }} experiment result(s)</p>
+                <details class="result-section">
+                  <summary class="subsection-heading"><span>QUESTIONS</span><strong>{{ reportSummary?.openCount }} open · {{ reportSummary?.answeredCount }} answered</strong></summary>
+                  <div class="question-list">
+                    <article v-for="entry in brainstormReport.evidence.questions.open" :key="entry.id" class="question-card">
+                      <div class="question-card-heading"><span class="question-status open">OPEN</span><small v-if="entry.priority">{{ entry.priority }}</small></div>
+                      <p class="question-text">{{ entry.content }}</p>
+                      <p v-if="entry.whyItMatters" class="question-suggestion"><strong>Why it matters</strong><br />{{ entry.whyItMatters }}</p>
+                      <p v-if="entry.suggestedAction" class="question-suggestion"><strong>Suggested next step</strong><br />{{ entry.suggestedAction }}</p>
+                    </article>
+                    <article v-for="entry in brainstormReport.evidence.questions.answered" :key="entry.id" class="question-card">
+                      <div class="question-card-heading"><span class="question-status answered">ANSWERED</span></div>
+                      <p class="question-text">{{ entry.content }}</p>
+                      <p class="question-suggestion"><strong>Answer</strong><br />{{ entry.responses.at(-1)?.answer }}</p>
+                    </article>
+                    <article v-for="entry in brainstormReport.evidence.questions.deferred" :key="entry.id" class="question-card">
+                      <div class="question-card-heading"><span class="question-status deferred">DEFERRED</span></div>
+                      <p class="question-text">{{ entry.content }}</p>
+                    </article>
+                    <article v-for="entry in brainstormReport.evidence.questions.notApplicable" :key="entry.id" class="question-card">
+                      <div class="question-card-heading"><span class="question-status not_applicable">NOT APPLICABLE</span></div>
+                      <p class="question-text">{{ entry.content }}</p>
+                    </article>
+                    <article v-for="group in brainstormReport.evidence.questions.duplicateGroups" :key="group.canonical.id" class="question-card">
+                      <div class="question-card-heading"><span class="question-status duplicate">DUPLICATE GROUP</span></div>
+                      <p class="question-text">{{ group.canonical.content }}</p>
+                      <p class="question-suggestion"><strong>Also asked as</strong></p>
+                      <ul><li v-for="duplicate in group.duplicates" :key="duplicate.id">{{ duplicate.content }}</li></ul>
+                    </article>
+                  </div>
+                </details>
 
-                <template v-if="brainstormReport.architectureDecisions.length">
-                  <h4 class="plan-report-section-heading">Architecture decisions</h4>
+                <p class="form-hint plan-report-other-evidence">Other evidence: {{ brainstormReport.evidence.facts.length }} fact(s) · {{ brainstormReport.evidence.assumptions.length }} assumption(s) · {{ brainstormReport.evidence.decisions.length }} decision(s) · {{ brainstormReport.evidence.experimentResults.length }} experiment result(s)</p>
+
+                <details v-if="brainstormReport.architectureDecisions.length" class="result-section">
+                  <summary class="subsection-heading"><span>ARCHITECTURE DECISIONS</span><strong>{{ brainstormReport.architectureDecisions.length }}</strong></summary>
                   <ul class="plan-report-list">
                     <li v-for="adr in brainstormReport.architectureDecisions" :key="adr.id">ADR-{{ String(adr.number).padStart(4, '0') }} — {{ adr.title }} ({{ adr.status }})</li>
                   </ul>
-                </template>
+                </details>
 
-                <template v-if="brainstormReport.experiments.length">
-                  <h4 class="plan-report-section-heading">Experiments</h4>
+                <details v-if="brainstormReport.experiments.length" class="result-section">
+                  <summary class="subsection-heading"><span>EXPERIMENTS</span><strong>{{ brainstormReport.experiments.length }}</strong></summary>
                   <ul class="plan-report-list">
                     <li v-for="experiment in brainstormReport.experiments" :key="experiment.id">{{ experiment.hypothesis }} — {{ experiment.verdict ?? experiment.status }}</li>
                   </ul>
-                </template>
+                </details>
 
-                <p><strong>Human decision required</strong><br />YES — this is a plan to review, not an approved decision.</p>
-                <p><strong>Recommended next action</strong><br />{{ brainstormReport.recommendedNextAction }}</p>
+                <p class="form-hint"><strong>Human decision required:</strong> YES — this is a plan to review, not an approved decision.</p>
               </div>
             </div>
 

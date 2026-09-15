@@ -558,12 +558,18 @@ legend small { margin-left: 8px; }
 .check-row input[type="checkbox"] { width: 15px; min-height: 15px; margin: 1px 0 0; accent-color: var(--cyan); }
 .check-row-group { display: grid; gap: 8px; padding-top: 4px; }
 .check-row-group > span { color: #71849f; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.report-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; margin-top: 14px; }
 .plan-report { margin-top: 14px; }
-.plan-report-section-heading { margin: 24px 0 0; padding-top: 14px; border-top: 1px solid var(--line); color: var(--cyan); font: 600 11px/1.4 ui-monospace, monospace; letter-spacing: 0.06em; text-transform: uppercase; }
-.plan-report-section-heading:first-of-type { margin-top: 18px; }
-.plan-report-warning { margin: 14px 0 0; padding: 12px 14px; border: 1px solid rgba(255, 140, 140, 0.4); background: rgba(255, 140, 140, 0.08); color: #ffb3b3; font-size: 12px; line-height: 1.5; }
-.plan-report-list { margin: 10px 0 0; padding-left: 18px; color: #aebed1; font-size: 12px; line-height: 1.6; }
+.plan-report > details.result-section { margin-top: 18px; }
+.plan-report-summary { margin-top: 14px; padding: 16px 18px; border: 1px solid rgba(105, 227, 255, 0.35); background: rgba(105, 227, 255, 0.05); }
+.plan-report-summary-heading { margin: 0; color: var(--cyan); font: 600 11px/1.4 ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.plan-report-summary p { margin: 10px 0 0; font-size: 13px; line-height: 1.5; }
+.plan-report-warning { margin: 10px 0 0; padding: 12px 14px; border: 1px solid rgba(255, 140, 140, 0.4); background: rgba(255, 140, 140, 0.08); color: #ffb3b3; font-size: 12px; line-height: 1.5; }
+.plan-report-list { margin: 8px 0 0; padding-left: 18px; color: #aebed1; font-size: 12px; line-height: 1.6; }
 .plan-report-list li + li { margin-top: 4px; }
+.report-synthesis-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+.plan-report-synthesis { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.plan-report-other-evidence { margin-top: 18px; }
 .finding-list { display: grid; gap: 10px; margin: 12px 0 0; padding: 0; list-style: none; }
 .finding-item { padding: 14px; border: 1px solid var(--line); border-left: 3px solid var(--muted); background: #080e19; }
 .finding-item header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
