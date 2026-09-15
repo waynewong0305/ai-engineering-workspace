@@ -366,3 +366,172 @@ describe("AI-judged possible-duplicate suggestions", () => {
     expect(unknownTask.statusCode).toBe(404);
   });
 });
+
+describe("legacy question suggestion generation and acceptance", () => {
+  class FakeSuggestionAdapter implements AgentAdapter {
+    constructor(readonly name: AgentProvider, private readonly response: unknown) {}
+    async healthCheck(): Promise<AgentHealth> {
+      return {
+        provider: this.name, available: true, authenticated: true, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+        capabilities: { structuredOutput: true, sessionResume: false, dynamicModelDiscovery: false, availableModels: null, availableEffortLevels: null },
+      };
+    }
+    async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+      const occurredAt = new Date().toISOString();
+      yield { type: "started", runId: input.runId, occurredAt };
+      yield { type: "stdout", runId: input.runId, occurredAt, chunk: typeof this.response === "string" ? this.response : JSON.stringify(this.response) };
+      yield {
+        type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+        metadata: {
+          provider: this.name, requestedModel: input.model.requested, actualModel: `fake-${this.name.toLowerCase()}`,
+          effort: null, cliVersion: `fake-${this.name.toLowerCase()} 1.0`, promptVersion: input.promptVersion, webAccessPermitted: false,
+        },
+      };
+    }
+    async cancel() {}
+  }
+
+  function suggestion(overrides: Partial<{
+    questionId: string; priority: string; whyItMatters: string; suggestedAction: string; expectedEvidence: string[]; suggestedAnswers: string[];
+  }> = {}) {
+    return {
+      questionId: "placeholder", priority: "MEDIUM", whyItMatters: "It affects the migration plan.",
+      suggestedAction: "Ask the platform team.", expectedEvidence: ["A written answer from the platform team."], suggestedAnswers: [],
+      ...overrides,
+    };
+  }
+
+  it("generates a preview for every question missing suggestions, persisting an audit artifact without touching question_details", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeSuggestionAdapter("CLAUDE", {
+        suggestions: [
+          { ordinal: 1, priority: "HIGH", whyItMatters: "Blocks sizing.", suggestedAction: "Check the infra dashboard.", expectedEvidence: ["Dashboard screenshot."], suggestedAnswers: ["AWS RDS"] },
+          { ordinal: 2, priority: "LOW", whyItMatters: "Minor cost impact.", suggestedAction: "Ask finance.", expectedEvidence: [], suggestedAnswers: [] },
+        ],
+      })],
+    });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const q1 = await createQuestion(app, task.id, "What database engine is in use?");
+    const q2 = await createQuestion(app, task.id, "What is the monthly hosting cost?");
+
+    const response = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/generate-suggestions`, payload: { provider: "CLAUDE" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionId: q1.id, priority: "HIGH" }),
+      expect.objectContaining({ questionId: q2.id, priority: "LOW" }),
+    ]));
+
+    const withArtifacts = await getTask(app, task.id);
+    const artifact = withArtifacts.artifacts.find((a: { kind: string }) => a.kind === "QUESTION_SUGGESTIONS");
+    expect(artifact).toBeTruthy();
+    expect(artifact.parseError).toBeNull();
+    const detail1 = withArtifacts.questionDetails.find((d: { questionId: string }) => d.questionId === q1.id);
+    expect(detail1.whyItMatters).toBeNull();
+  });
+
+  it("fails cleanly with a 502 and a parseError artifact when the model omits a question it was asked about", async () => {
+    const app = buildApp({
+      databasePath: ":memory:",
+      adapters: [new FakeSuggestionAdapter("CLAUDE", {
+        suggestions: [{ ordinal: 1, priority: "HIGH", whyItMatters: "Blocks sizing.", suggestedAction: "Check the infra dashboard.", expectedEvidence: [], suggestedAnswers: [] }],
+      })],
+    });
+    apps.push(app);
+    const { task } = await createTask(app);
+    await createQuestion(app, task.id, "Question one.");
+    await createQuestion(app, task.id, "Question two.");
+
+    const response = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/generate-suggestions`, payload: { provider: "CLAUDE" },
+    });
+    expect(response.statusCode).toBe(502);
+
+    const withArtifacts = await getTask(app, task.id);
+    const artifact = withArtifacts.artifacts.find((a: { kind: string }) => a.kind === "QUESTION_SUGGESTIONS");
+    expect(artifact.structuredData).toBeNull();
+    expect(artifact.parseError).toBeTruthy();
+  });
+
+  it("400s an invalid provider and 404s an unknown task for generate-suggestions", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const invalidProvider = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/generate-suggestions`, payload: { provider: "GPT4" },
+    });
+    expect(invalidProvider.statusCode).toBe(400);
+    const unknownTask = await app.inject({
+      method: "POST", url: "/api/tasks/does-not-exist/questions/generate-suggestions", payload: { provider: "CLAUDE" },
+    });
+    expect(unknownTask.statusCode).toBe(404);
+  });
+
+  it("accepts submitted suggestions into question_details, attributed to HUMAN", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const q1 = await createQuestion(app, task.id);
+    const q2 = await createQuestion(app, task.id, "A second question.");
+
+    const response = await app.inject({
+      method: "POST", url: `/api/tasks/${task.id}/questions/accept-suggestions`,
+      payload: { suggestions: [suggestion({ questionId: q1.id }), suggestion({ questionId: q2.id, priority: "BLOCKING" })] },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ acceptedCount: 2, skippedCount: 0 });
+
+    const withDetails = await getTask(app, task.id);
+    const detail1 = withDetails.questionDetails.find((d: { questionId: string }) => d.questionId === q1.id);
+    expect(detail1).toMatchObject({
+      whyItMatters: "It affects the migration plan.", suggestedAction: "Ask the platform team.", suggestionSource: "HUMAN", priority: "MEDIUM",
+    });
+    const detail2 = withDetails.questionDetails.find((d: { questionId: string }) => d.questionId === q2.id);
+    expect(detail2.priority).toBe("BLOCKING");
+  });
+
+  it("never overwrites a question that already has suggestions, and rejects a questionId from a different task", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const { task: taskA } = await createTask(app, "Task A");
+    const { task: taskB } = await createTask(app, "Task B");
+    const question = await createQuestion(app, taskA.id);
+    const otherTaskQuestion = await createQuestion(app, taskB.id);
+
+    const first = await app.inject({
+      method: "POST", url: `/api/tasks/${taskA.id}/questions/accept-suggestions`,
+      payload: { suggestions: [suggestion({ questionId: question.id })] },
+    });
+    expect(first.json()).toEqual({ acceptedCount: 1, skippedCount: 0 });
+
+    const resubmit = await app.inject({
+      method: "POST", url: `/api/tasks/${taskA.id}/questions/accept-suggestions`,
+      payload: { suggestions: [suggestion({ questionId: question.id, whyItMatters: "A completely different reason." })] },
+    });
+    expect(resubmit.json()).toEqual({ acceptedCount: 0, skippedCount: 1 });
+    const afterResubmit = await getTask(app, taskA.id);
+    expect(afterResubmit.questionDetails.find((d: { questionId: string }) => d.questionId === question.id).whyItMatters)
+      .toBe("It affects the migration plan.");
+
+    const crossTask = await app.inject({
+      method: "POST", url: `/api/tasks/${taskA.id}/questions/accept-suggestions`,
+      payload: { suggestions: [suggestion({ questionId: otherTaskQuestion.id })] },
+    });
+    expect(crossTask.statusCode).toBe(400);
+  });
+
+  it("400s an empty suggestions array and 404s an unknown task for accept-suggestions", async () => {
+    const app = buildApp({ databasePath: ":memory:", adapters: [] });
+    apps.push(app);
+    const { task } = await createTask(app);
+    const empty = await app.inject({ method: "POST", url: `/api/tasks/${task.id}/questions/accept-suggestions`, payload: { suggestions: [] } });
+    expect(empty.statusCode).toBe(400);
+    const unknownTask = await app.inject({
+      method: "POST", url: "/api/tasks/does-not-exist/questions/accept-suggestions", payload: { suggestions: [suggestion({ questionId: "x" })] },
+    });
+    expect(unknownTask.statusCode).toBe(404);
+  });
+});

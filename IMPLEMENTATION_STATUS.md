@@ -606,6 +606,73 @@ grouped automatically."
   gating/rendering only, not triggered for real, since the human did not request an actual run this
   time (unlike step 4.5's synthesis, which they explicitly asked to run once for real).
 
+Later addition (2026-09-15): legacy question suggestion generation — step 8 of 8, the final step of
+the auditable-question-resolution effort. All 18 of the real questions in the human's "Database
+horizontal scaling" task predate step 6's `v2` prompt contract, so `question_details.whyItMatters`
+stays blank for them forever unless something backfills it — this step is that backfill, offered as
+an explicit, reviewable action rather than something that runs silently.
+- Reused the `report-synthesis.ts`/`duplicate-detection.ts` shape a third time: new `taskArtifacts`
+  kind `"QUESTION_SUGGESTIONS"` and `agentRuns.role`/`usageRecords.role` value
+  `"QUESTION_SUGGESTION_GENERATION"` (TS-level only, confirmed via `db:generate`). New types
+  `QuestionSuggestion`/`QuestionSuggestions` in `apps/server/src/db/schema.ts`. New
+  `prompts/question-suggestions.md` (`question-suggestions:v1`) sends every currently-`OPEN` question
+  that has no `whyItMatters` yet, ordinal-numbered, and asks for the same six-field suggestion shape a
+  `v2` analysis call would have produced automatically.
+- **Two-step generate → accept, matching the original spec's "require human acceptance before
+  saving... must never run automatically" exactly** — the one meaningful process difference from
+  steps 4.5/7's shape: `POST /api/tasks/:id/questions/generate-suggestions`
+  (`apps/server/src/services/question-suggestions.ts`) still runs one `AgentRunManager`-managed call
+  and unconditionally persists a `taskArtifacts` audit row (so usage is never spent invisibly even if
+  every suggestion is later rejected), but the *route* awaits it directly and returns the parsed
+  preview in the HTTP response instead of firing-and-forgetting a 202 — there is nothing useful to
+  discover later via polling when a human must review (and may edit) a suggestion before anything is
+  written. Parsing reuses `build-review-workflow.ts`'s `assertExactOrdinals` strictness (a local copy,
+  matching this codebase's established convention of small per-module parse helpers rather than
+  cross-importing from an unrelated workflow file — see `report-synthesis.ts`'s own local
+  `requiredString`): the model must return exactly one suggestion for every question it was asked
+  about, no invented or dropped ordinal, or the whole response fails and stores `parseError`.
+  `POST /api/tasks/:id/questions/accept-suggestions` is separate: it validates each submitted
+  `questionId` belongs to the task and writes a plain `update` into `question_details` (not
+  `ensureQuestionDetails`'s upsert, since the row already exists) — and **never overwrites a question
+  that already has suggestions** (from a real `v2` analysis, or an earlier accepted suggestion),
+  returning `{ acceptedCount, skippedCount }` so a stale or resubmitted preview can never silently
+  clobber real content. Accepted suggestions are attributed `suggestionSource: "HUMAN"`, since a human
+  explicitly reviewed (and could have edited) the content before it was saved.
+- `QUESTION_PRIORITIES` was promoted from a private constant to an export of `structured-output.ts`
+  so `question-suggestions.ts` and the `accept-suggestions` route validate against the exact same
+  priority set as every other structured parser, rather than a second hand-maintained list that could
+  drift.
+- UI (`apps/web/src/App.vue`): a provider picker + "Generate missing suggestions (N)" button
+  (question-board level, count-gated so it's hidden once nothing qualifies) sits below the step-7
+  duplicate-detection controls. A successful generate opens an editable preview panel — one card per
+  suggested question showing the original question text, an editable priority/why-it-matters/
+  suggested-action/evidence-needed/suggested-answers set (the two list fields edited as one-item-
+  per-line text, split into arrays only on submit) — with per-question **Accept**/**Discard** and a
+  panel-level **Accept all**; discarding is purely client-side (nothing stored is touched), matching
+  step 7's dismiss-suggestion precedent.
+- Tests (`apps/server/src/routes/questions.test.ts`, 14 pre-existing + 6 new = 20, all passing): a
+  `FakeSuggestionAdapter` proves generate returns the correct preview for every blank question and
+  persists a clean audit artifact without touching `question_details`; an incomplete response (missing
+  one of the two ordinals asked about) fails with a 502 and a `parseError` artifact; invalid
+  provider/unknown task 400/404. Accept: persists exactly the submitted content attributed to `HUMAN`;
+  resubmitting for an already-populated question is silently skipped (`skippedCount`) rather than
+  overwritten, verified by asserting the original content survives untouched; a `questionId` from a
+  different task is rejected; an empty array 400s.
+- Verified under Node 22.23.2 with `npm test` (171 server tests, up from 165), `npm run typecheck`,
+  `npm run build`, `npm run check:agent-policy`, `npm run db:generate` (no schema drift), and `git diff
+  --check`; all passed. Live browser verification against the real 18-question task: "Generate missing
+  suggestions (18)" renders correctly below the step-7 controls (the count matching all 18 real
+  questions, which are indeed all pre-`v2`) at both desktop and 375px mobile width with no horizontal
+  overflow. Per this effort's now-consistent discipline across steps 6-8, the generate action itself
+  (a real provider call against the real task) was verified for correct gating/rendering only and not
+  triggered for real in this pass — offered as an explicit next step, same as step 7's AI-judged scan,
+  rather than run automatically; actually generating and accepting suggestions for the real 18
+  questions remains the natural real-world acceptance test for this step whenever the human wants to
+  run it.
+
+This closes the auditable-question-resolution effort's full 8-step plan (originally 6 steps; step 3
+was inserted mid-effort for plan revision, and step 4.5 for report Markdown export/synthesis).
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

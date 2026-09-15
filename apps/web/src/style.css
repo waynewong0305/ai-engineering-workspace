@@ -457,6 +457,10 @@ legend small { margin-left: 8px; }
 .question-duplicate-suggestion { margin: 8px 0; padding: 10px 12px; border: 1px solid rgba(255, 203, 107, 0.4); background: rgba(255, 203, 107, 0.06); }
 .question-duplicate-suggestion p { margin: 0; color: #ffcb6b; font-size: 12px; }
 .question-duplicate-suggestion .question-actions { margin-top: 8px; }
+.question-suggestion-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.question-suggestion-preview { display: grid; gap: 10px; margin-top: 14px; padding: 12px; border: 1px solid rgba(122, 162, 255, 0.4); background: rgba(122, 162, 255, 0.06); }
+.question-suggestion-preview > .question-actions { margin-top: 0; justify-content: space-between; }
+.question-suggestion-preview label { display: block; margin-top: 8px; font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: 0.04em; color: var(--cyan); }
 .question-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 14px; }
 .question-card { min-width: 0; overflow-wrap: anywhere; padding: 14px; border: 1px solid var(--line); background: #080e19; }
 .question-card-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; }

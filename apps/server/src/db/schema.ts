@@ -98,7 +98,7 @@ export const agentRuns = sqliteTable("agent_runs", {
   taskId: text("task_id").references(() => tasks.id, { onDelete: "cascade" }),
   worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS", "DUPLICATE_DETECTION"] }).notNull().default("REPOSITORY_EXPLANATION"),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS", "DUPLICATE_DETECTION", "QUESTION_SUGGESTION_GENERATION"] }).notNull().default("REPOSITORY_EXPLANATION"),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   prompt: text("prompt").notNull(),
   promptVersion: text("prompt_version").notNull(),
@@ -186,7 +186,7 @@ export const usageRecords = sqliteTable("usage_records", {
   taskId: text("task_id"),
   projectId: text("project_id").notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
-  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS", "DUPLICATE_DETECTION"] }).notNull(),
+  role: text("role", { enum: ["REPOSITORY_EXPLANATION", "INDEPENDENT_ANALYSIS", "CROSS_REVIEW", "BUILD", "REVIEW", "REPORT_SYNTHESIS", "DUPLICATE_DETECTION", "QUESTION_SUGGESTION_GENERATION"] }).notNull(),
   modelRequested: text("model_requested"),
   modelActual: text("model_actual"),
   inputTokens: integer("input_tokens"),
@@ -380,15 +380,31 @@ export type DuplicateSuggestions = {
   groups: { canonicalQuestionId: string; duplicateQuestionIds: string[] }[];
 };
 
+/**
+ * A legacy-question backfill suggestion — same six suggestion fields a v2 analysis/cross-review call
+ * would have populated automatically, generated on demand instead for a question that predates that
+ * change (or was otherwise never populated). A suggestion only; nothing is written into
+ * `question_details` until a human explicitly accepts it via /questions/accept-suggestions.
+ */
+export type QuestionSuggestion = {
+  questionId: string;
+  priority: QuestionPriority;
+  whyItMatters: string;
+  suggestedAction: string;
+  expectedEvidence: string[];
+  suggestedAnswers: string[];
+};
+export type QuestionSuggestions = { suggestions: QuestionSuggestion[] };
+
 export const taskArtifacts = sqliteTable("task_artifacts", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
   runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
-  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT", "REPORT_SYNTHESIS", "DUPLICATE_SUGGESTIONS"] }).notNull(),
+  kind: text("kind", { enum: ["ANALYSIS", "CROSS_REVIEW", "REVIEW_FINDINGS", "FINDING_RESPONSE", "REVIEW_RECHECK", "EXPERIMENT_RESULT", "REPORT_SYNTHESIS", "DUPLICATE_SUGGESTIONS", "QUESTION_SUGGESTIONS"] }).notNull(),
   provider: text("provider", { enum: ["CLAUDE", "CODEX"] }).notNull(),
   targetProvider: text("target_provider", { enum: ["CLAUDE", "CODEX"] }),
   structuredData: text("structured_data", { mode: "json" })
-    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact | ReportSynthesis | DuplicateSuggestions>(),
+    .$type<BrainstormAnalysis | CrossReview | ReviewFindingsArtifact | FindingResponseArtifact | ReviewRecheckArtifact | ExperimentVerdictArtifact | ReportSynthesis | DuplicateSuggestions | QuestionSuggestions>(),
   rawOutput: text("raw_output").notNull(),
   parseError: text("parse_error"),
   createdAt: text("created_at").notNull(),

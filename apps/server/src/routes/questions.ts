@@ -10,11 +10,14 @@ import {
   questionDetails,
   questionResponses,
   tasks,
+  type QuestionPriority,
   type QuestionResponseSource,
   type QuestionStatus,
 } from "../db/schema.js";
 import { AgentRunManager } from "../services/agent-run-manager.js";
 import { generateDuplicateSuggestions } from "../services/duplicate-detection.js";
+import { generateQuestionSuggestions } from "../services/question-suggestions.js";
+import { QUESTION_PRIORITIES, strings } from "../services/structured-output.js";
 import type { UsageSafetyService } from "../services/usage-safety.js";
 
 const RESPONSE_SOURCES = new Set<QuestionResponseSource>(["HUMAN", "EXPERIMENT", "PROVIDER"]);
@@ -278,5 +281,97 @@ export function registerQuestionRoutes(
     }
     void generateDuplicateSuggestions(db, manager, adapters, task.id, task.projectId, project.repositoryPath, provider);
     return reply.code(202).send({ message: "Scanning open questions for possible duplicates.", taskId: task.id });
+  });
+
+  /**
+   * Unlike detect-duplicates above, this route awaits the provider call and returns the parsed
+   * preview directly — a human must review (and may edit) a suggestion before anything is written,
+   * so there is nothing useful to discover later via polling. See question-suggestions.ts.
+   */
+  app.post<{ Params: { id: string }; Body: { provider?: unknown } }>("/api/tasks/:id/questions/generate-suggestions", async (request, reply) => {
+    const taskId = request.params.id;
+    const task = db.select().from(tasks).where(eq(tasks.id, taskId)).get();
+    if (!task) return reply.code(404).send({ message: "Task not found." });
+    const provider = text(request.body?.provider) as AgentProvider | null;
+    if (provider !== "CLAUDE" && provider !== "CODEX") return reply.code(400).send({ message: "provider must be CLAUDE or CODEX." });
+    const project = db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+    if (!project) return reply.code(404).send({ message: "The registered project no longer exists." });
+    const usageDecision = usageSafety.evaluate(provider, { combined: false });
+    if (!usageDecision.allowed) {
+      return reply.code(409).send({ message: usageDecision.reason, code: "USAGE_CHECKPOINT", decision: usageDecision });
+    }
+    const outcome = await generateQuestionSuggestions(db, manager, adapters, task.id, task.projectId, project.repositoryPath, provider);
+    if (!outcome.ok) return reply.code(502).send({ message: outcome.message });
+    return { suggestions: outcome.suggestions };
+  });
+
+  type SubmittedSuggestion = {
+    questionId: string;
+    priority: QuestionPriority;
+    whyItMatters: string;
+    suggestedAction: string;
+    expectedEvidence: string[];
+    suggestedAnswers: string[];
+  };
+
+  function parseSubmittedSuggestion(taskId: string, candidate: unknown): SubmittedSuggestion {
+    const item = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate as Record<string, unknown> : null;
+    const questionId = item ? text(item.questionId, 200) : null;
+    if (!item || !questionId) throw new Error("Each suggestion needs a questionId.");
+    if (!loadQuestion(taskId, questionId)) throw new Error(`questionId ${questionId} does not refer to a question in this task.`);
+    const priority = item.priority;
+    if (typeof priority !== "string" || !QUESTION_PRIORITIES.has(priority as QuestionPriority)) {
+      throw new Error(`Suggestion for ${questionId} has an invalid priority.`);
+    }
+    const whyItMatters = text(item.whyItMatters);
+    const suggestedAction = text(item.suggestedAction);
+    const expectedEvidence = strings(item.expectedEvidence);
+    const suggestedAnswers = strings(item.suggestedAnswers);
+    if (!whyItMatters || !suggestedAction || !expectedEvidence || !suggestedAnswers) {
+      throw new Error(`Suggestion for ${questionId} is missing a required field.`);
+    }
+    return { questionId, priority: priority as QuestionPriority, whyItMatters, suggestedAction, expectedEvidence, suggestedAnswers };
+  }
+
+  /**
+   * The human may have edited a generate-suggestions preview client-side first; this route trusts
+   * nothing about content, only validates shape and that each questionId belongs to this task. Never
+   * overwrites a question that already has suggestions (from a v2 analysis/cross-review, or an
+   * earlier accepted suggestion) — "generate missing" means exactly that, so a stale or resubmitted
+   * preview can never clobber real content.
+   */
+  app.post<{ Params: { id: string }; Body: { suggestions?: unknown } }>("/api/tasks/:id/questions/accept-suggestions", async (request, reply) => {
+    const taskId = request.params.id;
+    if (!db.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, taskId)).get()) {
+      return reply.code(404).send({ message: "Task not found." });
+    }
+    const submitted = Array.isArray(request.body?.suggestions) ? request.body.suggestions : null;
+    if (!submitted || !submitted.length) return reply.code(400).send({ message: "suggestions must be a non-empty array." });
+
+    let parsed: SubmittedSuggestion[];
+    try {
+      parsed = submitted.map((candidate) => parseSubmittedSuggestion(taskId, candidate));
+    } catch (error) {
+      return reply.code(400).send({ message: error instanceof Error ? error.message : "Invalid suggestion." });
+    }
+
+    let acceptedCount = 0;
+    let skippedCount = 0;
+    const now = new Date().toISOString();
+    for (const suggestion of parsed) {
+      const detail = db.select().from(questionDetails).where(eq(questionDetails.questionId, suggestion.questionId)).get()!;
+      if (detail.whyItMatters !== null) { skippedCount += 1; continue; }
+      db.update(questionDetails).set({
+        priority: suggestion.priority,
+        whyItMatters: suggestion.whyItMatters,
+        suggestedAction: suggestion.suggestedAction,
+        expectedEvidence: suggestion.expectedEvidence,
+        suggestedAnswers: suggestion.suggestedAnswers,
+        suggestionSource: "HUMAN",
+        updatedAt: now,
+      }).where(eq(questionDetails.questionId, suggestion.questionId)).run();
+      acceptedCount += 1;
+    }
+    return { acceptedCount, skippedCount };
   });
 }

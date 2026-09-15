@@ -217,12 +217,32 @@ type ReportSynthesis = {
 type DuplicateSuggestions = {
   groups: { canonicalQuestionId: string; duplicateQuestionIds: string[] }[];
 };
+/** An editable, not-yet-accepted suggestion from POST .../generate-suggestions — expectedEvidence and
+ * suggestedAnswers are held as one-item-per-line text while being edited, and split into arrays only
+ * when submitted to accept-suggestions. */
+type QuestionSuggestionDraft = {
+  questionId: string;
+  priority: "BLOCKING" | "HIGH" | "MEDIUM" | "LOW";
+  whyItMatters: string;
+  suggestedAction: string;
+  expectedEvidenceText: string;
+  suggestedAnswersText: string;
+};
+type QuestionSuggestion = {
+  questionId: string;
+  priority: "BLOCKING" | "HIGH" | "MEDIUM" | "LOW";
+  whyItMatters: string;
+  suggestedAction: string;
+  expectedEvidence: string[];
+  suggestedAnswers: string[];
+};
+type QuestionSuggestions = { suggestions: QuestionSuggestion[] };
 type TaskArtifact = {
   id: string;
-  kind: "ANALYSIS" | "CROSS_REVIEW" | "REPORT_SYNTHESIS" | "DUPLICATE_SUGGESTIONS";
+  kind: "ANALYSIS" | "CROSS_REVIEW" | "REPORT_SYNTHESIS" | "DUPLICATE_SUGGESTIONS" | "QUESTION_SUGGESTIONS";
   provider: AgentProvider;
   targetProvider: AgentProvider | null;
-  structuredData: BrainstormAnalysis | CrossReview | ReportSynthesis | DuplicateSuggestions | null;
+  structuredData: BrainstormAnalysis | CrossReview | ReportSynthesis | DuplicateSuggestions | QuestionSuggestions | null;
   rawOutput: string;
   parseError: string | null;
 };
@@ -658,6 +678,11 @@ const detectingDuplicates = ref(false);
 const duplicateDetectionError = ref("");
 const groupingExactDuplicates = ref(false);
 const dismissedDuplicateSuggestionIds = ref(new Set<string>());
+const suggestionProvider = ref<AgentProvider>("CLAUDE");
+const generatingSuggestions = ref(false);
+const acceptingSuggestions = ref(false);
+const suggestionError = ref("");
+const suggestionPreview = ref<QuestionSuggestionDraft[]>([]);
 const experimentsForTask = ref<Experiment[]>([]);
 const experimentHypothesis = ref("");
 const experimentBuilderProvider = ref<AgentProvider>("CLAUDE");
@@ -1890,6 +1915,89 @@ async function detectPossibleDuplicates() {
     duplicateDetectionError.value = error instanceof Error ? error.message : "Could not scan for possible duplicates.";
   } finally {
     detectingDuplicates.value = false;
+  }
+}
+
+/** Open questions that predate v2 analysis (or otherwise never got a suggestion) — the pool "Generate missing suggestions" offers to fill in. */
+const questionsMissingSuggestions = computed(() => allQuestions.value.filter((item) => {
+  const detail = questionDetailFor(item);
+  return (detail?.status ?? "OPEN") === "OPEN" && !detail?.whyItMatters;
+}));
+
+async function generateQuestionSuggestions() {
+  if (!selectedTask.value) return;
+  generatingSuggestions.value = true;
+  suggestionError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/questions/generate-suggestions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: suggestionProvider.value }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      if (result.code === "USAGE_CHECKPOINT") usageBlockedDecision.value = result.decision;
+      throw new Error(result.message ?? "Could not generate question suggestions.");
+    }
+    const suggestions = result.suggestions as QuestionSuggestion[];
+    if (!suggestions.length) {
+      taskMessage.value = "No questions currently need a generated suggestion.";
+      return;
+    }
+    suggestionPreview.value = suggestions.map((entry) => ({
+      questionId: entry.questionId,
+      priority: entry.priority,
+      whyItMatters: entry.whyItMatters,
+      suggestedAction: entry.suggestedAction,
+      expectedEvidenceText: entry.expectedEvidence.join("\n"),
+      suggestedAnswersText: entry.suggestedAnswers.join("\n"),
+    }));
+  } catch (error) {
+    suggestionError.value = error instanceof Error ? error.message : "Could not generate question suggestions.";
+  } finally {
+    generatingSuggestions.value = false;
+  }
+}
+
+function discardSuggestion(questionId: string) {
+  suggestionPreview.value = suggestionPreview.value.filter((draft) => draft.questionId !== questionId);
+}
+
+function linesToList(text: string): string[] {
+  return text.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+async function acceptSuggestions(drafts: QuestionSuggestionDraft[]) {
+  if (!selectedTask.value || !drafts.length) return;
+  acceptingSuggestions.value = true;
+  suggestionError.value = "";
+  try {
+    const response = await fetch(`/api/tasks/${selectedTask.value.id}/questions/accept-suggestions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        suggestions: drafts.map((draft) => ({
+          questionId: draft.questionId,
+          priority: draft.priority,
+          whyItMatters: draft.whyItMatters,
+          suggestedAction: draft.suggestedAction,
+          expectedEvidence: linesToList(draft.expectedEvidenceText),
+          suggestedAnswers: linesToList(draft.suggestedAnswersText),
+        })),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message ?? "Could not accept the suggestion(s).");
+    const acceptedIds = new Set(drafts.map((draft) => draft.questionId));
+    suggestionPreview.value = suggestionPreview.value.filter((draft) => !acceptedIds.has(draft.questionId));
+    taskMessage.value = result.skippedCount > 0
+      ? `Accepted ${result.acceptedCount} suggestion(s); skipped ${result.skippedCount} that already had suggestions.`
+      : `Accepted ${result.acceptedCount} suggestion(s).`;
+    await selectTask(selectedTask.value.id);
+  } catch (error) {
+    suggestionError.value = error instanceof Error ? error.message : "Could not accept the suggestion(s).";
+  } finally {
+    acceptingSuggestions.value = false;
   }
 }
 
@@ -3393,6 +3501,44 @@ onUnmounted(() => {
                   </button>
                 </div>
                 <p v-if="duplicateDetectionError" class="error-text" role="alert">{{ duplicateDetectionError }}</p>
+
+                <div v-if="questionsMissingSuggestions.length" class="question-suggestion-controls">
+                  <select v-model="suggestionProvider" title="Which AI should write the missing why-it-matters / suggested-action content for older questions.">
+                    <option value="CLAUDE">Claude</option>
+                    <option value="CODEX">Codex</option>
+                  </select>
+                  <button type="button" class="text-button" :disabled="generatingSuggestions" @click="generateQuestionSuggestions" title="Ask the selected AI to write why-it-matters, a suggested next step, and candidate answers for open questions that don't have them yet — usually older questions raised before this feature existed. This spends a small amount of that provider's usage and only produces a preview; nothing is saved until you accept it.">
+                    {{ generatingSuggestions ? "Generating…" : `Generate missing suggestions (${questionsMissingSuggestions.length})` }}
+                  </button>
+                </div>
+                <p v-if="suggestionError" class="error-text" role="alert">{{ suggestionError }}</p>
+
+                <div v-if="suggestionPreview.length" class="question-suggestion-preview">
+                  <div class="question-actions">
+                    <strong>{{ suggestionPreview.length }} suggestion(s) awaiting review</strong>
+                    <button type="button" class="ghost-button" :disabled="acceptingSuggestions" @click="acceptSuggestions(suggestionPreview)" title="Save every suggestion below into its question exactly as shown, including any edits you've made.">Accept all</button>
+                  </div>
+                  <article v-for="draft in suggestionPreview" :key="draft.questionId" class="question-card">
+                    <p class="question-text">{{ questionContentById(draft.questionId) }}</p>
+                    <label title="How urgently this needs an answer before the plan can safely proceed.">
+                      <span>Priority</span>
+                      <select v-model="draft.priority">
+                        <option value="BLOCKING">Blocking</option>
+                        <option value="HIGH">High</option>
+                        <option value="MEDIUM">Medium</option>
+                        <option value="LOW">Low</option>
+                      </select>
+                    </label>
+                    <label title="Why answering this question actually matters for the plan."><span>Why it matters</span><textarea v-model="draft.whyItMatters" rows="2" maxlength="5000"></textarea></label>
+                    <label title="A concrete next step a human could take to find the answer."><span>Suggested action</span><textarea v-model="draft.suggestedAction" rows="2" maxlength="5000"></textarea></label>
+                    <label title="What evidence would actually answer this — one per line."><span>Evidence needed (one per line)</span><textarea v-model="draft.expectedEvidenceText" rows="2"></textarea></label>
+                    <label title="Candidate answers a human could pick from as a starting point — one per line, or leave blank."><span>Suggested answers (one per line)</span><textarea v-model="draft.suggestedAnswersText" rows="2"></textarea></label>
+                    <div class="question-actions">
+                      <button type="button" class="ghost-button" :disabled="acceptingSuggestions" @click="acceptSuggestions([draft])" title="Save this suggestion into this question exactly as shown above, including any edits you've made.">Accept</button>
+                      <button type="button" class="text-button" @click="discardSuggestion(draft.questionId)" title="Don't save this suggestion — it's only removed from this preview, nothing about the question changes.">Discard</button>
+                    </div>
+                  </article>
+                </div>
 
                 <div class="question-list">
                   <article v-for="item in filteredQuestions" :key="item.id" class="question-card">

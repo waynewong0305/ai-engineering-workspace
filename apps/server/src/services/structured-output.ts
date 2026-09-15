@@ -4,7 +4,7 @@ export const MAX_STRUCTURED_RESPONSE_CHARS = 160_000;
 export const MAX_LIST_ITEMS = 100;
 export const MAX_ITEM_CHARS = 5_000;
 
-const QUESTION_PRIORITIES = new Set<QuestionPriority>(["BLOCKING", "HIGH", "MEDIUM", "LOW"]);
+export const QUESTION_PRIORITIES = new Set<QuestionPriority>(["BLOCKING", "HIGH", "MEDIUM", "LOW"]);
 
 export function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
