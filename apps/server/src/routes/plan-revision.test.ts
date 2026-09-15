@@ -145,7 +145,7 @@ describe("plan revision with versioning", () => {
     expect(revised.comparisonHistory[0].content).toEqual(task.comparisonHistory[0].content);
     expect(revised.comparison).toEqual(revised.comparisonHistory[1].content);
 
-    const reviseRuns = revised.runs.filter((run: { promptVersion: string }) => run.promptVersion === "brainstorm-analysis-revise:v1");
+    const reviseRuns = revised.runs.filter((run: { promptVersion: string }) => run.promptVersion === "brainstorm-analysis-revise:v2");
     expect(reviseRuns).toHaveLength(2);
     for (const run of reviseRuns) {
       expect(run.prompt).toContain("Writes are roughly 4,000 QPS peak across all tenants.");

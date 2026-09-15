@@ -106,6 +106,11 @@ async function createRepository() {
 }
 
 describe("full workflow: registration -> brainstorm -> build/review -> planning/ADR -> cleanup", () => {
+  // This test runs many real sequential `git`/worktree subprocess operations (registration, two
+  // worktrees, a merge, cleanup) end to end — it was already close to vitest's 5000ms default under
+  // load (observed as an intermittent timeout, not a wrong assertion, when running the full suite
+  // alongside other test files); a longer explicit budget is the honest fix for a genuinely heavy
+  // integration test, not a way to paper over a logic defect.
   it("walks the entire currently-implemented pipeline start to end without spending real provider usage", async () => {
     const app = buildApp({ databasePath: ":memory:", adapters: [new FakeAdapter("CLAUDE"), new FakeAdapter("CODEX")] });
     apps.push(app);
@@ -290,5 +295,5 @@ describe("full workflow: registration -> brainstorm -> build/review -> planning/
     expect(usage.CODEX[0]).toMatchObject({ status: "UNAVAILABLE", usedPercent: null, source: null });
     const audit = (await app.inject({ method: "GET", url: "/api/usage/audit" })).json();
     expect(audit.filter((entry: { eventType: string }) => entry.eventType === "ACKNOWLEDGEMENT")).toHaveLength(2);
-  });
+  }, 20_000);
 });

@@ -473,6 +473,74 @@ were wanted.
   same discipline as step 3's "Revise plan" verification) — its gating, provider picker, and error
   states were verified instead. No horizontal overflow at desktop or 375px mobile width.
 
+Later addition (2026-09-15): `brainstorm-analysis:v2` / `cross-review:v2` structured questions —
+step 6 of 8 of the auditable-question-resolution effort. The dedicated question card (step 2) and the
+report (step 4) have both rendered `whyItMatters`/`suggestedAction`/`expectedEvidence`/`priority`/
+`suggestedAnswers` since they shipped — always blank, since nothing populated them. This step is
+**backend-only**: a new prompt contract and parser make every *new* analysis/cross-review call
+populate that already-built UI with real content, automatically, as part of the existing call (no
+separate provider run, per the human's own earlier decision when this need first came up in step 2).
+- New shared type `StructuredQuestion` (`question`/`priority`/`whyItMatters`/`suggestedAction`/
+  `expectedEvidence`/`suggestedAnswers`) in `apps/server/src/db/schema.ts`.
+  `BrainstormAnalysis.unknowns` and `CrossReview.openQuestions` widen from `string[]` to `(string |
+  StructuredQuestion)[]` — the field names are unchanged (renaming `unknowns` would touch the report/
+  UI/tests for no functional gain) and a bare string stays valid forever: it's exactly how every
+  already-stored `v1` artifact looks (never re-parsed, no data migration needed) and is the parser's
+  defensive fallback if a `v2`-prompted model still returns plain text for some entry.
+- New `structuredQuestions()` in `structured-output.ts` (alongside the existing `strings()`) —
+  all-or-nothing per item, matching every other structured parser here: a malformed structured
+  question fails the whole response, exactly like an invalid `v1` response already does, rather than
+  silently dropping fields or inventing defaults.
+- `brainstorm-workflow.ts`: `ANALYSIS_VERSION`/`REVIEW_VERSION`/`REVISE_ANALYSIS_VERSION` bumped to
+  `v2`; `parseAnalysis`/`parseReview` use `structuredQuestions()` instead of `strings()` for
+  `unknowns`/`openQuestions`; `compare()` still returns `TaskComparison.openQuestions: string[]`
+  unchanged (extracts just `.question` text from any structured items via a new `questionText()`
+  helper, so the comparison grid/report needed no type changes at all).
+  `addAnalysisEvidence` now branches per `unknowns` entry: a plain string behaves exactly as before
+  (blank `question_details`); a `StructuredQuestion` creates the same `QUESTION` evidence item but
+  calls `ensureQuestionDetails` with a new optional 4th argument (`InitialQuestionSuggestions`)
+  carrying the real `priority`/`whyItMatters`/`suggestedAction`/`expectedEvidence`/`suggestedAnswers`/
+  `suggestionSource: <provider>` — every existing call site (human-created evidence in
+  `routes/tasks.ts`) passes no 4th argument and is unaffected.
+- Updated `prompts/brainstorm-analysis.md`, `prompts/cross-review.md`, and
+  `prompts/brainstorm-analysis-revise.md` in place with the new JSON contract, each still able to fall
+  back to a bare string per item, and instructed to use `"BLOCKING"` priority only when the plan
+  genuinely cannot proceed safely without an answer.
+- **Deliberately out of scope**: cross-review's structured `openQuestions` still do not become
+  trackable `QUESTION` evidence items — that was never true even for plain-string `openQuestions`
+  before this step (only `analysis.unknowns` ever created evidence items), and expanding that is a
+  separate, unrequested scope increase.
+- Found and fixed while verifying this step, unrelated to the feature itself: running the full
+  workspace test suite repeatedly surfaced an intermittent timeout (not a wrong assertion) in
+  `end-to-end-workflow.test.ts`'s "walks the entire currently-implemented pipeline" test — confirmed
+  via a baseline comparison (`git stash`, 3/3 clean baseline runs vs. roughly half the runs failing
+  with these changes present) that something in this unit's changes measurably affected timing enough
+  to occasionally push an already-marginal test over vitest's 5000ms default. That test does many real
+  sequential `git`/worktree subprocess operations end to end and had no custom timeout at all; gave it
+  an explicit 20-second budget (`apps/server/src/routes/end-to-end-workflow.test.ts`) rather than
+  raising the global default — 4/4 clean full-suite runs afterward. This is a timing-budget fix for a
+  genuinely heavy integration test, not a change to what it asserts or a workaround for a logic defect
+  (isolated, unhurried runs of the unmodified test already passed correctly).
+- Tests: extended `tasks.test.ts` (not a new file — same fixtures/imports the existing brainstorm
+  workflow tests already use) with a `FakeV2Adapter` proving a structured `unknowns` entry
+  pre-populates `question_details` with the exact real suggestion content (no `generate-suggestions`
+  call needed) while a plain-string entry in the *same* response stays blank as before; and a
+  `FakeMalformedAdapter` proving a structured question missing a required field fails the whole
+  analysis the same way an invalid `v1` response already does (`FAILED` status, `parseError` set,
+  `structuredData: null`, no `QUESTION` evidence created). The full existing suite (which already uses
+  plain-string `unknowns`/`openQuestions` fixtures throughout) needed no other changes beyond updating
+  three hardcoded `...:v1` prompt-version-string assertions to `v2` — real proof the parser's
+  string-or-structured leniency holds, not just a claim.
+- Verified under Node 22.23.2 with `npm test` (160 server tests, up from 158; 65 agent-package tests;
+  31 Git-package tests), `npm run typecheck`, `npm run build`, `npm run check:agent-policy`, `npm run
+  db:generate` (confirms no schema drift — `StructuredQuestion` is TypeScript-level only), and `git
+  diff --check`; all passed, including 4 consecutive full-suite runs with zero flakes after the
+  timeout fix. Live-with-a-real-provider-call verification (starting an actual new brainstorm task to
+  see the already-built question card/report UI render real suggestion content for the first time)
+  was deliberately deferred rather than assumed — it spends real Claude/Codex usage and creates a new
+  task in the human's real project, and the automated tests above already prove the exact backend
+  behavior end to end; offered as an explicit next step rather than run automatically.
+
 ## Phase 4 — Git worktrees
 
 - [x] Worktree service (`packages/git`)

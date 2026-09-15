@@ -265,11 +265,27 @@ export const usageBudgetAudit = sqliteTable("usage_budget_audit", {
 
 export type UsageBudgetAuditRecord = typeof usageBudgetAudit.$inferSelect;
 
+/**
+ * v2 structured-question shape (brainstorm-analysis:v2 / cross-review:v2) — a `BrainstormAnalysis`'s
+ * `unknowns` and a `CrossReview`'s `openQuestions` accept this OR a plain string per item, never one
+ * or the other exclusively: a plain string is how every v1 artifact already stored looks (never
+ * re-parsed, needs no migration) and stays the parser's defensive fallback if a v2-prompted model
+ * still returns bare text for some entry. See structured-output.ts's structuredQuestions().
+ */
+export type StructuredQuestion = {
+  question: string;
+  priority: QuestionPriority;
+  whyItMatters: string;
+  suggestedAction: string;
+  expectedEvidence: string[];
+  suggestedAnswers: string[];
+};
+
 export type BrainstormAnalysis = {
   summary: string;
   facts: string[];
   assumptions: string[];
-  unknowns: string[];
+  unknowns: (string | StructuredQuestion)[];
   options: Array<{
     name: string;
     description: string;
@@ -290,7 +306,7 @@ export type CrossReview = {
   missingFailureCases: string[];
   hiddenOperationalCosts: string[];
   migrationRisks: string[];
-  openQuestions: string[];
+  openQuestions: (string | StructuredQuestion)[];
   missingEvidence: string[];
   recommendedExperiments: string[];
 };

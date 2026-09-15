@@ -211,7 +211,7 @@ describe("brainstorm task routes", () => {
     expect(task.status).toBe("READY");
     expect(task.runs).toHaveLength(4);
     expect(task.runs.map((run: { promptVersion: string }) => run.promptVersion)).toEqual([
-      "brainstorm-analysis:v1", "brainstorm-analysis:v1", "cross-review:v1", "cross-review:v1",
+      "brainstorm-analysis:v2", "brainstorm-analysis:v2", "cross-review:v2", "cross-review:v2",
     ]);
     expect(task.artifacts).toHaveLength(4);
     expect(task.artifacts.every((artifact: { rawOutput: string; parseError: string | null }) => artifact.rawOutput && artifact.parseError === null)).toBe(true);
@@ -223,8 +223,8 @@ describe("brainstorm task routes", () => {
     expect(task.evidence.filter((item: { type: string }) => item.type === "FACT")).toHaveLength(2);
     expect(task.evidence.filter((item: { type: string }) => item.type === "QUESTION")).toHaveLength(2);
     expect(task.openQuestionCount).toBe(2);
-    expect(starts.get("brainstorm-analysis:v1")?.size).toBe(2);
-    expect(starts.get("cross-review:v1")?.size).toBe(2);
+    expect(starts.get("brainstorm-analysis:v2")?.size).toBe(2);
+    expect(starts.get("cross-review:v2")?.size).toBe(2);
 
     const listResponse = await app.inject({ method: "GET", url: `/api/tasks?projectId=${project.id}` });
     const list = listResponse.json();
@@ -245,6 +245,145 @@ describe("brainstorm task routes", () => {
     expect((await app.inject({ method: "GET", url: `/api/tasks/${created.id}` })).statusCode).toBe(404);
     const retainedRuns = (await app.inject({ method: "GET", url: `/api/agent-runs?projectId=${project.id}` })).json();
     expect(retainedRuns.filter((run: { taskId: string | null }) => run.taskId === created.id)).toEqual([]);
+  });
+
+  it("pre-populates a question's suggestions from a v2 structured unknown, and still accepts a mixed plain-string entry", async () => {
+    class FakeV2Adapter implements AgentAdapter {
+      constructor(readonly name: AgentProvider) {}
+      async healthCheck(): Promise<AgentHealth> {
+        return {
+          provider: this.name, available: true, authenticated: true, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+          capabilities: { structuredOutput: true, sessionResume: false, dynamicModelDiscovery: false, availableModels: null, availableEffortLevels: null },
+        };
+      }
+      async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+        const occurredAt = new Date().toISOString();
+        yield { type: "started", runId: input.runId, occurredAt };
+        const output = input.promptVersion.startsWith("brainstorm")
+          ? JSON.stringify({
+            summary: `${this.name} summary`, facts: ["A fact."], assumptions: ["An assumption."],
+            unknowns: [
+              {
+                question: "What is the current storage runway?", priority: "BLOCKING",
+                whyItMatters: "Migration may take longer than the remaining capacity.",
+                suggestedAction: "Measure usable bytes and peak daily growth.",
+                expectedEvidence: ["Filesystem usage", "30-day growth history"],
+                suggestedAnswers: ["About 2 weeks.", "About 2 months."],
+              },
+              "A plain-string unknown, unchanged from v1.",
+            ],
+            options: [{ name: "Option", description: "A candidate design.", advantages: [], disadvantages: [], risks: [] }],
+            recommendedExperiments: [], recommendation: null,
+          })
+          : JSON.stringify({
+            summary: `${this.name} review`, agreements: [], disagreements: [], factualErrors: [], unsupportedAssumptions: [],
+            missingFailureCases: [], hiddenOperationalCosts: [], migrationRisks: [], openQuestions: [], missingEvidence: [],
+            recommendedExperiments: [],
+          });
+        yield { type: "stdout", runId: input.runId, occurredAt, chunk: output };
+        yield {
+          type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+          metadata: {
+            provider: this.name, requestedModel: input.model.requested, actualModel: `fake-${this.name.toLowerCase()}`,
+            effort: null, cliVersion: `fake-${this.name.toLowerCase()} 1.0`, promptVersion: input.promptVersion, webAccessPermitted: false,
+          },
+        };
+      }
+      async cancel() {}
+    }
+
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeV2Adapter("CLAUDE"), new FakeV2Adapter("CODEX")] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const created = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Storage runway", type: "ARCHITECTURE", riskLevel: "HIGH",
+        problemStatement: "How much storage runway remains?", webAccessPermitted: false,
+      },
+    })).json();
+    await acknowledgeUnknownUsage(app);
+    await app.inject({ method: "POST", url: `/api/tasks/${created.id}/start`, payload: {} });
+    let task;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      task = (await app.inject({ method: "GET", url: `/api/tasks/${created.id}` })).json();
+      if (["READY", "FAILED"].includes(task.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(task.status).toBe("READY");
+
+    // Each provider raised 2 unknowns (1 structured, 1 plain string) = 4 QUESTION evidence items.
+    const questions = task.evidence.filter((item: { type: string }) => item.type === "QUESTION");
+    expect(questions).toHaveLength(4);
+    const structured = task.questionDetails.find((detail: { priority: string | null }) => detail.priority === "BLOCKING");
+    expect(structured).toMatchObject({
+      status: "OPEN", priority: "BLOCKING",
+      whyItMatters: "Migration may take longer than the remaining capacity.",
+      suggestedAction: "Measure usable bytes and peak daily growth.",
+      expectedEvidence: ["Filesystem usage", "30-day growth history"],
+      suggestedAnswers: ["About 2 weeks.", "About 2 months."],
+      suggestionSource: expect.stringMatching(/^(CLAUDE|CODEX)$/),
+    });
+    const plainStringDetail = task.questionDetails.find((detail: { questionId: string }) =>
+      questions.find((q: { id: string; content: string }) => q.id === detail.questionId)?.content === "A plain-string unknown, unchanged from v1.");
+    expect(plainStringDetail).toMatchObject({ status: "OPEN", priority: null, whyItMatters: null, suggestedAction: null, suggestedAnswers: null, suggestionSource: null });
+  });
+
+  it("fails the whole analysis when a structured unknown is missing a required field, the same way an invalid v1 response already does", async () => {
+    class FakeMalformedAdapter implements AgentAdapter {
+      constructor(readonly name: AgentProvider) {}
+      async healthCheck(): Promise<AgentHealth> {
+        return {
+          provider: this.name, available: true, authenticated: true, cliVersion: `fake-${this.name.toLowerCase()} 1.0`,
+          capabilities: { structuredOutput: true, sessionResume: false, dynamicModelDiscovery: false, availableModels: null, availableEffortLevels: null },
+        };
+      }
+      async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
+        const occurredAt = new Date().toISOString();
+        yield { type: "started", runId: input.runId, occurredAt };
+        // Missing "whyItMatters" — every field in a structured unknown is required.
+        const output = JSON.stringify({
+          summary: "summary", facts: [], assumptions: [],
+          unknowns: [{ question: "Q?", priority: "HIGH", suggestedAction: "Do X.", expectedEvidence: [], suggestedAnswers: [] }],
+          options: [], recommendedExperiments: [], recommendation: null,
+        });
+        yield { type: "stdout", runId: input.runId, occurredAt, chunk: output };
+        yield {
+          type: "completed", runId: input.runId, occurredAt, exitCode: 0,
+          metadata: {
+            provider: this.name, requestedModel: input.model.requested, actualModel: `fake-${this.name.toLowerCase()}`,
+            effort: null, cliVersion: `fake-${this.name.toLowerCase()} 1.0`, promptVersion: input.promptVersion, webAccessPermitted: false,
+          },
+        };
+      }
+      async cancel() {}
+    }
+
+    const app = buildApp({ databasePath: ":memory:", adapters: [new FakeMalformedAdapter("CLAUDE"), new FakeMalformedAdapter("CODEX")] });
+    apps.push(app);
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { repositoryPath: await createTestRepository() },
+    })).json();
+    const created = (await app.inject({
+      method: "POST", url: "/api/tasks",
+      payload: {
+        projectId: project.id, title: "Malformed", type: "BRAINSTORM", riskLevel: "LOW",
+        problemStatement: "Exercise the malformed-response path.", webAccessPermitted: false,
+      },
+    })).json();
+    await acknowledgeUnknownUsage(app);
+    await app.inject({ method: "POST", url: `/api/tasks/${created.id}/start`, payload: {} });
+    let task;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      task = (await app.inject({ method: "GET", url: `/api/tasks/${created.id}` })).json();
+      if (["READY", "FAILED"].includes(task.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(task.status).toBe("FAILED");
+    expect(task.artifacts.every((artifact: { structuredData: unknown; parseError: string | null }) => artifact.structuredData === null && artifact.parseError)).toBe(true);
+    expect(task.evidence.filter((item: { type: string }) => item.type === "QUESTION")).toEqual([]);
   });
 
   it("requires an explicit per-task web-access decision", async () => {

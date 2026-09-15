@@ -17,18 +17,19 @@ import {
   type BrainstormAnalysis,
   type CrossReview,
   type EvidenceType,
+  type StructuredQuestion,
   type TaskComparison,
   type TaskRecord,
 } from "../db/schema.js";
 import { AgentRunManager } from "./agent-run-manager.js";
 import { ensureQuestionDetails } from "./question-details.js";
-import { extractJson, MAX_ITEM_CHARS, record, strings } from "./structured-output.js";
+import { extractJson, MAX_ITEM_CHARS, record, strings, structuredQuestions } from "./structured-output.js";
 import { UsageCheckpointError, type UsageSafetyService } from "./usage-safety.js";
 import { UsageBudgetCheckpointError, type UsageBudgetService } from "./usage-settings.js";
 
-const ANALYSIS_VERSION = "brainstorm-analysis:v1";
-const REVISE_ANALYSIS_VERSION = "brainstorm-analysis-revise:v1";
-const REVIEW_VERSION = "cross-review:v1";
+const ANALYSIS_VERSION = "brainstorm-analysis:v2";
+const REVISE_ANALYSIS_VERSION = "brainstorm-analysis-revise:v2";
+const REVIEW_VERSION = "cross-review:v2";
 const promptRoot = fileURLToPath(new URL("../../../../prompts/", import.meta.url));
 const analysisTemplate = readFileSync(`${promptRoot}brainstorm-analysis.md`, "utf8");
 const reviseAnalysisTemplate = readFileSync(`${promptRoot}brainstorm-analysis-revise.md`, "utf8");
@@ -58,13 +59,13 @@ function parseAnalysis(text: string): BrainstormAnalysis {
   const summary = typeof value?.summary === "string" ? value.summary.trim() : "";
   const facts = strings(value?.facts);
   const assumptions = strings(value?.assumptions);
-  const unknowns = strings(value?.unknowns);
+  const unknowns = structuredQuestions(value?.unknowns);
   const experiments = strings(value?.recommendedExperiments);
   if (
     !value || !summary || summary.length > MAX_ITEM_CHARS || !facts || !assumptions || !unknowns || !experiments
     || !Array.isArray(value.options) || value.options.length > 25
   ) {
-    throw new Error("The analysis JSON does not match brainstorm-analysis:v1.");
+    throw new Error("The analysis JSON does not match brainstorm-analysis:v2.");
   }
   const options = value.options.map((candidate) => {
     const item = record(candidate);
@@ -89,14 +90,19 @@ function parseAnalysis(text: string): BrainstormAnalysis {
 function parseReview(text: string): CrossReview {
   const value = record(extractJson(text));
   const summary = typeof value?.summary === "string" ? value.summary.trim() : "";
-  const fields = [
+  const plainFields = [
     "agreements", "disagreements", "factualErrors", "unsupportedAssumptions", "missingFailureCases",
-    "hiddenOperationalCosts", "migrationRisks", "openQuestions", "missingEvidence", "recommendedExperiments",
+    "hiddenOperationalCosts", "migrationRisks", "missingEvidence", "recommendedExperiments",
   ] as const;
-  if (!value || !summary || summary.length > MAX_ITEM_CHARS) throw new Error("The review JSON does not match cross-review:v1.");
-  const parsed = Object.fromEntries(fields.map((field) => [field, strings(value[field])])) as Record<typeof fields[number], string[] | null>;
-  if (fields.some((field) => !parsed[field])) throw new Error("The review JSON is missing one or more required lists.");
-  return { summary, ...parsed } as CrossReview;
+  if (!value || !summary || summary.length > MAX_ITEM_CHARS) throw new Error("The review JSON does not match cross-review:v2.");
+  const parsed = Object.fromEntries(plainFields.map((field) => [field, strings(value[field])])) as Record<typeof plainFields[number], string[] | null>;
+  const openQuestions = structuredQuestions(value.openQuestions);
+  if (plainFields.some((field) => !parsed[field]) || !openQuestions) throw new Error("The review JSON is missing one or more required lists.");
+  return { summary, ...parsed, openQuestions } as CrossReview;
+}
+
+function questionText(item: string | StructuredQuestion): string {
+  return typeof item === "string" ? item : item.question;
 }
 
 function unique(items: Array<string | null | undefined>) {
@@ -120,8 +126,8 @@ function compare(analyses: BrainstormAnalysis[], reviews: CrossReview[]): TaskCo
       ...review.unsupportedAssumptions.map((item) => `Unsupported assumption: ${item}`),
     ])),
     openQuestions: unique([
-      ...analyses.flatMap((analysis) => analysis.unknowns),
-      ...reviews.flatMap((review) => review.openQuestions),
+      ...analyses.flatMap((analysis) => analysis.unknowns.map(questionText)),
+      ...reviews.flatMap((review) => review.openQuestions.map(questionText)),
     ]),
     missingEvidence: unique(reviews.flatMap((review) => review.missingEvidence)),
     recommendedExperiments: unique([
@@ -453,17 +459,29 @@ export class BrainstormWorkflow {
   private addAnalysisEvidence(taskId: string, artifactId: string, provider: AgentProvider, analysis: BrainstormAnalysis) {
     const now = new Date().toISOString();
     const groups: Array<[EvidenceType, string[]]> = [
-      ["FACT", analysis.facts], ["ASSUMPTION", analysis.assumptions], ["QUESTION", analysis.unknowns],
+      ["FACT", analysis.facts], ["ASSUMPTION", analysis.assumptions],
     ];
     for (const [type, values] of groups) {
       for (const content of values) {
-        const id = randomUUID();
         this.db.insert(evidenceItems).values({
-          id, taskId, type, content, sourceProvider: provider,
+          id: randomUUID(), taskId, type, content, sourceProvider: provider,
           sourceArtifactId: artifactId, createdAt: now, updatedAt: now,
         }).run();
-        if (type === "QUESTION") ensureQuestionDetails(this.db, id, taskId);
       }
+    }
+    // v2 analyses may raise a plain string (v1 shape, and a v2 model's defensive fallback) or a fully
+    // structured question — either way it becomes the same QUESTION evidence item, but a structured
+    // one also gets its question_details pre-populated with real suggestions instead of a blank row.
+    for (const item of analysis.unknowns) {
+      const id = randomUUID();
+      this.db.insert(evidenceItems).values({
+        id, taskId, type: "QUESTION", content: questionText(item), sourceProvider: provider,
+        sourceArtifactId: artifactId, createdAt: now, updatedAt: now,
+      }).run();
+      ensureQuestionDetails(this.db, id, taskId, typeof item === "string" ? undefined : {
+        priority: item.priority, whyItMatters: item.whyItMatters, suggestedAction: item.suggestedAction,
+        expectedEvidence: item.expectedEvidence, suggestedAnswers: item.suggestedAnswers, suggestionSource: provider,
+      });
     }
   }
 
